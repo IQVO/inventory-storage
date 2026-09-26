@@ -8,6 +8,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
+	"github.com/claudioed/inventory-storage/internal/domain/stock"
 )
 
 // TestGetReservationsByDemandRef_BeforeExpiry_StaysActiveUntouched pins the
@@ -307,4 +308,195 @@ func TestReserveStock_ExpiredExistingReservation_TreatedAsNewAttempt(t *testing.
 	if firstPersisted.Status() != reservation.StatusExpired {
 		t.Fatalf("expected the stale reservation to have been lazily expired, got %v", firstPersisted.Status())
 	}
+}
+
+// --------------------------------------------------------------------
+// expireIfDue error paths: every dependency failure inside the lazy-expiry
+// release loop and persistence tail must abort the read with the exact
+// error — never a half-expired reservation presented as a successful read.
+// --------------------------------------------------------------------
+
+// seedExpiredActiveReservation saves a rehydrated ACTIVE reservation whose
+// timeout has already elapsed under demandRef, with exactly the given
+// allocations. This is the persisted-invariant-bypassing seam the
+// inconsistent-state tests below need: a healthy ReserveStock flow can
+// never produce an allocation referencing a missing unit or one exceeding
+// the unit's reserved quantity, but corrupted storage could.
+func seedExpiredActiveReservation(t *testing.T, e env, demandRef string, allocations []reservation.Allocation) *reservation.Reservation {
+	t.Helper()
+	createdAt := e.Clock.Now().Add(-2 * time.Hour)
+	res, err := reservation.New("res-seed-"+demandRef, mustSKU(t, "SKU-1"), mustQty(t, 5), demandRef, allocations, createdAt, time.Hour)
+	if err != nil {
+		t.Fatalf("unexpected error building reservation: %v", err)
+	}
+	if err := e.Reservations.Save(context.Background(), res); err != nil {
+		t.Fatalf("unexpected error saving reservation: %v", err)
+	}
+	return res
+}
+
+func TestGetReservationsByDemandRef_AfterExpiry_StockFindByIDFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	reserveUC := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock, Timeout: time.Hour}
+	if _, err := reserveUC.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1"); err != nil {
+		t.Fatalf("unexpected error reserving: %v", err)
+	}
+	e.Clock.Advance(time.Hour + time.Second)
+
+	getUC := &usecases.GetReservationsByDemandRef{
+		Stock:        &failingStockRepo{delegate: e.Stock, failFindByID: true},
+		Reservations: e.Reservations, Events: e.Events, Clock: e.Clock,
+	}
+	if _, err := getUC.Execute(context.Background(), "order-1"); err != errFake {
+		t.Fatalf("expected errFake from stock FindByID inside the release loop, got %v", err)
+	}
+}
+
+func TestGetReservationsByDemandRef_AfterExpiry_MissingStockUnit_Rejected(t *testing.T) {
+	e := newEnv()
+	seedExpiredActiveReservation(t, e, "order-missing-unit", []reservation.Allocation{
+		{StockUnitID: "no-such-unit", Quantity: mustQty(t, 5)},
+	})
+	getUC := &usecases.GetReservationsByDemandRef{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
+
+	if _, err := getUC.Execute(context.Background(), "order-missing-unit"); err != usecases.ErrStockUnitNotFound {
+		t.Fatalf("expected ErrStockUnitNotFound for an allocation pointing at a missing unit, got %v", err)
+	}
+}
+
+func TestGetReservationsByDemandRef_AfterExpiry_ReleaseFails_PropagatesReleaseError(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	units, err := e.Stock.FindBySKU(context.Background(), mustSKU(t, "SKU-1"))
+	if err != nil || len(units) != 1 {
+		t.Fatalf("expected exactly one stowed unit, got %d (err=%v)", len(units), err)
+	}
+	// The allocation claims more of the unit than it ever had reserved
+	// (unit has reserved=0), so ReleaseReservation fails with the domain's
+	// own ErrInsufficientReserved rather than driving usable negative.
+	seedExpiredActiveReservation(t, e, "order-overallocated", []reservation.Allocation{
+		{StockUnitID: units[0].ID(), Quantity: mustQty(t, 99)},
+	})
+	getUC := &usecases.GetReservationsByDemandRef{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
+
+	if _, err := getUC.Execute(context.Background(), "order-overallocated"); err != stock.ErrInsufficientReserved {
+		t.Fatalf("expected ErrInsufficientReserved from ReleaseReservation, got %v", err)
+	}
+}
+
+func TestGetReservationsByDemandRef_AfterExpiry_StockSaveFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	reserveUC := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock, Timeout: time.Hour}
+	if _, err := reserveUC.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1"); err != nil {
+		t.Fatalf("unexpected error reserving: %v", err)
+	}
+	e.Clock.Advance(time.Hour + time.Second)
+
+	getUC := &usecases.GetReservationsByDemandRef{
+		Stock:        &failingStockRepo{delegate: e.Stock, failSave: true},
+		Reservations: e.Reservations,
+		Events:       e.Events,
+		Clock:        e.Clock,
+	}
+	if _, err := getUC.Execute(context.Background(), "order-1"); err != errFake {
+		t.Fatalf("expected errFake from stock Save inside the release loop, got %v", err)
+	}
+}
+
+func TestGetReservationsByDemandRef_AfterExpiry_ReservationSaveFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	reserveUC := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock, Timeout: time.Hour}
+	if _, err := reserveUC.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1"); err != nil {
+		t.Fatalf("unexpected error reserving: %v", err)
+	}
+	e.Clock.Advance(time.Hour + time.Second)
+
+	getUC := &usecases.GetReservationsByDemandRef{
+		Stock:        e.Stock,
+		Reservations: &failingReservationRepo{delegate: e.Reservations, failSave: true},
+		Events:       e.Events, Clock: e.Clock,
+	}
+	if _, err := getUC.Execute(context.Background(), "order-1"); err != errFake {
+		t.Fatalf("expected errFake from reservation Save after Expire(), got %v", err)
+	}
+
+	// ReservationExpired must not be raised when the read aborted before
+	// the publish step (the release loop and Expire() ran, but the
+	// transition was never durably saved).
+	for _, ev := range e.Events.Events() {
+		if ev.EventName() == "ReservationExpired" {
+			t.Fatalf("did not expect ReservationExpired on an aborted expiry, got events=%v", e.Events.Events())
+		}
+	}
+}
+
+func TestGetReservationsByDemandRef_AfterExpiry_EventPublishFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	reserveUC := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock, Timeout: time.Hour}
+	if _, err := reserveUC.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1"); err != nil {
+		t.Fatalf("unexpected error reserving: %v", err)
+	}
+	e.Clock.Advance(time.Hour + time.Second)
+
+	getUC := &usecases.GetReservationsByDemandRef{Stock: e.Stock, Reservations: e.Reservations, Events: failingEvents{}, Clock: e.Clock}
+	if _, err := getUC.Execute(context.Background(), "order-1"); err != errFake {
+		t.Fatalf("expected errFake from ReservationExpired publish, got %v", err)
+	}
+}
+
+// A demandRef holding BOTH a timed-out reservation and a still-live one:
+// when lazy expiry of the timed-out one hits a dependency failure,
+// expireAllIfDue must abort the entire read (nil results + the error)
+// instead of returning a partially-resolved slice.
+func TestGetReservationsByDemandRef_MixedResults_ExpiryFailure_AbortsWholeRead(t *testing.T) {
+	e := newEnv()
+	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
+	reserveUC := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock, Timeout: time.Hour}
+	if _, err := reserveUC.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 4), "order-mixed"); err != nil {
+		t.Fatalf("unexpected error on first reserve: %v", err)
+	}
+	// The still-live second reservation is rehydrated directly because
+	// ReserveStock's own demandRef-idempotency guard would just return the
+	// first reservation (still ACTIVE in storage, merely timed out) rather
+	// than create a second one for the same demandRef.
+	live, err := reservation.New(
+		"res-live", mustSKU(t, "SKU-1"), mustQty(t, 3), "order-mixed",
+		[]reservation.Allocation{{StockUnitID: firstUnitID(t, e), Quantity: mustQty(t, 3)}},
+		e.Clock.Now(), 3*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error building live reservation: %v", err)
+	}
+	if err := e.Reservations.Save(context.Background(), live); err != nil {
+		t.Fatalf("unexpected error saving live reservation: %v", err)
+	}
+	e.Clock.Advance(time.Hour + time.Second)
+
+	getUC := &usecases.GetReservationsByDemandRef{
+		Stock:        &failingStockRepo{delegate: e.Stock, failSave: true},
+		Reservations: e.Reservations,
+		Events:       e.Events,
+		Clock:        e.Clock,
+	}
+	results, err := getUC.Execute(context.Background(), "order-mixed")
+	if err != errFake {
+		t.Fatalf("expected errFake to abort the whole read, got %v", err)
+	}
+	if results != nil {
+		t.Fatalf("expected nil results on aborted read, got %+v", results)
+	}
+}
+
+// firstUnitID returns the id of the single stocked unit for SKU-1.
+func firstUnitID(t *testing.T, e env) string {
+	t.Helper()
+	units, err := e.Stock.FindBySKU(context.Background(), mustSKU(t, "SKU-1"))
+	if err != nil || len(units) != 1 {
+		t.Fatalf("expected exactly one stowed unit, got %d (err=%v)", len(units), err)
+	}
+	return units[0].ID()
 }

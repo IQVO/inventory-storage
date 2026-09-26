@@ -236,6 +236,18 @@ func TestStockUnit_Usable_RemovedState_IsZero(t *testing.T) {
 	}
 }
 
+// Usable must never go negative: a rehydrated unit whose persisted reserved
+// exceeds its on-hand quantity (only possible via corrupted storage — the
+// Reserve path enforces reserved <= on-hand) reports usable 0, not a
+// negative value.
+func TestStockUnit_Usable_ReservedExceedsOnHand_IsZero(t *testing.T) {
+	u := RehydrateStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5), mustQty(t, 7), StateReserved)
+
+	if got := u.Usable().Int(); got != 0 {
+		t.Fatalf("expected usable=0 when reserved exceeds on-hand, got %d", got)
+	}
+}
+
 func TestStockUnit_Pick_ExceedsOnHandQuantity_Rejected(t *testing.T) {
 	u := RehydrateStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 3), mustQty(t, 5), StateReserved)
 

@@ -70,6 +70,31 @@ func TestIncompatible_TruthTable(t *testing.T) {
 	}
 }
 
+// TestIncompatible_OutOfRangeClasses_FailSafe pins the defensive bounds
+// branch: a DOTHazardClass outside 1-9 can only exist behind a Rehydrate
+// (ParseDOTHazardClass rejects it at the boundary), and if one ever does
+// reach Incompatible it must fail safe — report compatible rather than
+// index out of range — never panic.
+func TestIncompatible_OutOfRangeClasses_FailSafe(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b DOTHazardClass
+	}{
+		{"above range in first position", DOTHazardClass(10), 3},
+		{"above range in second position", 3, DOTHazardClass(10)},
+		{"negative in first position", DOTHazardClass(-1), 3},
+		{"negative in second position", 3, DOTHazardClass(-1)},
+		{"both out of range", DOTHazardClass(42), DOTHazardClass(-7)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Incompatible(tt.a, tt.b); got {
+				t.Fatalf("Incompatible(%v, %v) = true, want false (out-of-range fails safe)", tt.a, tt.b)
+			}
+		})
+	}
+}
+
 // TestIncompatible_Symmetric verifies the derived matrix is symmetric for
 // every pair in the valid 1-9 range, as required by the real regulation
 // (segregation is a property of a PAIR, not directional).
