@@ -301,7 +301,11 @@ func (s *Server) handleRunCycleCount(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	countedQty, err := shared.NewQuantity(req.CountedQuantity)
+	if req.CountedQuantity == nil {
+		writeProblem(w, http.StatusBadRequest, problemInfo{"counted-quantity-required", "countedQuantity is required"}, "countedQuantity must be present; an explicit 0 is a valid empty-bin count, omitting it is not", r.URL.Path)
+		return
+	}
+	countedQty, err := shared.NewQuantity(int(*req.CountedQuantity))
 	if err != nil {
 		writeError(w, r, err)
 		return

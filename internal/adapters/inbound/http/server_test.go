@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -446,6 +447,34 @@ func TestRunCycleCount_Endpoint(t *testing.T) {
 	rec := ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-count", map[string]any{"countedQuantity": 10})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRunCycleCount_Endpoint_MissingCountedQuantity_Rejected(t *testing.T) {
+	ts := newTestServer()
+	ts.seedBin(t, "A-1-1", 10)
+
+	rec := ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-count", map[string]any{})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for omitted countedQuantity, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "counted-quantity-required") {
+		t.Fatalf("expected counted-quantity-required problem, got %s", rec.Body.String())
+	}
+
+	rec = ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-count", map[string]any{"countedQuantity": nil})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for null countedQuantity, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRunCycleCount_Endpoint_ExplicitZeroCount_Accepted(t *testing.T) {
+	ts := newTestServer()
+	ts.seedBin(t, "A-1-1", 10)
+
+	rec := ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-count", map[string]any{"countedQuantity": 0})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for explicit zero count, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

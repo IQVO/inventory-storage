@@ -629,7 +629,10 @@ paths:
                 systemQuantity: 10
                 discrepancy: true
         "400":
-          description: Malformed JSON body, or binId path segment missing/empty.
+          description: >
+            Malformed JSON body, binId path segment missing/empty, or the
+            body omits countedQuantity (an explicit 0 is a valid empty-bin
+            count; omitting the field is a client mistake).
           content:
             application/problem+json:
               schema:
@@ -818,6 +821,7 @@ components:
         list-all semantics for this endpoint.
       schema:
         type: string
+        minLength: 1
         example: order-42
     BinId:
       name: binId
@@ -881,11 +885,12 @@ components:
       properties:
         sku:
           type: string
+          minLength: 1
           description: Stock-keeping unit identifier for the inbound goods.
           example: SKU-1
         quantity:
           type: integer
-          format: int32
+          format: int64
           minimum: 1
           description: Quantity received. Must be a positive integer.
           example: 10
@@ -912,6 +917,7 @@ components:
       properties:
         sku:
           type: string
+          minLength: 1
           description: Stock-keeping unit identifier (item-scan).
           example: SKU-1
         quantity:
@@ -922,6 +928,7 @@ components:
           example: 10
         binId:
           type: string
+          minLength: 1
           description: Target bin's coded slot identifier (location-scan).
           example: A-1-1
 
@@ -961,6 +968,7 @@ components:
       properties:
         sku:
           type: string
+          minLength: 1
           example: SKU-1
         quantity:
           type: integer
@@ -970,6 +978,7 @@ components:
           example: 6
         demandRef:
           type: string
+          minLength: 1
           description: Caller-supplied reference identifying the demand this reservation satisfies (e.g. an order id).
           example: order-42
 
@@ -1039,9 +1048,9 @@ components:
       properties:
         countedQuantity:
           type: integer
-          format: int32
+          format: int64
           minimum: 0
-          description: Physically counted quantity at the bin. Zero is valid (an empty bin); negative is rejected.
+          description: Physically counted quantity at the bin. Zero is valid (an empty bin); negative is rejected. The field itself is required — omitting it (or sending null) is a 400, not an implicit zero.
           example: 9
 
     CycleCountResult:
