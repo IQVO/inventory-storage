@@ -26,7 +26,7 @@ MUTATION_FULL_PKG  := ./internal/domain
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build vet fmt fmt-check lint test coverage integration bdd arch-test mutation mutation-full vuln check check-all
+.PHONY: help build vet fmt fmt-check lint test coverage integration bdd arch-test mutation mutation-full vuln contract check check-all
 
 help:
 	@echo "inventory-storage — local quality gate (targets mirror .github/workflows/ci.yml)"
@@ -42,6 +42,9 @@ help:
 	@echo "  integration    go test -tags=integration ./... -race -count=1"
 	@echo "                 (needs a running Postgres and DATABASE_URL set; not in check)"
 	@echo "  bdd            go test ./... -run TestFeatures -v — godog/Gherkin acceptance"
+	@echo "  contract       scripts/contract-test.sh — Schemathesis vs apis/openapi.yaml"
+	@echo "                 (boots the service in-memory; needs st: pip install"
+	@echo "                  'schemathesis==4.28.0')"
 	@echo "  arch-test      go test ./internal/architecture/... -v — hexagonal fitness"
 	@echo "  mutation       gremlins on $(MUTATION_FAST_PKG) — the fast blocking subset"
 	@echo "  mutation-full  gremlins on $(MUTATION_FULL_PKG) — the exhaustive scheduled run"
@@ -99,6 +102,12 @@ integration:
 
 bdd:
 	$(GO) test ./... -run TestFeatures -v
+
+# Property-based contract tests against apis/openapi.yaml — mirrors the
+# `contract` CI job. Not part of check/check-all (needs Python tooling
+# installed); CI runs it as its own job on every push and PR.
+contract:
+	./scripts/contract-test.sh
 
 arch-test:
 	$(GO) test ./internal/architecture/... -v

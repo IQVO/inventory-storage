@@ -57,7 +57,10 @@ type usableInventoryResponse struct {
 }
 
 type cycleCountRequest struct {
-	CountedQuantity int `json:"countedQuantity"`
+	// CountedQuantity is a pointer so an omitted field is distinguishable
+	// from an explicit zero count (zero is a valid "empty bin" count;
+	// omitting the count entirely is a client mistake and must 400).
+	CountedQuantity *int64 `json:"countedQuantity"`
 }
 
 type cycleCountResponse struct {
