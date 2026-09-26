@@ -15,6 +15,7 @@ import (
 	"time"
 
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/bootretry"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/facilitycache"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/facilitylayout"
@@ -72,7 +73,7 @@ func run() error {
 	migrationsPath := getenv("MIGRATIONS_PATH", "migrations")
 	eventPublisher := getenv("EVENT_PUBLISHER", "log")
 
-	stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, closeAdapters, err := buildAdapters(databaseURL, migrationsPath, eventPublisher, logger)
+	stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, closeAdapters, err := buildAdapters(context.Background(), databaseURL, migrationsPath, eventPublisher, logger)
 	if err != nil {
 		return err
 	}
@@ -179,7 +180,7 @@ func newLogger(level string) *slog.Logger {
 // choice ("log"), or can be switched to the Kafka integration-events
 // publisher via eventPublisher="kafka" (EVENT_PUBLISHER env), independent of
 // which repos are in use.
-func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *slog.Logger) (
+func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublisher string, logger *slog.Logger) (
 	ports.StockRepo, ports.LocationRepo, ports.ReservationRepo, ports.ProductClassificationRepo, ports.EventPublisher, func(), error,
 ) {
 	noop := func() {}
@@ -201,12 +202,29 @@ func buildAdapters(databaseURL, migrationsPath, eventPublisher string, logger *s
 		classificationRepo = memory.NewProductClassificationRepo()
 		defaultPub = events.NewLogPublisher(logger)
 	} else {
-		if err := postgres.RunMigrations(databaseURL, migrationsPath); err != nil {
+		// Retried: this fleet's Istio native sidecars reset EVERY pod's
+		// first outbound TCP dial ~10s after the app starts
+		// (holdApplicationUntilProxyStarts is a no-op for native
+		// sidecars). A single attempt turns that transient condition into
+		// CrashLoopBackOff; the retry still fails closed once its budget
+		// is exhausted.
+		if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
+			return postgres.RunMigrations(databaseURL, migrationsPath)
+		}); err != nil {
 			return nil, nil, nil, nil, nil, noop, err
 		}
 
-		pool, err := postgres.NewPool(context.Background(), databaseURL)
+		pool, err := postgres.NewPool(ctx, databaseURL)
 		if err != nil {
+			return nil, nil, nil, nil, nil, noop, err
+		}
+		// ParseConfig/NewWithConfig do not themselves establish a
+		// connection, so without this the first-dial reset would surface
+		// inside the first real request instead of at boot.
+		if err := bootretry.Retry(ctx, logger, "ping database", func() error {
+			return pool.Ping(ctx)
+		}); err != nil {
+			pool.Close()
 			return nil, nil, nil, nil, nil, noop, err
 		}
 
@@ -273,8 +291,21 @@ func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string
 		if len(brokers) == 0 {
 			return nil, nil, fmt.Errorf("LOCATION_LOOKUP_MODE=kafka requires KAFKA_BROKERS to be set")
 		}
-		consumer, err := facilitycache.NewConsumer(ctx, brokers, logger)
-		if err != nil {
+		// Retried for the same reason the Postgres dials above are: this
+		// call's newTargetOffsets dials the broker synchronously
+		// (kafkago.DialContext) to capture the readiness watermark before
+		// any consuming begins, and that dial is exactly this fleet's
+		// known ~10s post-start first-outbound-dial reset. A single
+		// attempt turned that transient into CrashLoopBackOff here too.
+		var consumer *facilitycache.Consumer
+		if err := bootretry.Retry(ctx, logger, "dial facility-layout kafka topic", func() error {
+			c, err := facilitycache.NewConsumer(ctx, brokers, logger)
+			if err != nil {
+				return err
+			}
+			consumer = c
+			return nil
+		}); err != nil {
 			return nil, nil, fmt.Errorf("failed to start the Kafka-sourced location cache: %w", err)
 		}
 		logger.Info("location classification lookup configured",
