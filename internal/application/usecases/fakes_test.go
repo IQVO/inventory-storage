@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
@@ -175,14 +176,18 @@ func (f *fakeLocationLookup) GetSlotAttributes(_ context.Context, binID shared.B
 }
 
 // failingProductClassificationRepo wraps a real ProductClassificationRepo
-// but can be configured to fail on specific operations.
+// but can be configured to fail on specific operations. failFindBySKUFor,
+// if set, fails FindBySKU only for that one SKU (other SKUs delegate
+// through), so a test can fail an OCCUPANT lookup while the incoming SKU's
+// own lookup still succeeds.
 type failingProductClassificationRepo struct {
 	delegate interface {
 		Save(ctx context.Context, c *product.ProductClassification) error
 		FindBySKU(ctx context.Context, sku shared.SKU) (*product.ProductClassification, error)
 	}
-	failSave      bool
-	failFindBySKU bool
+	failSave         bool
+	failFindBySKU    bool
+	failFindBySKUFor shared.SKU
 }
 
 func (f *failingProductClassificationRepo) Save(ctx context.Context, c *product.ProductClassification) error {
@@ -193,8 +198,24 @@ func (f *failingProductClassificationRepo) Save(ctx context.Context, c *product.
 }
 
 func (f *failingProductClassificationRepo) FindBySKU(ctx context.Context, sku shared.SKU) (*product.ProductClassification, error) {
-	if f.failFindBySKU {
+	if f.failFindBySKU || (f.failFindBySKUFor != "" && sku == f.failFindBySKUFor) {
 		return nil, errFake
 	}
 	return f.delegate.FindBySKU(ctx, sku)
+}
+
+// selectiveFailingEvents delegates to a real EventPublisher but fails only
+// for one event name, so a test can let the earlier publishes of a
+// multi-publish flow succeed and fail a specific later one (failingEvents
+// fails the FIRST publish, which never reaches those later branches).
+type selectiveFailingEvents struct {
+	delegate ports.EventPublisher
+	failName string
+}
+
+func (p selectiveFailingEvents) Publish(ctx context.Context, ev shared.DomainEvent) error {
+	if ev.EventName() == p.failName {
+		return errFake
+	}
+	return p.delegate.Publish(ctx, ev)
 }

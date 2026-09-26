@@ -517,3 +517,63 @@ func TestStowStock_Segregation_FindByBinFails_PropagatesError(t *testing.T) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
+
+// The incoming SKU's own classification lookup failing inside
+// checkSegregation propagates as a plain error. LocationLookup is
+// deliberately NOT wired so checkPlacement short-circuits and the failure
+// can only come from the segregation lookup.
+func TestStowStock_Segregation_IncomingClassificationLookupFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	seedBin(t, e, mustBinID(t, "A-1-1"), 100)
+	repo := &failingProductClassificationRepo{delegate: e.Classifications, failFindBySKU: true}
+	uc := &usecases.StowStock{
+		Stock: e.Stock, Locations: e.Locations, Events: e.Events, Clock: e.Clock,
+		Classifications: repo,
+	}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 5), mustBinID(t, "A-1-1"))
+	if err != errFake {
+		t.Fatalf("expected errFake from incoming classification lookup, got %v", err)
+	}
+}
+
+// Two StockUnits of the SAME occupant SKU in the bin: the dedup branch
+// must skip the second unit's classification lookup — the stow still
+// succeeds for a compatible pair.
+func TestStowStock_Segregation_DuplicateOccupantSKU_LookedUpOnce_Succeeds(t *testing.T) {
+	e := newEnv()
+	seedBin(t, e, mustBinID(t, "A-1-1"), 100)
+	classifyAndSaveWithDOT(t, e, mustSKU(t, "SKU-OCCUPANT"), []product.HandlingTag{product.Hazmat}, "", 4)
+	seedOccupant(t, e, mustSKU(t, "SKU-OCCUPANT"), mustBinID(t, "A-1-1"), 5)
+	seedOccupant(t, e, mustSKU(t, "SKU-OCCUPANT"), mustBinID(t, "A-1-1"), 5)
+	classifyAndSaveWithDOT(t, e, mustSKU(t, "SKU-1"), []product.HandlingTag{product.Hazmat}, "", 3)
+	uc := &usecases.StowStock{
+		Stock: e.Stock, Locations: e.Locations, Events: e.Events, Clock: e.Clock,
+		Classifications: e.Classifications,
+	}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 5), mustBinID(t, "A-1-1"))
+	if err != nil {
+		t.Fatalf("expected duplicate occupant sku to be skipped without blocking, got %v", err)
+	}
+}
+
+// An OCCUPANT's classification lookup failing propagates as a plain error
+// (not swallowed/fail-open), while the incoming SKU's own lookup must
+// still succeed — hence the failFindBySKUFor selective wrapper.
+func TestStowStock_Segregation_OccupantClassificationLookupFails_PropagatesError(t *testing.T) {
+	e := newEnv()
+	seedBin(t, e, mustBinID(t, "A-1-1"), 100)
+	seedOccupant(t, e, mustSKU(t, "SKU-OCCUPANT"), mustBinID(t, "A-1-1"), 5)
+	classifyAndSaveWithDOT(t, e, mustSKU(t, "SKU-1"), []product.HandlingTag{product.Hazmat}, "", 3)
+	repo := &failingProductClassificationRepo{delegate: e.Classifications, failFindBySKUFor: mustSKU(t, "SKU-OCCUPANT")}
+	uc := &usecases.StowStock{
+		Stock: e.Stock, Locations: e.Locations, Events: e.Events, Clock: e.Clock,
+		Classifications: repo,
+	}
+
+	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 5), mustBinID(t, "A-1-1"))
+	if err != errFake {
+		t.Fatalf("expected errFake from occupant classification lookup, got %v", err)
+	}
+}
