@@ -1,0 +1,3 @@
+check_availability	true	false
+get_bin_occupancy	true	false
+revoke_reservation	false	true

@@ -1,0 +1,3 @@
+inventory-storage	check_availability
+inventory-storage	get_bin_occupancy
+inventory-storage	revoke_reservation

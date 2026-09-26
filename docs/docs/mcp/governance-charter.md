@@ -145,6 +145,39 @@ Jaeger and Grafana alongside HTTP.
    (so it runs in the CI `test` job) that boots the real server and asserts
    the tool-count budget, the naming convention, mandatory annotations and
    non-empty descriptions.
+4. **Eval gate (E1–E3):** the tool surface **MUST** pass the eval suites in
+   `internal/adapters/inbound/mcp/eval_*_test.go` and
+   `evalsuite_test.go`, all plain `go test`s inside the CI `test` job:
+   - **E1 — schema & metadata** (`eval_governance_test.go`): every
+     advertised tool's input schema resolves as a JSON Schema, accepts a
+     schema-shaped arguments object, and REJECTS wrong-typed values (it
+     constrains model input, not just decorates it); every parameter
+     carries a non-empty description; the advertised surface matches
+     `testdata/tool_registry.golden`; and this repo's tools are present,
+     correctly credited, and globally unique in
+     `testdata/fleet_tool_snapshot.golden` (the federated registry kept
+     identical across all fleet repos — a model host mounts several of
+     these servers together, so tool names MUST NOT collide).
+   - **E2 — wire conformance** (`eval_conformance_test.go`): over the real
+     Streamable HTTP handler — initialize handshake carries server info
+     and non-empty instructions; unknown tools, wrong-typed arguments,
+     unknown extra arguments, unknown resources and prompts are rejected;
+     resource templates and prompts are discoverable; a closed session
+     fails loudly.
+   - **E3 — behavioral evals** (`evalsuite_test.go` +
+     `testdata/features/mcp_tools.feature`): Gherkin scenarios driving
+     `tools/call` with model-realistic arguments (stray keys, wrong types,
+     unknown ids) against seeded state, pinning structured results and
+     side effects (domain events, state visible through other tools).
+
+### Pinned behavioral contracts the evals found
+
+- Typed tool schemas are **strict** (`additionalProperties: false`, the
+  SDK default): stray model-generated argument keys are rejected with a
+  validation error, not silently ignored.
+- `get_bin_occupancy` cannot distinguish an unknown bin from an empty one
+  (both report zeros) — the read port has no bin-existence check; pinned
+  as the visible contract.
 
 ### Status in this repository
 
