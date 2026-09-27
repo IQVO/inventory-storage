@@ -219,9 +219,16 @@ below).
 
 - **Topic**: `warehouse.inventory.events`
 - **Publisher selection**: `EVENT_PUBLISHER` env var — `log` (default:
-  stdout logging with in-memory adapters, or, with `DATABASE_URL` set, an
-  append-only Postgres `events` table — no relay forwards those rows
-  anywhere) or `kafka`.
+  stdout logging with in-memory adapters, or, with `DATABASE_URL` set, the
+  same stdout logging — the transactional outbox only activates under
+  `kafka`, see below) or `kafka`. With `DATABASE_URL` set AND
+  `EVENT_PUBLISHER=kafka`, publishing goes through a transactional outbox
+  (ADR 0017): each use case's aggregate save(s) and its domain event(s)
+  commit together in one Postgres transaction as `outbox_events` rows, and
+  a background relay (`OUTBOX_RELAY_INTERVAL`, default `1s`) drains them
+  onto Kafka. Without `DATABASE_URL`, `EVENT_PUBLISHER=kafka` publishes
+  directly (no outbox, no transactional guarantee) — the in-memory repos
+  have nothing to commit atomically with.
 - **Broker**: `KAFKA_BROKERS` env var, comma-separated, default
   `localhost:9092`. There is one broker platform-wide: the in-cluster Kafka
   deployed by `warehouse-infra`, whose external listener is reachable from

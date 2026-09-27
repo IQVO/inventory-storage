@@ -27,9 +27,11 @@ func (c *fixedClock) Now() time.Time { return c.t }
 // looked up after its timeout via GetReservationsByDemandRef.Execute must
 // (1) durably transition to EXPIRED in the reservations table, (2) return
 // its allocated quantity to the stock_units table's usable pool, and (3) a
-// ReservationExpired row must land in the events table (this service's
-// outbox), via the exact same postgres.EventPublisher every other domain
-// event already uses.
+// ReservationExpired row must land in outbox_events (this service's
+// transactional outbox, ADR 0017), via the same postgres.OutboxPublisher
+// every other domain event now goes through — wrapped in a
+// postgres.UnitOfWork so the reservation update and the outbox insert
+// commit in the one transaction the use case's atomically() call opens.
 func TestPostgres_LazyReservationExpiry_PersistsAndWritesOutbox(t *testing.T) {
 	databaseURL := requireDatabaseURL(t)
 	if err := postgres.RunMigrations(databaseURL, migrationsDir(t)); err != nil {
@@ -66,7 +68,8 @@ func TestPostgres_LazyReservationExpiry_PersistsAndWritesOutbox(t *testing.T) {
 	}
 
 	reservationRepo := postgres.NewReservationRepo(pool)
-	publisher := postgres.NewEventPublisher(pool)
+	publisher := postgres.NewOutboxPublisher(pool, stubEncoder{})
+	uow := postgres.NewUnitOfWork(pool)
 
 	// Build the reservation directly (not through ReserveStock, since
 	// ReserveStock itself would also reserve the unit's quantity — doing
@@ -103,11 +106,11 @@ func TestPostgres_LazyReservationExpiry_PersistsAndWritesOutbox(t *testing.T) {
 	}
 
 	// Read it back AFTER the timeout has elapsed via the real use case,
-	// wired over the real Postgres repos and the real outbox publisher —
-	// this exercises the exact write-on-read path a live GET /reservations
-	// call would take.
+	// wired over the real Postgres repos, the real outbox publisher, and
+	// the real UnitOfWork — this exercises the exact write-on-read path a
+	// live GET /reservations call would take (ADR 0017).
 	clock := &fixedClock{t: created.Add(2 * time.Minute)}
-	getUC := &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock}
+	getUC := &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow}
 	found, err := getUC.Execute(ctx, demandRef)
 	if err != nil {
 		t.Fatalf("unexpected error executing GetReservationsByDemandRef: %v", err)
@@ -134,16 +137,16 @@ func TestPostgres_LazyReservationExpiry_PersistsAndWritesOutbox(t *testing.T) {
 		t.Fatalf("expected usable restored to 10 on the real stock_units row, got %d", refetchedUnit.Usable().Int())
 	}
 
-	// (3) A ReservationExpired row landed in the events table (the outbox).
+	// (3) A ReservationExpired row landed in outbox_events (the outbox).
 	var count int
 	err = pool.QueryRow(ctx, `
-		SELECT count(*) FROM events WHERE event_name = $1
+		SELECT count(*) FROM outbox_events WHERE event_type = $1
 	`, "ReservationExpired").Scan(&count)
 	if err != nil {
-		t.Fatalf("unexpected error querying events table: %v", err)
+		t.Fatalf("unexpected error querying outbox_events table: %v", err)
 	}
 	if count < 1 {
-		t.Fatalf("expected at least 1 ReservationExpired row in the events table (outbox), got %d", count)
+		t.Fatalf("expected at least 1 ReservationExpired row in outbox_events, got %d", count)
 	}
 }
 
@@ -188,7 +191,8 @@ func TestPostgres_LazyReservationExpiry_NotYetExpired_LeavesReservationActive(t 
 	}
 
 	reservationRepo := postgres.NewReservationRepo(pool)
-	publisher := postgres.NewEventPublisher(pool)
+	publisher := postgres.NewOutboxPublisher(pool, stubEncoder{})
+	uow := postgres.NewUnitOfWork(pool)
 
 	// Unique per test run, same rationale as the other integration test in
 	// this file (and TestPostgres_Reservation_FindByDemandRef).
@@ -213,7 +217,7 @@ func TestPostgres_LazyReservationExpiry_NotYetExpired_LeavesReservationActive(t 
 
 	// Read it back well before its (1 hour) timeout.
 	clock := &fixedClock{t: created.Add(time.Minute)}
-	getUC := &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock}
+	getUC := &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow}
 	found, err := getUC.Execute(ctx, demandRef)
 	if err != nil {
 		t.Fatalf("unexpected error executing GetReservationsByDemandRef: %v", err)
@@ -232,10 +236,10 @@ func TestPostgres_LazyReservationExpiry_NotYetExpired_LeavesReservationActive(t 
 
 	var count int
 	err = pool.QueryRow(ctx, `
-		SELECT count(*) FROM events WHERE event_name = $1 AND payload->>'ReservationID' = $2
-	`, "ReservationExpired", id).Scan(&count)
+		SELECT count(*) FROM outbox_events WHERE event_type = $1 AND key = $2
+	`, "ReservationExpired", []byte(id)).Scan(&count)
 	if err != nil {
-		t.Fatalf("unexpected error querying events table: %v", err)
+		t.Fatalf("unexpected error querying outbox_events table: %v", err)
 	}
 	if count != 0 {
 		t.Fatalf("expected no ReservationExpired row for a not-yet-expired reservation, got %d", count)

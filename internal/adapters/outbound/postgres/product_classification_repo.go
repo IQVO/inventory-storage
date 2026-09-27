@@ -34,7 +34,7 @@ func (r *ProductClassificationRepo) Save(ctx context.Context, c *product.Product
 		dotHazardClass = &v
 	}
 
-	_, err := r.pool.Exec(ctx, `
+	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
 		INSERT INTO product_classifications (sku, handling_tags, temperature_class, dot_hazard_class)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (sku) DO UPDATE SET handling_tags = EXCLUDED.handling_tags, temperature_class = EXCLUDED.temperature_class, dot_hazard_class = EXCLUDED.dot_hazard_class
@@ -46,7 +46,7 @@ func (r *ProductClassificationRepo) FindBySKU(ctx context.Context, sku shared.SK
 	var rawTags []string
 	var temperatureClass string
 	var dotHazardClass *int
-	err := r.pool.QueryRow(ctx, `
+	err := querierFrom(ctx, r.pool).QueryRow(ctx, `
 		SELECT handling_tags, temperature_class, dot_hazard_class FROM product_classifications WHERE sku = $1
 	`, sku.String()).Scan(&rawTags, &temperatureClass, &dotHazardClass)
 	if err == pgx.ErrNoRows {
