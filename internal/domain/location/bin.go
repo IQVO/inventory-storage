@@ -20,9 +20,13 @@ type Bin struct {
 	id       shared.BinId
 	capacity shared.Quantity
 	occupied shared.Quantity
+	// version is optimistic-concurrency infrastructure metadata (ADR
+	// 0018) — inert, never reasoned about by business logic.
+	version int
 }
 
-// NewBin constructs an empty Bin with the given capacity.
+// NewBin constructs an empty Bin with the given capacity. A freshly
+// created aggregate always starts at version 1 (see ADR 0018).
 func NewBin(id shared.BinId, capacity shared.Quantity) (*Bin, error) {
 	if id == "" {
 		return nil, shared.ErrEmptyBinID
@@ -30,18 +34,24 @@ func NewBin(id shared.BinId, capacity shared.Quantity) (*Bin, error) {
 	if capacity.Int() <= 0 {
 		return nil, ErrInvalidCapacity
 	}
-	return &Bin{id: id, capacity: capacity, occupied: 0}, nil
+	return &Bin{id: id, capacity: capacity, occupied: 0, version: 1}, nil
 }
 
 // RehydrateBin reconstructs a Bin from persisted state without re-running
-// creation invariants (used by repositories).
-func RehydrateBin(id shared.BinId, capacity, occupied shared.Quantity) *Bin {
-	return &Bin{id: id, capacity: capacity, occupied: occupied}
+// creation invariants (used by repositories). version is the row's
+// current optimistic-concurrency version (ADR 0018).
+func RehydrateBin(id shared.BinId, capacity, occupied shared.Quantity, version int) *Bin {
+	return &Bin{id: id, capacity: capacity, occupied: occupied, version: version}
 }
 
 func (b *Bin) ID() shared.BinId          { return b.id }
 func (b *Bin) Capacity() shared.Quantity { return b.capacity }
 func (b *Bin) Occupied() shared.Quantity { return b.occupied }
+
+// Version reports the optimistic-concurrency version this aggregate was
+// loaded at (or 1 for a freshly constructed one). Infrastructure-only —
+// no business-logic method reads or mutates this (ADR 0018).
+func (b *Bin) Version() int { return b.version }
 func (b *Bin) Available() shared.Quantity {
 	avail, _ := b.capacity.Sub(b.occupied)
 	return avail

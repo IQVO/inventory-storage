@@ -158,10 +158,13 @@ func TestRehydrate_ReconstructsWithoutValidation(t *testing.T) {
 	created := time.Unix(0, 0)
 	expires := created.Add(time.Hour)
 
-	r := Rehydrate("r-1", sku, mustQty(t, 5), "order-1", allocs, StatusConfirmed, created, expires)
+	r := Rehydrate("r-1", sku, mustQty(t, 5), "order-1", allocs, StatusConfirmed, created, expires, 2)
 
 	if r.ID() != "r-1" || r.Status() != StatusConfirmed || !r.ExpiresAt().Equal(expires) {
 		t.Fatalf("expected rehydrated fields to round-trip, got id=%s status=%v expiresAt=%v",
 			r.ID(), r.Status(), r.ExpiresAt())
+	}
+	if r.Version() != 2 {
+		t.Fatalf("expected rehydrated version to round-trip, got %d", r.Version())
 	}
 }

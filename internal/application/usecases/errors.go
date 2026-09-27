@@ -37,4 +37,13 @@ var (
 	// with the DOT hazard class of another SKU already occupying the
 	// target bin. This is a same-bin-only, local check — see ADR 0010.
 	ErrHazmatClassIncompatible = errors.New("dot hazard class incompatible with another sku already stowed in this bin")
+
+	// ErrConcurrentModification is returned by a repo's Save when the
+	// version-guarded write affected zero rows against an EXISTING row:
+	// another writer already modified (and incremented the version of)
+	// the same aggregate since this caller last read it (ADR 0018,
+	// optimistic concurrency). The caller must re-fetch and retry rather
+	// than treat this as success or as a generic internal error — the
+	// inbound HTTP adapter maps it to 409 Conflict.
+	ErrConcurrentModification = errors.New("aggregate was concurrently modified by another writer; re-fetch and retry")
 )

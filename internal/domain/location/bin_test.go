@@ -134,10 +134,13 @@ func TestBin_Accessors(t *testing.T) {
 
 func TestRehydrateBin_ReconstructsWithoutValidation(t *testing.T) {
 	binID, _ := shared.NewBinId("A-1-1")
-	bin := RehydrateBin(binID, mustQty(t, 10), mustQty(t, 4))
+	bin := RehydrateBin(binID, mustQty(t, 10), mustQty(t, 4), 3)
 
 	if bin.ID() != binID || bin.Capacity().Int() != 10 || bin.Occupied().Int() != 4 {
 		t.Fatalf("expected rehydrated fields to round-trip, got id=%v capacity=%d occupied=%d",
 			bin.ID(), bin.Capacity().Int(), bin.Occupied().Int())
+	}
+	if bin.Version() != 3 {
+		t.Fatalf("expected rehydrated version to round-trip, got %d", bin.Version())
 	}
 }

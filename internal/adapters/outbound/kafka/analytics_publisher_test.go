@@ -40,7 +40,7 @@ func (r fakeReservationRepo) FindByID(_ context.Context, id string) (*reservatio
 	qty, _ := shared.NewPositiveQuantity(1)
 	return reservation.Rehydrate(id, sku, qty, "demand-1",
 		[]reservation.Allocation{{StockUnitID: "su1", Quantity: qty}},
-		reservation.StatusRevoked, time.Now(), time.Now().Add(time.Hour)), nil
+		reservation.StatusRevoked, time.Now(), time.Now().Add(time.Hour), 1), nil
 }
 func (fakeReservationRepo) Save(context.Context, *reservation.Reservation) error { return nil }
 func (fakeReservationRepo) NextID(context.Context) (string, error)               { return "res-next", nil }

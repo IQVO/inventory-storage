@@ -51,7 +51,8 @@ func statusFor(err error) int {
 		errors.Is(err, usecases.ErrHazmatZoneRequired),
 		errors.Is(err, usecases.ErrTemperatureClassMismatch),
 		errors.Is(err, usecases.ErrLocationClassificationUnavailable),
-		errors.Is(err, usecases.ErrHazmatClassIncompatible):
+		errors.Is(err, usecases.ErrHazmatClassIncompatible),
+		errors.Is(err, usecases.ErrConcurrentModification):
 		return http.StatusConflict
 
 	default:
@@ -141,6 +142,8 @@ func problemFor(err error) problemInfo {
 		return problemInfo{"location-classification-unavailable", "Location classification lookup unavailable"}
 	case errors.Is(err, usecases.ErrHazmatClassIncompatible):
 		return problemInfo{"hazmat-class-incompatible", "DOT hazard class incompatible with another SKU already stowed in this bin"}
+	case errors.Is(err, usecases.ErrConcurrentModification):
+		return problemInfo{"concurrent-modification", "The resource was modified by another request; re-fetch the latest version and retry"}
 
 	default:
 		return problemInfo{"internal-error", "An unexpected internal error occurred"}
