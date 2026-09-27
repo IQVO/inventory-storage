@@ -69,38 +69,54 @@ func TestWithTraceContext_Handle(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			logger := slog.New(telemetry.WithTraceContext(slog.NewJSONHandler(&buf, nil)))
-
-			logger.InfoContext(tt.ctx(t), "stock reserved", "sku", "SKU-1")
-
-			var record map[string]any
-			if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
-				t.Fatalf("log line is not valid JSON: %v (%q)", err, buf.String())
-			}
-
-			// The wrapper must never swallow the record's own attributes.
-			if record["sku"] != "SKU-1" {
-				t.Errorf("sku = %v, want SKU-1", record["sku"])
-			}
-
-			if tt.wantTraceID == "" {
-				if _, ok := record[telemetry.TraceIDKey]; ok {
-					t.Errorf("%s present with no active span: %v", telemetry.TraceIDKey, record[telemetry.TraceIDKey])
-				}
-				if _, ok := record[telemetry.SpanIDKey]; ok {
-					t.Errorf("%s present with no active span: %v", telemetry.SpanIDKey, record[telemetry.SpanIDKey])
-				}
-				return
-			}
-
-			if record[telemetry.TraceIDKey] != tt.wantTraceID {
-				t.Errorf("%s = %v, want %s", telemetry.TraceIDKey, record[telemetry.TraceIDKey], tt.wantTraceID)
-			}
-			if record[telemetry.SpanIDKey] != tt.wantSpanID {
-				t.Errorf("%s = %v, want %s", telemetry.SpanIDKey, record[telemetry.SpanIDKey], tt.wantSpanID)
-			}
+			assertRecordCarriesTraceIDs(t, tt.ctx(t), tt.wantTraceID, tt.wantSpanID)
 		})
+	}
+}
+
+// assertRecordCarriesTraceIDs logs one record under ctx through the
+// trace-aware handler and asserts which trace/span ids were stamped onto
+// it. An empty wantTraceID means no ids may be present at all.
+func assertRecordCarriesTraceIDs(t *testing.T, ctx context.Context, wantTraceID, wantSpanID string) {
+	t.Helper()
+
+	var buf bytes.Buffer
+	logger := slog.New(telemetry.WithTraceContext(slog.NewJSONHandler(&buf, nil)))
+
+	logger.InfoContext(ctx, "stock reserved", "sku", "SKU-1")
+
+	var record map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
+		t.Fatalf("log line is not valid JSON: %v (%q)", err, buf.String())
+	}
+
+	// The wrapper must never swallow the record's own attributes.
+	if record["sku"] != "SKU-1" {
+		t.Errorf("sku = %v, want SKU-1", record["sku"])
+	}
+
+	if wantTraceID == "" {
+		assertRecordHasNoTraceIDs(t, record)
+		return
+	}
+
+	if record[telemetry.TraceIDKey] != wantTraceID {
+		t.Errorf("%s = %v, want %s", telemetry.TraceIDKey, record[telemetry.TraceIDKey], wantTraceID)
+	}
+	if record[telemetry.SpanIDKey] != wantSpanID {
+		t.Errorf("%s = %v, want %s", telemetry.SpanIDKey, record[telemetry.SpanIDKey], wantSpanID)
+	}
+}
+
+// assertRecordHasNoTraceIDs fails when a record written outside a (valid)
+// span still carries trace/span ids.
+func assertRecordHasNoTraceIDs(t *testing.T, record map[string]any) {
+	t.Helper()
+	if _, ok := record[telemetry.TraceIDKey]; ok {
+		t.Errorf("%s present with no active span: %v", telemetry.TraceIDKey, record[telemetry.TraceIDKey])
+	}
+	if _, ok := record[telemetry.SpanIDKey]; ok {
+		t.Errorf("%s present with no active span: %v", telemetry.SpanIDKey, record[telemetry.SpanIDKey])
 	}
 }
 

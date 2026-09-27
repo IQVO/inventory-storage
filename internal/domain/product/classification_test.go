@@ -182,30 +182,38 @@ func TestNew_TableDriven(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sku := shared.SKU(tt.sku)
-			c, err := New(sku, tt.tags, tt.temp, tt.dot)
-			if err != tt.wantErr {
-				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
-			}
-			if tt.wantErr != nil {
-				if c != nil {
-					t.Fatalf("expected nil classification on error, got %+v", c)
-				}
-				return
-			}
-			if c == nil {
-				t.Fatalf("expected a classification, got nil")
-			}
-			if c.SKU() != sku {
-				t.Fatalf("expected SKU=%v, got %v", sku, c.SKU())
-			}
-			if c.TemperatureClass() != tt.temp {
-				t.Fatalf("expected TemperatureClass=%v, got %v", tt.temp, c.TemperatureClass())
-			}
-			if c.DOTHazardClass() != tt.dot {
-				t.Fatalf("expected DOTHazardClass=%v, got %v", tt.dot, c.DOTHazardClass())
-			}
+			runClassificationCase(t, tt.sku, tt.tags, tt.temp, tt.dot, tt.wantErr)
 		})
+	}
+}
+
+// runClassificationCase executes one New table case: the returned error must
+// match wantErr exactly, an error must return a nil classification, and a
+// success must round-trip the SKU, temperature class and DOT hazard class.
+func runClassificationCase(t *testing.T, sku string, tags []HandlingTag, temp TemperatureClass, dot DOTHazardClass, wantErr error) {
+	t.Helper()
+	s := shared.SKU(sku)
+	c, err := New(s, tags, temp, dot)
+	if err != wantErr {
+		t.Fatalf("expected error %v, got %v", wantErr, err)
+	}
+	if wantErr != nil {
+		if c != nil {
+			t.Fatalf("expected nil classification on error, got %+v", c)
+		}
+		return
+	}
+	if c == nil {
+		t.Fatalf("expected a classification, got nil")
+	}
+	if c.SKU() != s {
+		t.Fatalf("expected SKU=%v, got %v", s, c.SKU())
+	}
+	if c.TemperatureClass() != temp {
+		t.Fatalf("expected TemperatureClass=%v, got %v", temp, c.TemperatureClass())
+	}
+	if c.DOTHazardClass() != dot {
+		t.Fatalf("expected DOTHazardClass=%v, got %v", dot, c.DOTHazardClass())
 	}
 }
 

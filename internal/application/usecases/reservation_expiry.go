@@ -36,6 +36,29 @@ import (
 // published event) runs inside one atomic scope bracketed by uow (ADR
 // 0017, transactional outbox): a nil uow runs them back to back, matching
 // every other use case's atomically convention.
+// releaseAllocations returns every one of the reservation's allocated
+// quantities to its stock units, persisting each unit. It is the shared
+// body of expiry and revocation, which both give a reservation's
+// allocation back to usable stock.
+func releaseAllocations(ctx context.Context, stock ports.StockRepo, res *reservation.Reservation) error {
+	for _, alloc := range res.Allocations() {
+		unit, err := stock.FindByID(ctx, alloc.StockUnitID)
+		if err != nil {
+			return err
+		}
+		if unit == nil {
+			return ErrStockUnitNotFound
+		}
+		if err := unit.ReleaseReservation(alloc.Quantity); err != nil {
+			return err
+		}
+		if err := stock.Save(ctx, unit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func expireIfDue(ctx context.Context, uow ports.UnitOfWork, stock ports.StockRepo, reservations ports.ReservationRepo, pub ports.EventPublisher, clock ports.Clock, res *reservation.Reservation) (*reservation.Reservation, error) {
 	if res == nil || res.Status() != reservation.StatusActive {
 		return res, nil
@@ -47,20 +70,8 @@ func expireIfDue(ctx context.Context, uow ports.UnitOfWork, stock ports.StockRep
 	}
 
 	err := atomically(ctx, uow, func(ctx context.Context) error {
-		for _, alloc := range res.Allocations() {
-			unit, err := stock.FindByID(ctx, alloc.StockUnitID)
-			if err != nil {
-				return err
-			}
-			if unit == nil {
-				return ErrStockUnitNotFound
-			}
-			if err := unit.ReleaseReservation(alloc.Quantity); err != nil {
-				return err
-			}
-			if err := stock.Save(ctx, unit); err != nil {
-				return err
-			}
+		if err := releaseAllocations(ctx, stock, res); err != nil {
+			return err
 		}
 
 		if err := res.Expire(); err != nil {

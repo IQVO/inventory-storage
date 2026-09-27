@@ -46,20 +46,8 @@ func (uc *RevokeReservation) Execute(ctx context.Context, reservationID string) 
 	}
 
 	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
-		for _, alloc := range res.Allocations() {
-			unit, err := uc.Stock.FindByID(ctx, alloc.StockUnitID)
-			if err != nil {
-				return err
-			}
-			if unit == nil {
-				return ErrStockUnitNotFound
-			}
-			if err := unit.ReleaseReservation(alloc.Quantity); err != nil {
-				return err
-			}
-			if err := uc.Stock.Save(ctx, unit); err != nil {
-				return err
-			}
+		if err := releaseAllocations(ctx, uc.Stock, res); err != nil {
+			return err
 		}
 
 		if err := uc.Reservations.Save(ctx, res); err != nil {
