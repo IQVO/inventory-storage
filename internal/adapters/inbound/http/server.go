@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riandyrn/otelchi"
 	otelchimetric "github.com/riandyrn/otelchi/metric"
 
@@ -38,6 +39,17 @@ type Server struct {
 	// no-invariant repo lookup — consistent with how GetUsable is the
 	// only use case that reads without also writing.
 	Classifications ports.ProductClassificationRepo
+	// IdempotencyPool, when non-nil, wires RequireIdempotencyKey onto
+	// POST /stock/receive and POST /reservations (see idempotency.go) —
+	// this service's two true resource-creation endpoints (a StagedReceipt
+	// acknowledgment and a Reservation, both with server-generated
+	// identity). A nil pool means "no transactional Postgres backing
+	// wired" (in-memory dev/test configuration) — the idempotency
+	// middleware needs a real pgxpool.Pool to begin its own transaction,
+	// so it is simply not applied in that case, exactly this codebase's
+	// existing convention for every other optional Postgres-backed
+	// capability (UnitOfWork, the outbox relay).
+	IdempotencyPool *pgxpool.Pool
 }
 
 // DefaultServiceName labels this service's spans and metrics when the caller
@@ -95,9 +107,27 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 
 	r.Get("/healthz", s.handleHealthz)
 
-	r.Post("/stock/receive", s.handleReceiveStock)
+	// POST /stock/receive and POST /reservations are route-scoped (r.With,
+	// not r.Use) behind RequireIdempotencyKey — they are the two mutating
+	// endpoints that create a NEW resource with a server-generated id
+	// (a StagedReceipt acknowledgment, a Reservation), so a lost response
+	// and a client retry would otherwise create a duplicate. The other
+	// mutating routes act on a caller-supplied {id}/{binId}/{sku} and are
+	// lower priority for v1 (see the ADR). IdempotencyPool nil (in-memory
+	// dev/test configuration, no transactional Postgres backing) skips
+	// the middleware entirely, mirroring every other optional
+	// Postgres-backed capability's nil convention in this repo.
+	if s.IdempotencyPool != nil {
+		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/stock/receive", s.handleReceiveStock)
+	} else {
+		r.Post("/stock/receive", s.handleReceiveStock)
+	}
 	r.Post("/stock/stow", s.handleStowStock)
-	r.Post("/reservations", s.handleReserveStock)
+	if s.IdempotencyPool != nil {
+		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/reservations", s.handleReserveStock)
+	} else {
+		r.Post("/reservations", s.handleReserveStock)
+	}
 	r.Get("/reservations", s.handleGetReservationsByDemandRef)
 	r.Delete("/reservations/{id}", s.handleRevokeReservation)
 	r.Post("/reservations/{id}/confirm-pick", s.handleConfirmPick)
