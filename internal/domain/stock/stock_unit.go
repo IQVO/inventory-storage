@@ -28,10 +28,17 @@ type StockUnit struct {
 	quantity shared.Quantity
 	reserved shared.Quantity
 	state    State
+	// version is optimistic-concurrency infrastructure metadata (ADR
+	// 0018): inert, unexported, carried by the aggregate but never read
+	// or reasoned about by business logic. It exists solely so the repo
+	// can round-trip the DB-read version through Rehydrate -> mutate ->
+	// Save and detect a lost-update race on Save.
+	version int
 }
 
 // NewStockUnit stows a quantity of a SKU into a bin. Both the SKU and the
 // BinId must be present (item-scan + location-scan) or the stow is rejected.
+// A freshly created aggregate always starts at version 1 (see ADR 0018).
 func NewStockUnit(id string, sku shared.SKU, binID shared.BinId, qty shared.Quantity) (*StockUnit, error) {
 	if sku == "" || binID == "" {
 		return nil, ErrStowRequiresItemAndLocation
@@ -46,12 +53,15 @@ func NewStockUnit(id string, sku shared.SKU, binID shared.BinId, qty shared.Quan
 		quantity: qty,
 		reserved: 0,
 		state:    StateAvailable,
+		version:  1,
 	}, nil
 }
 
-// RehydrateStockUnit reconstructs a StockUnit from persisted state.
-func RehydrateStockUnit(id string, sku shared.SKU, binID shared.BinId, qty, reserved shared.Quantity, state State) *StockUnit {
-	return &StockUnit{id: id, sku: sku, binID: binID, quantity: qty, reserved: reserved, state: state}
+// RehydrateStockUnit reconstructs a StockUnit from persisted state,
+// including the row's current version (ADR 0018) so a later Save can be
+// version-guarded against a concurrent modification.
+func RehydrateStockUnit(id string, sku shared.SKU, binID shared.BinId, qty, reserved shared.Quantity, state State, version int) *StockUnit {
+	return &StockUnit{id: id, sku: sku, binID: binID, quantity: qty, reserved: reserved, state: state, version: version}
 }
 
 func (u *StockUnit) ID() string                { return u.id }
@@ -60,6 +70,11 @@ func (u *StockUnit) BinID() shared.BinId       { return u.binID }
 func (u *StockUnit) Quantity() shared.Quantity { return u.quantity }
 func (u *StockUnit) Reserved() shared.Quantity { return u.reserved }
 func (u *StockUnit) State() State              { return u.state }
+
+// Version reports the optimistic-concurrency version this aggregate was
+// loaded at (or 1 for a freshly constructed one). Infrastructure-only —
+// no business-logic method reads or mutates this (ADR 0018).
+func (u *StockUnit) Version() int { return u.version }
 
 // Usable is the portion of this unit's on-hand quantity not already reserved.
 // Unlocated or fully removed units contribute no usable quantity.

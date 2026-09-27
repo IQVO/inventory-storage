@@ -46,11 +46,15 @@ type Reservation struct {
 	status      Status
 	createdAt   time.Time
 	expiresAt   time.Time
+	// version is optimistic-concurrency infrastructure metadata (ADR
+	// 0018) — inert, never reasoned about by business logic.
+	version int
 }
 
 // New creates an Active reservation. Allocations must sum to quantity and
 // the caller (the ReserveStock use case) is responsible for having already
-// verified quantity <= usable at reserve time.
+// verified quantity <= usable at reserve time. A freshly created
+// aggregate always starts at version 1 (see ADR 0018).
 func New(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, allocations []Allocation, createdAt time.Time, timeout time.Duration) (*Reservation, error) {
 	if len(allocations) == 0 {
 		return nil, ErrNoAllocations
@@ -64,14 +68,17 @@ func New(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, 
 		status:      StatusActive,
 		createdAt:   createdAt,
 		expiresAt:   createdAt.Add(timeout),
+		version:     1,
 	}, nil
 }
 
-// Rehydrate reconstructs a Reservation from persisted state.
-func Rehydrate(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, allocations []Allocation, status Status, createdAt, expiresAt time.Time) *Reservation {
+// Rehydrate reconstructs a Reservation from persisted state, including the
+// row's current optimistic-concurrency version (ADR 0018).
+func Rehydrate(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, allocations []Allocation, status Status, createdAt, expiresAt time.Time, version int) *Reservation {
 	return &Reservation{
 		id: id, sku: sku, quantity: quantity, demandRef: demandRef,
 		allocations: allocations, status: status, createdAt: createdAt, expiresAt: expiresAt,
+		version: version,
 	}
 }
 
@@ -83,6 +90,11 @@ func (r *Reservation) Allocations() []Allocation { return r.allocations }
 func (r *Reservation) Status() Status            { return r.status }
 func (r *Reservation) CreatedAt() time.Time      { return r.createdAt }
 func (r *Reservation) ExpiresAt() time.Time      { return r.expiresAt }
+
+// Version reports the optimistic-concurrency version this aggregate was
+// loaded at (or 1 for a freshly constructed one). Infrastructure-only —
+// no business-logic method reads or mutates this (ADR 0018).
+func (r *Reservation) Version() int { return r.version }
 
 // IsExpired reports whether now is past this reservation's timeout.
 func (r *Reservation) IsExpired(now time.Time) bool {

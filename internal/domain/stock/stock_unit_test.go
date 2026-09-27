@@ -215,11 +215,14 @@ func TestStockUnit_Accessors(t *testing.T) {
 }
 
 func TestRehydrateStockUnit_ReconstructsWithoutValidation(t *testing.T) {
-	u := RehydrateStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5), mustQty(t, 2), StateReserved)
+	u := RehydrateStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5), mustQty(t, 2), StateReserved, 4)
 
 	if u.ID() != "su-1" || u.Quantity().Int() != 5 || u.Reserved().Int() != 2 || u.State() != StateReserved {
 		t.Fatalf("expected rehydrated fields to round-trip, got id=%s qty=%d reserved=%d state=%v",
 			u.ID(), u.Quantity().Int(), u.Reserved().Int(), u.State())
+	}
+	if u.Version() != 4 {
+		t.Fatalf("expected rehydrated version to round-trip, got %d", u.Version())
 	}
 }
 
@@ -241,7 +244,7 @@ func TestStockUnit_Usable_RemovedState_IsZero(t *testing.T) {
 // Reserve path enforces reserved <= on-hand) reports usable 0, not a
 // negative value.
 func TestStockUnit_Usable_ReservedExceedsOnHand_IsZero(t *testing.T) {
-	u := RehydrateStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5), mustQty(t, 7), StateReserved)
+	u := RehydrateStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5), mustQty(t, 7), StateReserved, 1)
 
 	if got := u.Usable().Int(); got != 0 {
 		t.Fatalf("expected usable=0 when reserved exceeds on-hand, got %d", got)
@@ -249,7 +252,7 @@ func TestStockUnit_Usable_ReservedExceedsOnHand_IsZero(t *testing.T) {
 }
 
 func TestStockUnit_Pick_ExceedsOnHandQuantity_Rejected(t *testing.T) {
-	u := RehydrateStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 3), mustQty(t, 5), StateReserved)
+	u := RehydrateStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 3), mustQty(t, 5), StateReserved, 1)
 
 	if err := u.Pick(mustQty(t, 5)); err != ErrInsufficientReserved {
 		t.Fatalf("expected ErrInsufficientReserved, got %v", err)

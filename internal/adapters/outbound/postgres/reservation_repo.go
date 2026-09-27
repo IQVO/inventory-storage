@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
@@ -26,6 +27,14 @@ func NewReservationRepo(pool *pgxpool.Pool) *ReservationRepo {
 // reservation write, the stock-unit writes, and the outbox insert all
 // commit together; called standalone it opens and owns its own
 // transaction, same as before.
+//
+// The reservation row itself is version-guarded (ADR 0018, optimistic
+// concurrency) — see StockRepo.Save's doc comment for the verified
+// single-statement ON CONFLICT ... WHERE RowsAffected() semantics this
+// relies on. A stale-version write returns ErrConcurrentModification
+// before ever touching reservation_allocations, so a lost-update race on
+// the reservation row can never leave allocations partially written
+// against a version that lost.
 func (r *ReservationRepo) Save(ctx context.Context, res *reservation.Reservation) error {
 	tx, commit, rollback, err := beginOrJoin(ctx, r.pool)
 	if err != nil {
@@ -33,13 +42,19 @@ func (r *ReservationRepo) Save(ctx context.Context, res *reservation.Reservation
 	}
 	defer func() { _ = rollback(ctx) }()
 
-	_, err = tx.Exec(ctx, `
-		INSERT INTO reservations (id, sku, quantity, demand_ref, status, created_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status
-	`, res.ID(), res.SKU().String(), res.Quantity().Int(), res.DemandRef(), string(res.Status()), res.CreatedAt(), res.ExpiresAt())
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO reservations (id, sku, quantity, demand_ref, status, created_at, expires_at, version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (id) DO UPDATE SET
+			status = EXCLUDED.status,
+			version = reservations.version + 1
+		WHERE reservations.version = $9
+	`, res.ID(), res.SKU().String(), res.Quantity().Int(), res.DemandRef(), string(res.Status()), res.CreatedAt(), res.ExpiresAt(), res.Version(), res.Version())
 	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return usecases.ErrConcurrentModification
 	}
 
 	for _, alloc := range res.Allocations() {
@@ -58,13 +73,13 @@ func (r *ReservationRepo) Save(ctx context.Context, res *reservation.Reservation
 
 func (r *ReservationRepo) FindByID(ctx context.Context, id string) (*reservation.Reservation, error) {
 	var sku, demandRef, status string
-	var quantity int
+	var quantity, version int
 	var createdAt, expiresAt time.Time
 	q := querierFrom(ctx, r.pool)
 	err := q.QueryRow(ctx, `
-		SELECT sku, quantity, demand_ref, status, created_at, expires_at
+		SELECT sku, quantity, demand_ref, status, created_at, expires_at, version
 		FROM reservations WHERE id = $1
-	`, id).Scan(&sku, &quantity, &demandRef, &status, &createdAt, &expiresAt)
+	`, id).Scan(&sku, &quantity, &demandRef, &status, &createdAt, &expiresAt, &version)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -94,7 +109,7 @@ func (r *ReservationRepo) FindByID(ctx context.Context, id string) (*reservation
 
 	skuVO, _ := shared.NewSKU(sku)
 	qty, _ := shared.NewQuantity(quantity)
-	return reservation.Rehydrate(id, skuVO, qty, demandRef, allocations, reservation.Status(status), createdAt, expiresAt), nil
+	return reservation.Rehydrate(id, skuVO, qty, demandRef, allocations, reservation.Status(status), createdAt, expiresAt, version), nil
 }
 
 func (r *ReservationRepo) NextID(_ context.Context) (string, error) {
@@ -109,7 +124,7 @@ func (r *ReservationRepo) NextID(_ context.Context) (string, error) {
 func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string) ([]*reservation.Reservation, error) {
 	q := querierFrom(ctx, r.pool)
 	rows, err := q.Query(ctx, `
-		SELECT id, sku, quantity, status, created_at, expires_at
+		SELECT id, sku, quantity, status, created_at, expires_at, version
 		FROM reservations WHERE demand_ref = $1
 		ORDER BY created_at ASC
 	`, demandRef)
@@ -123,11 +138,12 @@ func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string)
 		sku, status          string
 		quantity             int
 		createdAt, expiresAt time.Time
+		version              int
 	}
 	var bases []base
 	for rows.Next() {
 		var b base
-		if err := rows.Scan(&b.id, &b.sku, &b.quantity, &b.status, &b.createdAt, &b.expiresAt); err != nil {
+		if err := rows.Scan(&b.id, &b.sku, &b.quantity, &b.status, &b.createdAt, &b.expiresAt, &b.version); err != nil {
 			return nil, err
 		}
 		bases = append(bases, b)
@@ -162,7 +178,7 @@ func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string)
 
 		skuVO, _ := shared.NewSKU(b.sku)
 		qty, _ := shared.NewQuantity(b.quantity)
-		results = append(results, reservation.Rehydrate(b.id, skuVO, qty, demandRef, allocations, reservation.Status(b.status), b.createdAt, b.expiresAt))
+		results = append(results, reservation.Rehydrate(b.id, skuVO, qty, demandRef, allocations, reservation.Status(b.status), b.createdAt, b.expiresAt, b.version))
 	}
 
 	return results, nil
