@@ -75,7 +75,7 @@ func run() error {
 	migrationsPath := getenv("MIGRATIONS_PATH", "migrations")
 	eventPublisher := getenv("EVENT_PUBLISHER", "log")
 
-	stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, uow, closeAdapters, err := buildAdapters(context.Background(), databaseURL, migrationsPath, eventPublisher, logger)
+	stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, uow, idempotencyPool, closeAdapters, err := buildAdapters(context.Background(), databaseURL, migrationsPath, eventPublisher, logger)
 	if err != nil {
 		return err
 	}
@@ -125,6 +125,12 @@ func run() error {
 		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
 		ClassifyProduct:            &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
 		Classifications:            classificationRepo,
+		// IdempotencyPool wires RequireIdempotencyKey onto POST
+		// /stock/receive and POST /reservations (see
+		// inboundhttp.NewRouter). nil (in-memory/no-DATABASE_URL
+		// configuration) leaves those routes unprotected, mirroring
+		// every other optional Postgres-backed capability here.
+		IdempotencyPool: idempotencyPool,
 	}
 
 	httpServer := &http.Server{
@@ -182,8 +188,16 @@ func newLogger(level string) *slog.Logger {
 // choice ("log"), or can be switched to the Kafka integration-events
 // publisher via eventPublisher="kafka" (EVENT_PUBLISHER env), independent of
 // which repos are in use.
+// buildAdapters' *pgxpool.Pool return value (named idempotencyPool at the
+// call site) is the same pool as uow's — handed out separately, not
+// derived from uow, because the idempotency middleware needs a real
+// *pgxpool.Pool to begin its own transaction directly (see
+// inboundhttp.Server.IdempotencyPool's doc comment) and ports.UnitOfWork
+// is an interface with no way to recover the concrete pool from it. nil
+// in the in-memory (no DATABASE_URL) configuration, exactly mirroring
+// uow's own nil-means-unconfigured convention.
 func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublisher string, logger *slog.Logger) (
-	ports.StockRepo, ports.LocationRepo, ports.ReservationRepo, ports.ProductClassificationRepo, ports.EventPublisher, ports.UnitOfWork, func(), error,
+	ports.StockRepo, ports.LocationRepo, ports.ReservationRepo, ports.ProductClassificationRepo, ports.EventPublisher, ports.UnitOfWork, *pgxpool.Pool, func(), error,
 ) {
 	noop := func() {}
 
@@ -215,12 +229,12 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 		if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
 			return postgres.RunMigrations(databaseURL, migrationsPath)
 		}); err != nil {
-			return nil, nil, nil, nil, nil, nil, noop, err
+			return nil, nil, nil, nil, nil, nil, nil, noop, err
 		}
 
 		p, err := postgres.NewPool(ctx, databaseURL)
 		if err != nil {
-			return nil, nil, nil, nil, nil, nil, noop, err
+			return nil, nil, nil, nil, nil, nil, nil, noop, err
 		}
 		pool = p
 		// ParseConfig/NewWithConfig do not themselves establish a
@@ -230,7 +244,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 			return pool.Ping(ctx)
 		}); err != nil {
 			pool.Close()
-			return nil, nil, nil, nil, nil, nil, noop, err
+			return nil, nil, nil, nil, nil, nil, nil, noop, err
 		}
 
 		stockRepo = postgres.NewStockRepo(pool)
@@ -250,7 +264,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 	}
 
 	if !strings.EqualFold(eventPublisher, "kafka") {
-		return stockRepo, locationRepo, reservationRepo, classificationRepo, defaultPub, uow, closeRepos, nil
+		return stockRepo, locationRepo, reservationRepo, classificationRepo, defaultPub, uow, pool, closeRepos, nil
 	}
 
 	brokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
@@ -273,7 +287,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 				logger.Error("error closing kafka analytics writer", "error", err)
 			}
 		}
-		return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, nil, closeAll, nil
+		return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, nil, pool, closeAll, nil
 	}
 
 	// Transactional outbox (ADR 0017): the use cases publish through
@@ -319,7 +333,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 		closeRepos()
 	}
 
-	return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, uow, closeAll, nil
+	return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, uow, pool, closeAll, nil
 }
 
 // buildLocationLookup selects the outbound LocationClassificationLookup
