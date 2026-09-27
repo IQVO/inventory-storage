@@ -378,12 +378,13 @@ func lookup(t *testing.T, c *facilitycache.Consumer, binID string) product.SlotA
 	return got
 }
 
-// The regression test for the CrashLoopBackOff this adapter caused on its
-// first real rollout: constructing a consumer against a topic that does NOT
-// EXIST must succeed, not error. Reproduced here against a real broker,
-// because the failure came from the broker's actual
-// UnknownTopicOrPartition response -- no unit test with a fake reader ever
-// reaches that code path.
+// TestConsumerToleratesAMissingTopic is the regression test for the
+// CrashLoopBackOff this adapter caused on its first real rollout:
+// constructing a consumer against a topic that does NOT EXIST must
+// succeed, not error. Reproduced here against a real broker, because the
+// failure came from the broker's actual UnknownTopicOrPartition
+// response -- no unit test with a fake reader ever reaches that code
+// path.
 func TestConsumerToleratesAMissingTopic(t *testing.T) {
 	brokerList := startBroker(t)
 	topic := uniqueTopic(t) // deliberately NEVER created
@@ -400,4 +401,92 @@ func TestConsumerToleratesAMissingTopic(t *testing.T) {
 	if got := lookup(t, c, "WH1-STOR-AMB-A07-03-02-B"); got.Known {
 		t.Fatalf("expected fail-open Known=false against a missing topic, got %+v", got)
 	}
+}
+
+// TestConsumer_MalformedMessage_GoesToDeadLetterTopicWithoutBlockingPartition
+// is the ADR-0020 §DLQ acceptance test for this consumer's simpler (no
+// retry, see dlqTopicSuffix's doc comment for why) DLQ path: a message
+// apply() cannot parse — here, a ZoneRegistered event with an empty
+// zoneId — is dead-lettered to topic+".dlq" with the raw payload and
+// error headers, offsets still advance past it (readiness/the cache keep
+// moving), and a well-formed message published right after is applied
+// normally, proving the malformed one never blocked the partition.
+func TestConsumer_MalformedMessage_GoesToDeadLetterTopicWithoutBlockingPartition(t *testing.T) {
+	brokerList := startBroker(t)
+	topic := uniqueTopic(t)
+	dlqTopic := topic + ".dlq"
+	createTopic(t, brokerList, topic)
+	createTopic(t, brokerList, dlqTopic)
+
+	c := newConsumerOnTopic(t, brokerList, topic)
+	defer func() { _ = c.Close() }()
+	runInBackground(t, c)
+	waitReady(t, c, facilitycache.WaitReadyTimeout)
+
+	// Start reading the DLQ topic BEFORE publishing, so the malformed
+	// message's eventual dead-letter write is never missed to a race.
+	dlqReader := kafkago.NewReader(kafkago.ReaderConfig{
+		Brokers:     brokerList,
+		Topic:       dlqTopic,
+		GroupID:     fmt.Sprintf("dlq-reader-%d", time.Now().UnixNano()),
+		StartOffset: kafkago.FirstOffset,
+	})
+	defer func() { _ = dlqReader.Close() }()
+
+	poisonKey := fmt.Sprintf("poison-zone-%d", time.Now().UnixNano())
+	publish(t, brokerList, topic, kafkago.Message{
+		Key: []byte(poisonKey),
+		Value: envelopeBytes(t, "zone", "ZoneRegistered", map[string]any{
+			"zoneId": "", "temperatureClass": "Ambient", "hazmat": false,
+		}),
+	})
+
+	dlqCtx, dlqCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer dlqCancel()
+	dlqMsg, err := dlqReader.ReadMessage(dlqCtx)
+	if err != nil {
+		t.Fatalf("read DLQ message: %v", err)
+	}
+	if string(dlqMsg.Key) != poisonKey {
+		t.Errorf("DLQ message key = %q, want %q (raw key preserved)", string(dlqMsg.Key), poisonKey)
+	}
+	if headerValue(dlqMsg.Headers, "x-dlq-source-topic") != topic {
+		t.Errorf("DLQ message missing/incorrect x-dlq-source-topic header")
+	}
+	if headerValue(dlqMsg.Headers, "x-dlq-error") == "" {
+		t.Error("DLQ message missing x-dlq-error header with failure context")
+	}
+	if headerValue(dlqMsg.Headers, "x-dlq-failed-at") == "" {
+		t.Error("DLQ message missing x-dlq-failed-at header")
+	}
+
+	// A well-formed message published right after must still be applied
+	// without delay — proving the malformed message never blocked the
+	// partition.
+	publish(t, brokerList, topic,
+		zoneMsg(t, "WH1-STOR-AMB", "Ambient", false),
+		slotMsg(t, "WH1-STOR-AMB-A07-03-02-B", "WH1-STOR-AMB"),
+	)
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := lookup(t, c, "WH1-STOR-AMB-A07-03-02-B"); got.Known {
+			if got.TemperatureClass != product.Ambient {
+				t.Fatalf("got %+v, want TemperatureClass=Ambient", got)
+			}
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatal("well-formed message published after the poison one was never applied — partition appears blocked")
+}
+
+// headerValue returns the string value of the first header named key,
+// or "" if absent.
+func headerValue(headers []kafkago.Header, key string) string {
+	for _, h := range headers {
+		if h.Key == key {
+			return string(h.Value)
+		}
+	}
+	return ""
 }
