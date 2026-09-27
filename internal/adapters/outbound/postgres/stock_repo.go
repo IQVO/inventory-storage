@@ -21,7 +21,7 @@ func NewStockRepo(pool *pgxpool.Pool) *StockRepo {
 }
 
 func (r *StockRepo) Save(ctx context.Context, unit *stock.StockUnit) error {
-	_, err := r.pool.Exec(ctx, `
+	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
 		INSERT INTO stock_units (id, sku, bin_id, quantity, reserved, state)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (id) DO UPDATE SET
@@ -32,7 +32,7 @@ func (r *StockRepo) Save(ctx context.Context, unit *stock.StockUnit) error {
 }
 
 func (r *StockRepo) FindByID(ctx context.Context, id string) (*stock.StockUnit, error) {
-	row := r.pool.QueryRow(ctx, `SELECT id, sku, bin_id, quantity, reserved, state FROM stock_units WHERE id = $1`, id)
+	row := querierFrom(ctx, r.pool).QueryRow(ctx, `SELECT id, sku, bin_id, quantity, reserved, state FROM stock_units WHERE id = $1`, id)
 	unit, err := scanStockUnit(row)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -41,7 +41,7 @@ func (r *StockRepo) FindByID(ctx context.Context, id string) (*stock.StockUnit, 
 }
 
 func (r *StockRepo) FindBySKU(ctx context.Context, sku shared.SKU) ([]*stock.StockUnit, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id, sku, bin_id, quantity, reserved, state FROM stock_units WHERE sku = $1`, sku.String())
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `SELECT id, sku, bin_id, quantity, reserved, state FROM stock_units WHERE sku = $1`, sku.String())
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (r *StockRepo) FindBySKU(ctx context.Context, sku shared.SKU) ([]*stock.Sto
 }
 
 func (r *StockRepo) FindByBin(ctx context.Context, binID shared.BinId) ([]*stock.StockUnit, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id, sku, bin_id, quantity, reserved, state FROM stock_units WHERE bin_id = $1`, binID.String())
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `SELECT id, sku, bin_id, quantity, reserved, state FROM stock_units WHERE bin_id = $1`, binID.String())
 	if err != nil {
 		return nil, err
 	}

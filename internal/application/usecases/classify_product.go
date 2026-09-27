@@ -17,6 +17,9 @@ type ClassifyProduct struct {
 	Classifications ports.ProductClassificationRepo
 	Events          ports.EventPublisher
 	Clock           ports.Clock
+	// UnitOfWork brackets Save and Publish atomically (ADR 0017). Optional:
+	// nil means "no transactional backing".
+	UnitOfWork ports.UnitOfWork
 }
 
 // Execute validates and persists a ProductClassification for sku, and
@@ -30,12 +33,14 @@ func (uc *ClassifyProduct) Execute(ctx context.Context, sku shared.SKU, tags []p
 		return nil, err
 	}
 
-	if err := uc.Classifications.Save(ctx, c); err != nil {
-		return nil, err
-	}
-
 	now := uc.Clock.Now()
-	if err := uc.Events.Publish(ctx, product.NewProductClassified(c, now)); err != nil {
+	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		if err := uc.Classifications.Save(ctx, c); err != nil {
+			return err
+		}
+		return uc.Events.Publish(ctx, product.NewProductClassified(c, now))
+	})
+	if err != nil {
 		return nil, err
 	}
 

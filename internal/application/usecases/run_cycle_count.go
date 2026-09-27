@@ -24,6 +24,9 @@ type RunCycleCount struct {
 	Stock  ports.StockRepo
 	Events ports.EventPublisher
 	Clock  ports.Clock
+	// UnitOfWork brackets every Save/Publish this use case makes
+	// atomically (ADR 0017). Optional: nil means "no transactional backing".
+	UnitOfWork ports.UnitOfWork
 }
 
 func (uc *RunCycleCount) Execute(ctx context.Context, binID shared.BinId, countedQty shared.Quantity) (CycleCountResult, error) {
@@ -43,53 +46,64 @@ func (uc *RunCycleCount) Execute(ctx context.Context, binID shared.BinId, counte
 	}
 
 	now := uc.Clock.Now()
+	var result CycleCountResult
 
-	if countedQty == systemQty {
-		if err := uc.Events.Publish(ctx, shared.NewCycleCountCompleted(now, binID, countedQty, systemQty, false)); err != nil {
-			return CycleCountResult{}, err
+	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		if countedQty == systemQty {
+			if err := uc.Events.Publish(ctx, shared.NewCycleCountCompleted(now, binID, countedQty, systemQty, false)); err != nil {
+				return err
+			}
+			result = CycleCountResult{BinID: binID, CountedQty: countedQty, SystemQty: systemQty, Discrepancy: false}
+			return nil
 		}
-		return CycleCountResult{BinID: binID, CountedQty: countedQty, SystemQty: systemQty, Discrepancy: false}, nil
-	}
 
-	if err := uc.Events.Publish(ctx, shared.NewDiscrepancyDetected(now, binID, countedQty, systemQty)); err != nil {
-		return CycleCountResult{}, err
-	}
+		if err := uc.Events.Publish(ctx, shared.NewDiscrepancyDetected(now, binID, countedQty, systemQty)); err != nil {
+			return err
+		}
 
-	if countedQty.GreaterThan(systemQty) {
-		// Overage: more physically present than recorded. Reconciling this
-		// upward requires a separate receiving/audit process; the count is
-		// still reported as a discrepancy for that process to pick up.
+		if countedQty.GreaterThan(systemQty) {
+			// Overage: more physically present than recorded. Reconciling
+			// this upward requires a separate receiving/audit process; the
+			// count is still reported as a discrepancy for that process to
+			// pick up.
+			if err := uc.Events.Publish(ctx, shared.NewCycleCountCompleted(now, binID, countedQty, systemQty, true)); err != nil {
+				return err
+			}
+			result = CycleCountResult{BinID: binID, CountedQty: countedQty, SystemQty: systemQty, Discrepancy: true}
+			return nil
+		}
+
+		// Simplification: a unit touched by the shortfall is marked fully
+		// Unlocated (rather than split across located/lost portions),
+		// leaving finer-grained reconciliation to a follow-up stow/count.
+		shortfall, _ := systemQty.Sub(countedQty)
+		for _, unit := range locatable {
+			if shortfall.Int() == 0 {
+				break
+			}
+			take := unit.Quantity()
+			if !shortfall.GreaterThan(take) {
+				take = shortfall
+			}
+			unit.MarkUnlocated()
+			if err := uc.Stock.Save(ctx, unit); err != nil {
+				return err
+			}
+			if err := uc.Events.Publish(ctx, shared.NewItemUnlocated(now, unit.ID(), unit.SKU(), binID, take)); err != nil {
+				return err
+			}
+			shortfall, _ = shortfall.Sub(take)
+		}
+
 		if err := uc.Events.Publish(ctx, shared.NewCycleCountCompleted(now, binID, countedQty, systemQty, true)); err != nil {
-			return CycleCountResult{}, err
+			return err
 		}
-		return CycleCountResult{BinID: binID, CountedQty: countedQty, SystemQty: systemQty, Discrepancy: true}, nil
-	}
-
-	// Simplification: a unit touched by the shortfall is marked fully
-	// Unlocated (rather than split across located/lost portions), leaving
-	// finer-grained reconciliation to a follow-up stow/count.
-	shortfall, _ := systemQty.Sub(countedQty)
-	for _, unit := range locatable {
-		if shortfall.Int() == 0 {
-			break
-		}
-		take := unit.Quantity()
-		if !shortfall.GreaterThan(take) {
-			take = shortfall
-		}
-		unit.MarkUnlocated()
-		if err := uc.Stock.Save(ctx, unit); err != nil {
-			return CycleCountResult{}, err
-		}
-		if err := uc.Events.Publish(ctx, shared.NewItemUnlocated(now, unit.ID(), unit.SKU(), binID, take)); err != nil {
-			return CycleCountResult{}, err
-		}
-		shortfall, _ = shortfall.Sub(take)
-	}
-
-	if err := uc.Events.Publish(ctx, shared.NewCycleCountCompleted(now, binID, countedQty, systemQty, true)); err != nil {
+		result = CycleCountResult{BinID: binID, CountedQty: countedQty, SystemQty: systemQty, Discrepancy: true}
+		return nil
+	})
+	if err != nil {
 		return CycleCountResult{}, err
 	}
 
-	return CycleCountResult{BinID: binID, CountedQty: countedQty, SystemQty: systemQty, Discrepancy: true}, nil
+	return result, nil
 }

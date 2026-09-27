@@ -45,9 +45,10 @@ type AnalyticsEnvelope struct {
 
 // AnalyticsPublisher publishes every inventory-storage domain event onto
 // AnalyticsTopic as an AnalyticsEnvelope. It satisfies ports.EventPublisher
-// and is a SEPARATE adapter from Publisher: the integration publisher
-// (publisher.go) forwards only StockReserved and ReservationRevoked and is
-// left untouched.
+// (direct publish) and kafka.Encoder (used by postgres.OutboxPublisher to
+// enqueue the wire-ready message inside a transaction — ADR 0017), and is a
+// SEPARATE adapter from Publisher: the integration publisher (publisher.go)
+// forwards only StockReserved and ReservationRevoked and is left untouched.
 //
 // Reservation-lifecycle events (ReservationExpired, ReservationRevoked) carry
 // only a reservation id in the domain event, so they are enriched with the
@@ -77,14 +78,16 @@ func NewAnalyticsPublisher(brokers []string, reservations ports.ReservationRepo,
 	}
 }
 
-// Publish emits event onto AnalyticsTopic. An event with no analytics payload
-// (a type outside the analytics contract, e.g. LocationRecorded) is skipped
-// rather than erroring, so the caller can hand it the full event stream
-// indiscriminately.
-func (p *AnalyticsPublisher) Publish(ctx context.Context, event shared.DomainEvent) error {
+// Encode maps event onto its analytics wire form. It returns an empty
+// slice (never an error) for an event outside the analytics contract
+// (e.g. LocationRecorded), so a caller — the outbox publisher included —
+// can hand it the full event stream indiscriminately. Trace headers are
+// injected from whatever span is active on ctx, same convention as the
+// integration Publisher's Encode.
+func (p *AnalyticsPublisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Encoded, error) {
 	eventType, key, data, ok := p.marshalData(ctx, event)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	env := AnalyticsEnvelope{
 		EventId:       p.newID(),
@@ -96,9 +99,58 @@ func (p *AnalyticsPublisher) Publish(ctx context.Context, event shared.DomainEve
 	}
 	payload, err := json.Marshal(env)
 	if err != nil {
-		return fmt.Errorf("kafka: marshal analytics envelope: %w", err)
+		return nil, fmt.Errorf("kafka: marshal analytics envelope: %w", err)
 	}
-	return p.write(ctx, eventType, key, payload)
+
+	headers := []kafkago.Header{}
+	otel.GetTextMapPropagator().Inject(ctx, headerCarrier{headers: &headers})
+
+	return []Encoded{{
+		Topic:     AnalyticsTopic,
+		EventType: eventType,
+		Key:       []byte(key),
+		Value:     payload,
+		Headers:   headers,
+	}}, nil
+}
+
+// Compile-time assertion that AnalyticsPublisher satisfies the outbox's
+// Encoder port.
+var _ Encoder = (*AnalyticsPublisher)(nil)
+
+// Publish emits event onto AnalyticsTopic directly (no outbox). An event
+// with no analytics payload is skipped rather than erroring (see Encode).
+func (p *AnalyticsPublisher) Publish(ctx context.Context, event shared.DomainEvent) error {
+	ctx, span := otel.Tracer(analyticsTracerName).Start(ctx,
+		"kafka.publish "+AnalyticsTopic,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			semconv.MessagingSystemKafka,
+			semconv.MessagingDestinationName(AnalyticsTopic),
+			semconv.MessagingOperationName("publish"),
+		),
+	)
+	defer span.End()
+
+	encoded, err := p.Encode(ctx, event)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	if len(encoded) == 0 {
+		return nil
+	}
+
+	for _, enc := range encoded {
+		msg := kafkago.Message{Key: enc.Key, Value: enc.Value, Headers: enc.Headers}
+		if err := p.Writer.WriteMessages(ctx, msg); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return fmt.Errorf("kafka: publish %s analytics event: %w", enc.EventType, err)
+		}
+	}
+	return nil
 }
 
 // newID mints an envelope event id, defaulting to a random UUID when NewId is
@@ -127,7 +179,7 @@ func (p *AnalyticsPublisher) reservationSKU(ctx context.Context, reservationID s
 
 // marshalData maps a domain event to its analytics event_type, aggregate-id
 // message key, and snake_case JSON payload. The bool return is false for an
-// event type outside the analytics contract, so Publish can skip it.
+// event type outside the analytics contract, so callers can skip it.
 func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEvent) (eventType, key string, data json.RawMessage, ok bool) {
 	switch ev := e.(type) {
 	case shared.StockReceived:
@@ -198,33 +250,6 @@ func mustMarshal(v any) json.RawMessage {
 		panic(fmt.Sprintf("kafka: marshal analytics data: %v", err))
 	}
 	return b
-}
-
-// write publishes one already-marshalled envelope inside a
-// "kafka.publish <topic>" producer span, injecting that span's context into
-// the message headers so the projector's consume span becomes its child.
-func (p *AnalyticsPublisher) write(ctx context.Context, eventType, key string, payload []byte) error {
-	ctx, span := otel.Tracer(analyticsTracerName).Start(ctx,
-		"kafka.publish "+AnalyticsTopic,
-		trace.WithSpanKind(trace.SpanKindProducer),
-		trace.WithAttributes(
-			semconv.MessagingSystemKafka,
-			semconv.MessagingDestinationName(AnalyticsTopic),
-			semconv.MessagingOperationName("publish"),
-		),
-	)
-	defer span.End()
-
-	headers := []kafkago.Header{}
-	otel.GetTextMapPropagator().Inject(ctx, headerCarrier{headers: &headers})
-
-	msg := kafkago.Message{Key: []byte(key), Value: payload, Headers: headers}
-	if err := p.Writer.WriteMessages(ctx, msg); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("kafka: publish %s analytics event: %w", eventType, err)
-	}
-	return nil
 }
 
 // Close releases the underlying Kafka writer.
