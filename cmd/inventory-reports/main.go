@@ -19,6 +19,7 @@ import (
 
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/analyticsstore"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/bootretry"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/telemetry"
 )
 
@@ -62,11 +63,24 @@ func run() error {
 
 	// Read-only pool: even a bug in the reader cannot mutate the read model, on
 	// top of the read-only database role ANALYTICS_DATABASE_URL should use.
-	pool, err := analyticsstore.NewReadOnlyPool(context.Background(), analyticsURL)
+	ctx := context.Background()
+	pool, err := analyticsstore.NewReadOnlyPool(ctx, analyticsURL)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
+	// Retried: this fleet's Istio native sidecars reset EVERY pod's first
+	// outbound TCP dial ~10s after the app starts
+	// (holdApplicationUntilProxyStarts is a no-op for native sidecars).
+	// ParseConfig/NewWithConfig do not themselves establish a connection,
+	// so without this the first-dial reset would surface inside the first
+	// served request instead of at boot, and a single attempt would turn
+	// that transient condition into CrashLoopBackOff.
+	if err := bootretry.Retry(ctx, logger, "ping analytics database", func() error {
+		return pool.Ping(ctx)
+	}); err != nil {
+		return err
+	}
 	if err := analyticsstore.RecordPoolStats(pool); err != nil {
 		logger.Error("analytics pgxpool metrics unavailable", "error", err)
 	}
