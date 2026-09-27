@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/bootretry"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
@@ -73,7 +75,7 @@ func run() error {
 	migrationsPath := getenv("MIGRATIONS_PATH", "migrations")
 	eventPublisher := getenv("EVENT_PUBLISHER", "log")
 
-	stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, closeAdapters, err := buildAdapters(context.Background(), databaseURL, migrationsPath, eventPublisher, logger)
+	stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, uow, closeAdapters, err := buildAdapters(context.Background(), databaseURL, migrationsPath, eventPublisher, logger)
 	if err != nil {
 		return err
 	}
@@ -110,18 +112,18 @@ func run() error {
 	defer closeLocationLookup()
 
 	server := &inboundhttp.Server{
-		ReceiveStock: &usecases.ReceiveStock{Events: publisher, Clock: clock},
+		ReceiveStock: &usecases.ReceiveStock{Events: publisher, Clock: clock, UnitOfWork: uow},
 		StowStock: &usecases.StowStock{
 			Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
-			Classifications: classificationRepo, LocationLookup: locationLookup,
+			Classifications: classificationRepo, LocationLookup: locationLookup, UnitOfWork: uow,
 		},
-		ReserveStock:               &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics},
-		RevokeReservation:          &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics},
-		ConfirmPick:                &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
+		ReserveStock:               &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow},
+		RevokeReservation:          &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow},
+		ConfirmPick:                &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
 		GetUsable:                  &usecases.GetUsable{Stock: stockRepo},
-		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
-		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
-		ClassifyProduct:            &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
+		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
+		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
+		ClassifyProduct:            &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
 		Classifications:            classificationRepo,
 	}
 
@@ -181,7 +183,7 @@ func newLogger(level string) *slog.Logger {
 // publisher via eventPublisher="kafka" (EVENT_PUBLISHER env), independent of
 // which repos are in use.
 func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublisher string, logger *slog.Logger) (
-	ports.StockRepo, ports.LocationRepo, ports.ReservationRepo, ports.ProductClassificationRepo, ports.EventPublisher, func(), error,
+	ports.StockRepo, ports.LocationRepo, ports.ReservationRepo, ports.ProductClassificationRepo, ports.EventPublisher, ports.UnitOfWork, func(), error,
 ) {
 	noop := func() {}
 
@@ -191,6 +193,8 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 		reservationRepo    ports.ReservationRepo
 		classificationRepo ports.ProductClassificationRepo
 		defaultPub         ports.EventPublisher
+		uow                ports.UnitOfWork // nil (in-memory mode): atomically() runs its fn directly.
+		pool               *pgxpool.Pool
 		closeRepos         = noop
 	)
 
@@ -211,13 +215,14 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 		if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
 			return postgres.RunMigrations(databaseURL, migrationsPath)
 		}); err != nil {
-			return nil, nil, nil, nil, nil, noop, err
+			return nil, nil, nil, nil, nil, nil, noop, err
 		}
 
-		pool, err := postgres.NewPool(ctx, databaseURL)
+		p, err := postgres.NewPool(ctx, databaseURL)
 		if err != nil {
-			return nil, nil, nil, nil, nil, noop, err
+			return nil, nil, nil, nil, nil, nil, noop, err
 		}
+		pool = p
 		// ParseConfig/NewWithConfig do not themselves establish a
 		// connection, so without this the first-dial reset would surface
 		// inside the first real request instead of at boot.
@@ -225,37 +230,86 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 			return pool.Ping(ctx)
 		}); err != nil {
 			pool.Close()
-			return nil, nil, nil, nil, nil, noop, err
+			return nil, nil, nil, nil, nil, nil, noop, err
 		}
 
 		stockRepo = postgres.NewStockRepo(pool)
 		locationRepo = postgres.NewLocationRepo(pool)
 		reservationRepo = postgres.NewReservationRepo(pool)
 		classificationRepo = postgres.NewProductClassificationRepo(pool)
-		defaultPub = postgres.NewEventPublisher(pool)
+		// UnitOfWork brackets every use case's Save(s) + Publish(es) in
+		// one Postgres transaction (ADR 0017). It is safe to hand out
+		// even when eventPublisher="log" below: OutboxPublisher is only
+		// ever constructed in the eventPublisher="kafka" branch, so a
+		// non-kafka run's atomically() calls still just wrap the
+		// existing repo writes (still one transaction, still fine) with
+		// no outbox row involved.
+		uow = postgres.NewUnitOfWork(pool)
+		defaultPub = events.NewLogPublisher(logger)
 		closeRepos = pool.Close
 	}
 
 	if !strings.EqualFold(eventPublisher, "kafka") {
-		return stockRepo, locationRepo, reservationRepo, classificationRepo, defaultPub, closeRepos, nil
+		return stockRepo, locationRepo, reservationRepo, classificationRepo, defaultPub, uow, closeRepos, nil
 	}
 
 	brokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
 	writer := kafkaadapter.NewWriter(brokers...)
 	integrationPub := kafkaadapter.NewPublisher(writer, reservationRepo)
-
-	// Fan-out: the same domain event is forwarded to BOTH the integration
-	// topic (via the untouched integration Publisher) AND the dedicated
-	// analytics topic (via a separate AnalyticsPublisher), behind the single
-	// ports.EventPublisher the use cases depend on. The integration contract
-	// (warehouse.inventory.events) is unchanged; the analytics stream
-	// (warehouse.inventory.analytics) evolves independently (ADR-0011).
 	analyticsPub := kafkaadapter.NewAnalyticsPublisher(brokers, reservationRepo, nil)
-	publisher := events.NewMultiPublisher(integrationPub, analyticsPub)
-	logger.Info("event publisher configured", "publisher", "kafka",
+
+	if pool == nil {
+		// In-memory repos with EVENT_PUBLISHER=kafka: no Postgres, so no
+		// transactional outbox is possible — publish straight to Kafka,
+		// same as before ADR 0017.
+		publisher := events.NewMultiPublisher(integrationPub, analyticsPub)
+		logger.Info("event publisher configured", "publisher", "kafka (direct, no outbox)",
+			"integration_topic", kafkaadapter.Topic, "analytics_topic", kafkaadapter.AnalyticsTopic, "brokers", brokers)
+		closeAll := func() {
+			if err := writer.Close(); err != nil {
+				logger.Error("error closing kafka integration writer", "error", err)
+			}
+			if err := analyticsPub.Close(); err != nil {
+				logger.Error("error closing kafka analytics writer", "error", err)
+			}
+		}
+		return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, nil, closeAll, nil
+	}
+
+	// Transactional outbox (ADR 0017): the use cases publish through
+	// OutboxPublisher, which — running inside the UnitOfWork transaction
+	// above — inserts one outbox_events row per (event, topic) instead of
+	// calling Kafka directly, so the aggregate write and the enqueued
+	// event(s) commit atomically. A background OutboxRelay then drains
+	// outbox_events onto both topics via a single RelaySink, preserving
+	// the same dual-topic fan-out the direct MultiPublisher performed.
+	publisher := postgres.NewOutboxPublisher(pool, integrationPub, analyticsPub)
+	logger.Info("event publisher configured", "publisher", "kafka (transactional outbox)",
 		"integration_topic", kafkaadapter.Topic, "analytics_topic", kafkaadapter.AnalyticsTopic, "brokers", brokers)
 
+	relaySink := kafkaadapter.NewRelaySink(brokers)
+	relayInterval := getenv("OUTBOX_RELAY_INTERVAL", "1s")
+	interval, err := time.ParseDuration(relayInterval)
+	if err != nil {
+		logger.Warn("invalid OUTBOX_RELAY_INTERVAL, using 1s default", "value", relayInterval, "error", err)
+		interval = time.Second
+	}
+	relay := postgres.NewOutboxRelay(pool, relaySink, postgres.WithLogger(logger), postgres.WithInterval(interval))
+	relayCtx, stopRelay := context.WithCancel(context.Background())
+	relayDone := make(chan struct{})
+	go func() {
+		defer close(relayDone)
+		// Run only ever returns nil, on ctx cancellation.
+		_ = relay.Run(relayCtx)
+	}()
+	logger.Info("outbox relay started", "interval", interval)
+
 	closeAll := func() {
+		stopRelay()
+		<-relayDone
+		if err := relaySink.Close(); err != nil {
+			logger.Error("error closing outbox relay sink", "error", err)
+		}
 		if err := writer.Close(); err != nil {
 			logger.Error("error closing kafka integration writer", "error", err)
 		}
@@ -265,7 +319,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 		closeRepos()
 	}
 
-	return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, closeAll, nil
+	return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, uow, closeAll, nil
 }
 
 // buildLocationLookup selects the outbound LocationClassificationLookup

@@ -22,6 +22,10 @@ type StagedReceipt struct {
 type ReceiveStock struct {
 	Events ports.EventPublisher
 	Clock  ports.Clock
+	// UnitOfWork brackets Publish atomically (ADR 0017). Optional: a nil
+	// value means "no transactional backing", matching the in-memory /
+	// log-publisher dev configuration.
+	UnitOfWork ports.UnitOfWork
 }
 
 func (uc *ReceiveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Quantity) (StagedReceipt, error) {
@@ -33,7 +37,10 @@ func (uc *ReceiveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 	}
 
 	now := uc.Clock.Now()
-	if err := uc.Events.Publish(ctx, shared.NewStockReceived(now, sku, qty)); err != nil {
+	err := atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		return uc.Events.Publish(ctx, shared.NewStockReceived(now, sku, qty))
+	})
+	if err != nil {
 		return StagedReceipt{}, err
 	}
 

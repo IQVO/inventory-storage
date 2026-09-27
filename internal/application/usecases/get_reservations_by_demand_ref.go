@@ -26,6 +26,10 @@ type GetReservationsByDemandRef struct {
 	Reservations ports.ReservationRepo
 	Events       ports.EventPublisher
 	Clock        ports.Clock
+	// UnitOfWork brackets the writes expireAllIfDue makes when resolving
+	// a timed-out reservation atomically (ADR 0017). Optional: nil means
+	// "no transactional backing".
+	UnitOfWork ports.UnitOfWork
 }
 
 func (uc *GetReservationsByDemandRef) Execute(ctx context.Context, demandRef string) ([]*reservation.Reservation, error) {
@@ -33,5 +37,5 @@ func (uc *GetReservationsByDemandRef) Execute(ctx context.Context, demandRef str
 	if err != nil {
 		return nil, err
 	}
-	return expireAllIfDue(ctx, uc.Stock, uc.Reservations, uc.Events, uc.Clock, results)
+	return expireAllIfDue(ctx, uc.UnitOfWork, uc.Stock, uc.Reservations, uc.Events, uc.Clock, results)
 }

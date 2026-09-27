@@ -69,7 +69,9 @@ type reservationData struct {
 }
 
 // Publisher publishes StockReserved and ReservationRevoked domain events as
-// integration events on Topic.
+// integration events on Topic. It satisfies both ports.EventPublisher
+// (direct publish) and kafka.Encoder (used by postgres.OutboxPublisher to
+// enqueue the wire-ready message inside a transaction — ADR 0017).
 type Publisher struct {
 	writer       Writer
 	reservations ports.ReservationRepo
@@ -93,7 +95,31 @@ func NewWriter(brokers ...string) *kafkago.Writer {
 	}
 }
 
-func (p *Publisher) Publish(ctx context.Context, event shared.DomainEvent) error {
+// isIntegrationEvent reports whether event is one of the two types this
+// publisher forwards, without doing any repo lookup — a cheap pre-check
+// so Publish never opens a producer span for an event it will not send.
+func isIntegrationEvent(event shared.DomainEvent) bool {
+	switch event.(type) {
+	case shared.StockReserved, shared.ReservationRevoked:
+		return true
+	default:
+		return false
+	}
+}
+
+// Encode maps event onto its integration wire form: the envelope, the
+// event's data payload, and W3C trace headers injected from whatever span
+// is active on ctx. It returns an empty slice (never an error) for an
+// event outside this publisher's contract, so a caller — the outbox
+// publisher included — can hand it the full event stream indiscriminately.
+//
+// The trace headers carry whatever span is active on ctx at the moment
+// Encode runs: for a direct Publish call that is the "kafka.publish
+// <topic>" producer span Publish itself opens before calling Encode; for
+// the transactional-outbox path (postgres.OutboxPublisher) it is whatever
+// span is wrapping the use case's Save+Publish call, since the eventual
+// Kafka write happens later, asynchronously, via the relay.
+func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Encoded, error) {
 	var data reservationData
 
 	switch e := event.(type) {
@@ -102,19 +128,19 @@ func (p *Publisher) Publish(ctx context.Context, event shared.DomainEvent) error
 	case shared.ReservationRevoked:
 		res, err := p.reservations.FindByID(ctx, e.ReservationID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if res == nil {
-			return ErrReservationNotFound
+			return nil, ErrReservationNotFound
 		}
 		data = reservationData{SKU: res.SKU().String(), Quantity: res.Quantity().Int(), DemandRef: res.DemandRef()}
 	default:
-		return nil
+		return nil, nil
 	}
 
 	payload, err := json.Marshal(data)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	env := envelope{
@@ -127,7 +153,31 @@ func (p *Publisher) Publish(ctx context.Context, event shared.DomainEvent) error
 
 	msg, err := json.Marshal(env)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	// Inject whatever span is active on ctx: for a direct publish that is
+	// the just-started publish span (see Publish below), so a downstream
+	// consumer's Extract parents onto it.
+	headers := []kafkago.Header{}
+	otel.GetTextMapPropagator().Inject(ctx, headerCarrier{headers: &headers})
+
+	return []Encoded{{Topic: Topic, EventType: env.EventType, Value: msg, Headers: headers}}, nil
+}
+
+// Compile-time assertion that Publisher satisfies the outbox's Encoder port.
+var _ Encoder = (*Publisher)(nil)
+
+// Publish forwards event onto Kafka directly (no outbox). This is the
+// EVENT_PUBLISHER=kafka path used when the service runs without Postgres;
+// with a database configured the composition root wires the transactional
+// outbox instead (postgres.OutboxPublisher, using Encode above), and
+// outbox rows are drained onto Kafka by a separate RelaySink (ADR 0017) —
+// this Publisher's own writer keeps its fixed Topic and is never reused
+// as the relay's sink.
+func (p *Publisher) Publish(ctx context.Context, event shared.DomainEvent) error {
+	if !isIntegrationEvent(event) {
+		return nil
 	}
 
 	ctx, span := otel.Tracer(tracerName).Start(ctx, spanName,
@@ -136,23 +186,39 @@ func (p *Publisher) Publish(ctx context.Context, event shared.DomainEvent) error
 			semconv.MessagingSystemKafka,
 			semconv.MessagingDestinationName(Topic),
 			semconv.MessagingOperationName("publish"),
-			semconv.MessagingMessageID(env.EventID),
-			attribute.String("messaging.message.event_type", env.EventType),
 		),
 	)
 	defer span.End()
 
-	// Inject after starting the span so the headers carry *this* span as the
-	// parent: that is what stitches the downstream consumer's trace onto
-	// this one.
-	headers := []kafkago.Header{}
-	otel.GetTextMapPropagator().Inject(ctx, headerCarrier{headers: &headers})
-
-	if err := p.writer.WriteMessages(ctx, kafkago.Message{Value: msg, Headers: headers}); err != nil {
+	encoded, err := p.Encode(ctx, event)
+	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
+	if len(encoded) == 0 {
+		return nil
+	}
 
+	for _, enc := range encoded {
+		span.SetAttributes(attribute.String("messaging.message.event_type", enc.EventType))
+		// The writer carries this publisher's own fixed Topic (see
+		// NewWriter), so the message itself must NOT set Topic — kafka-go
+		// rejects a message with Topic set when the Writer also fixes one.
+		msg := kafkago.Message{Key: enc.Key, Value: enc.Value, Headers: enc.Headers}
+		if err := p.writer.WriteMessages(ctx, msg); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return err
+		}
+	}
+	return nil
+}
+
+// Close releases the underlying Kafka writer.
+func (p *Publisher) Close() error {
+	if w, ok := p.writer.(*kafkago.Writer); ok {
+		return w.Close()
+	}
 	return nil
 }

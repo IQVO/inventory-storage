@@ -20,7 +20,7 @@ func NewLocationRepo(pool *pgxpool.Pool) *LocationRepo {
 }
 
 func (r *LocationRepo) Save(ctx context.Context, bin *location.Bin) error {
-	_, err := r.pool.Exec(ctx, `
+	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
 		INSERT INTO bins (id, capacity, occupied)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (id) DO UPDATE SET capacity = EXCLUDED.capacity, occupied = EXCLUDED.occupied
@@ -30,7 +30,7 @@ func (r *LocationRepo) Save(ctx context.Context, bin *location.Bin) error {
 
 func (r *LocationRepo) FindByID(ctx context.Context, id shared.BinId) (*location.Bin, error) {
 	var capacity, occupied int
-	err := r.pool.QueryRow(ctx, `SELECT capacity, occupied FROM bins WHERE id = $1`, id.String()).Scan(&capacity, &occupied)
+	err := querierFrom(ctx, r.pool).QueryRow(ctx, `SELECT capacity, occupied FROM bins WHERE id = $1`, id.String()).Scan(&capacity, &occupied)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}

@@ -21,12 +21,17 @@ func NewReservationRepo(pool *pgxpool.Pool) *ReservationRepo {
 	return &ReservationRepo{pool: pool}
 }
 
+// Save upserts res and its allocations. When ctx already carries a
+// UnitOfWork transaction (ADR 0017) this joins it (via beginOrJoin) so the
+// reservation write, the stock-unit writes, and the outbox insert all
+// commit together; called standalone it opens and owns its own
+// transaction, same as before.
 func (r *ReservationRepo) Save(ctx context.Context, res *reservation.Reservation) error {
-	tx, err := r.pool.Begin(ctx)
+	tx, commit, rollback, err := beginOrJoin(ctx, r.pool)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = rollback(ctx) }()
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO reservations (id, sku, quantity, demand_ref, status, created_at, expires_at)
@@ -48,14 +53,15 @@ func (r *ReservationRepo) Save(ctx context.Context, res *reservation.Reservation
 		}
 	}
 
-	return tx.Commit(ctx)
+	return commit(ctx)
 }
 
 func (r *ReservationRepo) FindByID(ctx context.Context, id string) (*reservation.Reservation, error) {
 	var sku, demandRef, status string
 	var quantity int
 	var createdAt, expiresAt time.Time
-	err := r.pool.QueryRow(ctx, `
+	q := querierFrom(ctx, r.pool)
+	err := q.QueryRow(ctx, `
 		SELECT sku, quantity, demand_ref, status, created_at, expires_at
 		FROM reservations WHERE id = $1
 	`, id).Scan(&sku, &quantity, &demandRef, &status, &createdAt, &expiresAt)
@@ -66,7 +72,7 @@ func (r *ReservationRepo) FindByID(ctx context.Context, id string) (*reservation
 		return nil, err
 	}
 
-	rows, err := r.pool.Query(ctx, `SELECT stock_unit_id, quantity FROM reservation_allocations WHERE reservation_id = $1`, id)
+	rows, err := q.Query(ctx, `SELECT stock_unit_id, quantity FROM reservation_allocations WHERE reservation_id = $1`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +107,8 @@ func (r *ReservationRepo) NextID(_ context.Context) (string, error) {
 // naturally). Mirrors FindByID's scan/hydration pattern, just applied
 // row-by-row instead of to a single Scan.
 func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string) ([]*reservation.Reservation, error) {
-	rows, err := r.pool.Query(ctx, `
+	q := querierFrom(ctx, r.pool)
+	rows, err := q.Query(ctx, `
 		SELECT id, sku, quantity, status, created_at, expires_at
 		FROM reservations WHERE demand_ref = $1
 		ORDER BY created_at ASC
@@ -131,7 +138,7 @@ func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string)
 
 	results := make([]*reservation.Reservation, 0, len(bases))
 	for _, b := range bases {
-		allocRows, err := r.pool.Query(ctx, `SELECT stock_unit_id, quantity FROM reservation_allocations WHERE reservation_id = $1`, b.id)
+		allocRows, err := q.Query(ctx, `SELECT stock_unit_id, quantity FROM reservation_allocations WHERE reservation_id = $1`, b.id)
 		if err != nil {
 			return nil, err
 		}

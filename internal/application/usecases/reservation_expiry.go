@@ -31,7 +31,12 @@ import (
 //  3. publishes ReservationExpired through the same ports.EventPublisher
 //     (and therefore the same outbox/Kafka wiring) every other domain event
 //     in this service already uses — no new transport.
-func expireIfDue(ctx context.Context, stock ports.StockRepo, reservations ports.ReservationRepo, pub ports.EventPublisher, clock ports.Clock, res *reservation.Reservation) (*reservation.Reservation, error) {
+//
+// Every write above (the released StockUnit(s), the Reservation, and the
+// published event) runs inside one atomic scope bracketed by uow (ADR
+// 0017, transactional outbox): a nil uow runs them back to back, matching
+// every other use case's atomically convention.
+func expireIfDue(ctx context.Context, uow ports.UnitOfWork, stock ports.StockRepo, reservations ports.ReservationRepo, pub ports.EventPublisher, clock ports.Clock, res *reservation.Reservation) (*reservation.Reservation, error) {
 	if res == nil || res.Status() != reservation.StatusActive {
 		return res, nil
 	}
@@ -41,29 +46,32 @@ func expireIfDue(ctx context.Context, stock ports.StockRepo, reservations ports.
 		return res, nil
 	}
 
-	for _, alloc := range res.Allocations() {
-		unit, err := stock.FindByID(ctx, alloc.StockUnitID)
-		if err != nil {
-			return nil, err
+	err := atomically(ctx, uow, func(ctx context.Context) error {
+		for _, alloc := range res.Allocations() {
+			unit, err := stock.FindByID(ctx, alloc.StockUnitID)
+			if err != nil {
+				return err
+			}
+			if unit == nil {
+				return ErrStockUnitNotFound
+			}
+			if err := unit.ReleaseReservation(alloc.Quantity); err != nil {
+				return err
+			}
+			if err := stock.Save(ctx, unit); err != nil {
+				return err
+			}
 		}
-		if unit == nil {
-			return nil, ErrStockUnitNotFound
-		}
-		if err := unit.ReleaseReservation(alloc.Quantity); err != nil {
-			return nil, err
-		}
-		if err := stock.Save(ctx, unit); err != nil {
-			return nil, err
-		}
-	}
 
-	if err := res.Expire(); err != nil {
-		return nil, err
-	}
-	if err := reservations.Save(ctx, res); err != nil {
-		return nil, err
-	}
-	if err := pub.Publish(ctx, shared.NewReservationExpired(now, res.ID())); err != nil {
+		if err := res.Expire(); err != nil {
+			return err
+		}
+		if err := reservations.Save(ctx, res); err != nil {
+			return err
+		}
+		return pub.Publish(ctx, shared.NewReservationExpired(now, res.ID()))
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -73,10 +81,14 @@ func expireIfDue(ctx context.Context, stock ports.StockRepo, reservations ports.
 // expireAllIfDue applies expireIfDue to every reservation in results,
 // in place order, so a caller that looks up several reservations at once
 // (GetReservationsByDemandRef) gets every one of them lazily resolved
-// rather than just the first.
-func expireAllIfDue(ctx context.Context, stock ports.StockRepo, reservations ports.ReservationRepo, pub ports.EventPublisher, clock ports.Clock, results []*reservation.Reservation) ([]*reservation.Reservation, error) {
+// rather than just the first. Each resolved reservation's writes are
+// bracketed in their OWN atomic scope (one outbox commit per expired
+// reservation), rather than one scope for the whole batch — a later
+// reservation's expiry failing must not roll back an earlier one that
+// already committed.
+func expireAllIfDue(ctx context.Context, uow ports.UnitOfWork, stock ports.StockRepo, reservations ports.ReservationRepo, pub ports.EventPublisher, clock ports.Clock, results []*reservation.Reservation) ([]*reservation.Reservation, error) {
 	for i, res := range results {
-		updated, err := expireIfDue(ctx, stock, reservations, pub, clock, res)
+		updated, err := expireIfDue(ctx, uow, stock, reservations, pub, clock, res)
 		if err != nil {
 			return nil, err
 		}

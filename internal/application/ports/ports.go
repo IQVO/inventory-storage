@@ -64,6 +64,24 @@ type Clock interface {
 	Now() time.Time
 }
 
+// UnitOfWork brackets a use case's state change and the domain event(s) it
+// raises so both commit or neither does (ADR 0017, transactional outbox).
+//
+// Execute runs fn inside one atomic scope. Every Repo.Save and
+// EventPublisher.Publish made with the ctx handed to fn is bound to that
+// same scope: if fn returns an error the scope is rolled back and nothing
+// — neither the aggregate row nor the outbox row(s) — is visible
+// afterwards.
+//
+// Adapters that have no transactional backing (the in-memory repos, the
+// log publisher) satisfy this with a pass-through that simply calls fn;
+// the use cases stay adapter-agnostic either way, and a nil UnitOfWork is
+// treated identically by every use case (see the usecases package's
+// atomically helper).
+type UnitOfWork interface {
+	Execute(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
 // ProductClassificationRepo persists and retrieves ProductClassification
 // aggregates, keyed by SKU. This service is the source of truth for this
 // master data — see ADR 0009.

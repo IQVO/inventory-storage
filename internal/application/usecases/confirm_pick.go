@@ -15,6 +15,9 @@ type ConfirmPick struct {
 	Reservations ports.ReservationRepo
 	Events       ports.EventPublisher
 	Clock        ports.Clock
+	// UnitOfWork brackets every Save/Publish this use case makes
+	// atomically (ADR 0017). Optional: nil means "no transactional backing".
+	UnitOfWork ports.UnitOfWork
 }
 
 func (uc *ConfirmPick) Execute(ctx context.Context, reservationID string) error {
@@ -32,7 +35,7 @@ func (uc *ConfirmPick) Execute(ctx context.Context, reservationID string) error 
 	// and ReservationExpired raised — Confirm(now) below then correctly
 	// rejects it via ErrAlreadyResolved rather than never discovering the
 	// timeout at all.
-	res, err = expireIfDue(ctx, uc.Stock, uc.Reservations, uc.Events, uc.Clock, res)
+	res, err = expireIfDue(ctx, uc.UnitOfWork, uc.Stock, uc.Reservations, uc.Events, uc.Clock, res)
 	if err != nil {
 		return err
 	}
@@ -42,41 +45,43 @@ func (uc *ConfirmPick) Execute(ctx context.Context, reservationID string) error 
 		return err
 	}
 
-	for _, alloc := range res.Allocations() {
-		unit, err := uc.Stock.FindByID(ctx, alloc.StockUnitID)
-		if err != nil {
-			return err
-		}
-		if unit == nil {
-			return ErrStockUnitNotFound
+	return atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		for _, alloc := range res.Allocations() {
+			unit, err := uc.Stock.FindByID(ctx, alloc.StockUnitID)
+			if err != nil {
+				return err
+			}
+			if unit == nil {
+				return ErrStockUnitNotFound
+			}
+
+			binID := unit.BinID()
+			if err := unit.Pick(alloc.Quantity); err != nil {
+				return err
+			}
+			if err := uc.Stock.Save(ctx, unit); err != nil {
+				return err
+			}
+
+			bin, err := uc.Locations.FindByID(ctx, binID)
+			if err != nil {
+				return err
+			}
+			if bin == nil {
+				return ErrBinNotFound
+			}
+			if err := bin.Release(alloc.Quantity); err != nil {
+				return err
+			}
+			if err := uc.Locations.Save(ctx, bin); err != nil {
+				return err
+			}
 		}
 
-		binID := unit.BinID()
-		if err := unit.Pick(alloc.Quantity); err != nil {
-			return err
-		}
-		if err := uc.Stock.Save(ctx, unit); err != nil {
+		if err := uc.Reservations.Save(ctx, res); err != nil {
 			return err
 		}
 
-		bin, err := uc.Locations.FindByID(ctx, binID)
-		if err != nil {
-			return err
-		}
-		if bin == nil {
-			return ErrBinNotFound
-		}
-		if err := bin.Release(alloc.Quantity); err != nil {
-			return err
-		}
-		if err := uc.Locations.Save(ctx, bin); err != nil {
-			return err
-		}
-	}
-
-	if err := uc.Reservations.Save(ctx, res); err != nil {
-		return err
-	}
-
-	return uc.Events.Publish(ctx, shared.NewStockPicked(now, res.ID(), res.SKU(), res.Quantity()))
+		return uc.Events.Publish(ctx, shared.NewStockPicked(now, res.ID(), res.SKU(), res.Quantity()))
+	})
 }

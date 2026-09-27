@@ -26,6 +26,10 @@ type ReserveStock struct {
 	Clock        ports.Clock
 	Metrics      ports.ReservationMetrics
 	Timeout      time.Duration
+	// UnitOfWork brackets every Save/Publish this use case makes
+	// atomically (ADR 0017), including the ones expireAllIfDue/expireIfDue
+	// make internally. Optional: nil means "no transactional backing".
+	UnitOfWork ports.UnitOfWork
 }
 
 func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Quantity, demandRef string) (*reservation.Reservation, error) {
@@ -60,7 +64,7 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 	// caller retrying against a demandRef whose only "active" match has
 	// actually timed out must fall through to a genuine new reservation
 	// attempt, not be handed back an expired one as if it were live.
-	existing, err = expireAllIfDue(ctx, uc.Stock, uc.Reservations, uc.Events, uc.Clock, existing)
+	existing, err = expireAllIfDue(ctx, uc.UnitOfWork, uc.Stock, uc.Reservations, uc.Events, uc.Clock, existing)
 	if err != nil {
 		return nil, err
 	}
@@ -132,10 +136,13 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 		return nil, err
 	}
 
-	if err := uc.Reservations.Save(ctx, res); err != nil {
-		return nil, err
-	}
-	if err := uc.Events.Publish(ctx, shared.NewStockReserved(now, res.ID(), sku, qty, demandRef)); err != nil {
+	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		if err := uc.Reservations.Save(ctx, res); err != nil {
+			return err
+		}
+		return uc.Events.Publish(ctx, shared.NewStockReserved(now, res.ID(), sku, qty, demandRef))
+	})
+	if err != nil {
 		return nil, err
 	}
 
