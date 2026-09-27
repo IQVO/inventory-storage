@@ -87,6 +87,7 @@ const sidebars: SidebarsConfig = {
         'adr/0015-remove-rest-identity-layer',
         'adr/0016-standard-metrics-convention',
         'adr/0017-transactional-outbox',
+        'adr/0020-resilience-circuit-breaker-retry-dlq-shutdown',
       ],
     },
   ],

@@ -27,12 +27,23 @@ import (
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/telemetry"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
+	"github.com/claudioed/inventory-storage/internal/resilience"
 )
 
 // telemetryFlushTimeout bounds the final export attempt. Without a deadline
 // the exporter would retry against an unreachable Collector and stretch a
 // shutdown out well past what an orchestrator will wait for.
 const telemetryFlushTimeout = 5 * time.Second
+
+// shutdownDrainTimeout bounds how long graceful shutdown (ADR-0020
+// §graceful shutdown) waits for the outbox relay and the facility
+// location cache consumer's Run loop to actually stop, after their
+// contexts are cancelled — mirroring the HTTP server's own Shutdown
+// budget below. A relay/consumer that does not stop within this window
+// is logged and shutdown proceeds anyway; the process is exiting either
+// way and this is strictly better than hanging past the orchestrator's
+// own terminationGracePeriodSeconds.
+const shutdownDrainTimeout = 10 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -86,30 +97,51 @@ func run() error {
 		return err
 	}
 
+	// circuitBreakerMetrics wires the facility-layout breaker's
+	// OnStateChange into the circuit_breaker.state gauge (ADR-0020),
+	// reusing the SAME OTel MeterProvider telemetry.Setup already
+	// installed above rather than standing up a second Prometheus
+	// registry. Errors here mirror NewReservationMetrics' contract
+	// (invalid instrument name only, a programming error) — non-fatal:
+	// a nil recorder just means this process runs without the gauge,
+	// never without the breaker itself.
+	circuitBreakerMetrics, err := telemetry.NewCircuitBreakerMetrics()
+	if err != nil {
+		logger.Warn("circuit breaker metrics unavailable; the facility-layout breaker will run without the circuit_breaker.state gauge", "error", err)
+	}
+
+	// readiness gates GET /readyz (ADR-0020 §graceful shutdown). The
+	// zero value is ready; SetNotReady is called as the FIRST step of
+	// the shutdown sequence below, before the HTTP server itself stops
+	// accepting connections, so a Kubernetes readinessProbe has a
+	// chance to observe the flip and stop routing new traffic during
+	// the drain window that follows.
+	readiness := &inboundhttp.Readiness{}
+
 	clock := memory.SystemClock{}
 	// The lookup's Kafka consumer (when LOCATION_LOOKUP_MODE=kafka) must
 	// outlive this call and stop on shutdown, so it gets its own
 	// cancellable context rather than the signal context established
 	// further down — which does not exist yet at this point.
 	lookupCtx, stopLookup := context.WithCancel(context.Background())
-	defer stopLookup()
 
 	var kafkaBrokers []string
 	if raw := os.Getenv("KAFKA_BROKERS"); raw != "" {
 		kafkaBrokers = strings.Split(raw, ",")
 	}
 
-	locationLookup, closeLocationLookup, err := buildLocationLookup(
+	locationLookup, lookupRunDone, closeLocationLookup, err := buildLocationLookup(
 		lookupCtx,
 		getenv("LOCATION_LOOKUP_MODE", "permissive"),
 		os.Getenv("FACILITY_LAYOUT_BASE_URL"),
 		kafkaBrokers,
+		circuitBreakerMetrics,
 		logger,
 	)
 	if err != nil {
+		stopLookup()
 		return err
 	}
-	defer closeLocationLookup()
 
 	server := &inboundhttp.Server{
 		ReceiveStock: &usecases.ReceiveStock{Events: publisher, Clock: clock, UnitOfWork: uow},
@@ -131,6 +163,10 @@ func run() error {
 		// configuration) leaves those routes unprotected, mirroring
 		// every other optional Postgres-backed capability here.
 		IdempotencyPool: idempotencyPool,
+		// Readiness backs GET /readyz (ADR-0020 §graceful shutdown):
+		// flipped to not-ready as the FIRST step of shutdown, below,
+		// before anything else stops.
+		Readiness: readiness,
 	}
 
 	httpServer := &http.Server{
@@ -152,13 +188,52 @@ func run() error {
 
 	select {
 	case err := <-errCh:
+		stopLookup()
+		closeLocationLookup()
 		return err
 	case <-ctx.Done():
 	}
 
+	// Graceful shutdown (ADR-0020 §graceful shutdown), in order:
+	//
+	//  1. Flip readiness to not-ready FIRST, before anything else
+	//     stops — a Kubernetes readinessProbe polling /readyz needs a
+	//     window to observe this and stop routing NEW traffic to this
+	//     pod before step 2 below ever closes the listener, so a
+	//     request racing the SIGTERM is far less likely to be routed
+	//     here only to hit a closing connection.
+	//  2. Stop accepting new HTTP connections and drain in-flight
+	//     requests, bounded by shutdownCtx.
+	//  3. Stop the facility location cache consumer's Run loop
+	//     cleanly: cancel lookupCtx (no new message is fetched/handled
+	//     after this) and wait, bounded by shutdownDrainTimeout, for
+	//     its goroutine to actually finish rather than merely asking
+	//     it to stop and moving on.
+	//  4. Only THEN does the deferred closeAdapters (registered at the
+	//     top of run(), so by defer's LIFO order it runs LAST of all,
+	//     after this function returns and every consumer/relay
+	//     goroutine has already stopped touching the pgx pool) close
+	//     Postgres.
+	readiness.SetNotReady()
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return httpServer.Shutdown(shutdownCtx)
+	err = httpServer.Shutdown(shutdownCtx)
+
+	// Stop the facility location cache consumer's loop cleanly: cancel
+	// so no NEW message is fetched, then wait (bounded) for the Run
+	// goroutine to actually return before closing its Kafka reader.
+	stopLookup()
+	if lookupRunDone != nil {
+		select {
+		case <-lookupRunDone:
+		case <-time.After(shutdownDrainTimeout):
+			logger.Warn("facility location cache consumer did not stop before the shutdown drain deadline")
+		}
+	}
+	closeLocationLookup()
+
+	return err
 }
 
 // newLogger builds the process-wide structured logger. LOG_LEVEL maps
@@ -320,7 +395,11 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 
 	closeAll := func() {
 		stopRelay()
-		<-relayDone
+		select {
+		case <-relayDone:
+		case <-time.After(shutdownDrainTimeout):
+			logger.Warn("outbox relay did not stop before the shutdown drain deadline")
+		}
 		if err := relaySink.Close(); err != nil {
 			logger.Error("error closing outbox relay sink", "error", err)
 		}
@@ -347,17 +426,27 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 //     facility-layout stops being a runtime dependency of StowStock.
 //     Requires KAFKA_BROKERS. Blocks until the initial replay completes
 //     (see the facilitycache package doc for why).
-//   - "http"       calls facility-layout synchronously per stow. Requires
+//   - "http"       calls facility-layout synchronously per stow, wrapped
+//     in a per-dependency circuit breaker with jittered retry
+//     (ADR-0020): on a trip, calls fall back to the SAME fail-open
+//     behaviour this client already had, rather than a new fallback
+//     path. recorder feeds the breaker's state transitions into the
+//     circuit_breaker.state gauge; nil is fine (see
+//     resilience.RecordStateChange's doc comment). Requires
 //     FACILITY_LAYOUT_BASE_URL. Retained as the rollback for "kafka".
 //   - "permissive" (default) answers Known=false for everything.
 //
-// The returned closer releases the Kafka reader when one was started, and
-// is a no-op otherwise.
-func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string, brokers []string, logger *slog.Logger) (ports.LocationClassificationLookup, func(), error) {
+// The second return value is a channel that closes once the kafka mode's
+// consumer.Run goroutine has actually returned (nil in every other mode,
+// since there is no such goroutine) — graceful shutdown waits on it,
+// bounded, rather than firing the cancel and moving on immediately. The
+// third return value (the closer) releases the Kafka reader when one was
+// started, and is a no-op otherwise.
+func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string, brokers []string, recorder resilience.StateRecorder, logger *slog.Logger) (ports.LocationClassificationLookup, chan struct{}, func(), error) {
 	switch {
 	case strings.EqualFold(mode, "kafka"):
 		if len(brokers) == 0 {
-			return nil, nil, fmt.Errorf("LOCATION_LOOKUP_MODE=kafka requires KAFKA_BROKERS to be set")
+			return nil, nil, nil, fmt.Errorf("LOCATION_LOOKUP_MODE=kafka requires KAFKA_BROKERS to be set")
 		}
 		// Retried for the same reason the Postgres dials above are: this
 		// call's newTargetOffsets dials the broker synchronously
@@ -374,12 +463,14 @@ func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string
 			consumer = c
 			return nil
 		}); err != nil {
-			return nil, nil, fmt.Errorf("failed to start the Kafka-sourced location cache: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to start the Kafka-sourced location cache: %w", err)
 		}
 		logger.Info("location classification lookup configured",
 			"mode", "kafka", "topic", facilitycache.Topic, "brokers", brokers)
 
+		runDone := make(chan struct{})
 		go func() {
+			defer close(runDone)
 			logger.Info("facility location cache consumer running", "topic", facilitycache.Topic)
 			// Run only ever returns on error (including the plain
 			// context.Canceled of an orderly shutdown), never nil.
@@ -398,7 +489,7 @@ func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string
 		defer cancel()
 		if err := consumer.WaitReady(waitCtx); err != nil {
 			_ = consumer.Close()
-			return nil, nil, fmt.Errorf("facility location cache did not become ready within %s: %w", facilitycache.WaitReadyTimeout, err)
+			return nil, runDone, nil, fmt.Errorf("facility location cache did not become ready within %s: %w", facilitycache.WaitReadyTimeout, err)
 		}
 		if consumer.Slots() == 0 {
 			// Not fatal — a genuinely empty facility-layout is a valid
@@ -409,14 +500,15 @@ func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string
 		} else {
 			logger.Info("facility location cache is ready", "slots", consumer.Slots(), "zones", consumer.Zones())
 		}
-		return consumer, func() { _ = consumer.Close() }, nil
+		return consumer, runDone, func() { _ = consumer.Close() }, nil
 
 	case strings.EqualFold(mode, "http"):
-		logger.Info("location classification lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL)
-		return facilitylayout.NewClient(facilityLayoutBaseURL, nil), func() {}, nil
+		logger.Info("location classification lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL, "circuit_breaker", "enabled", "retry", "enabled")
+		client := facilitylayout.NewBreakerClient(facilitylayout.NewClient(facilityLayoutBaseURL, nil), recorder)
+		return client, nil, func() {}, nil
 
 	default:
-		return facilitylayout.NewPermissiveLookup(), func() {}, nil
+		return facilitylayout.NewPermissiveLookup(), nil, func() {}, nil
 	}
 }
 

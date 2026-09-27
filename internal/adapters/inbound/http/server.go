@@ -50,6 +50,13 @@ type Server struct {
 	// existing convention for every other optional Postgres-backed
 	// capability (UnitOfWork, the outbox relay).
 	IdempotencyPool *pgxpool.Pool
+	// Readiness backs GET /readyz (ADR-0020 §graceful shutdown):
+	// flipped to not-ready as the FIRST step of shutdown, so a
+	// Kubernetes readinessProbe can stop routing new traffic before
+	// the HTTP server itself stops accepting connections. A nil
+	// Readiness (every existing test/caller that predates this field)
+	// leaves /readyz always reporting ready.
+	Readiness *Readiness
 }
 
 // DefaultServiceName labels this service's spans and metrics when the caller
@@ -106,6 +113,7 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	}))
 
 	r.Get("/healthz", s.handleHealthz)
+	r.Get("/readyz", s.handleReadyz)
 
 	// POST /stock/receive and POST /reservations are route-scoped (r.With,
 	// not r.Use) behind RequireIdempotencyKey — they are the two mutating
