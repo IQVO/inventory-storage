@@ -151,11 +151,7 @@ func (c *AnalyticsConsumer) HandleMessage(ctx context.Context, raw []byte) error
 	// Only the flow/accuracy-moving events project; everything else (e.g.
 	// LocationRecorded) is acknowledged without touching the read model or the
 	// processed set.
-	switch env.EventType {
-	case "StockReceived", "ItemStowed", "StockPicked", "StockReserved",
-		"ReservationExpired", "ReservationRevoked",
-		"CycleCountCompleted", "DiscrepancyDetected", "ItemUnlocated":
-	default:
+	if !projects(env.EventType) {
 		return nil
 	}
 
@@ -172,6 +168,26 @@ func (c *AnalyticsConsumer) HandleMessage(ctx context.Context, raw []byte) error
 		return fmt.Errorf("analytics: decode data: %w", err)
 	}
 
+	return c.applyEvent(ctx, env, data)
+}
+
+// projects reports whether eventType moves the Inventory Flow & Accuracy
+// projection. Everything else on the analytics topic is acknowledged without
+// touching the read model or the processed set.
+func projects(eventType string) bool {
+	switch eventType {
+	case "StockReceived", "ItemStowed", "StockPicked", "StockReserved",
+		"ReservationExpired", "ReservationRevoked",
+		"CycleCountCompleted", "DiscrepancyDetected", "ItemUnlocated":
+		return true
+	default:
+		return false
+	}
+}
+
+// applyEvent routes one already-deduped, already-decoded projecting event to
+// its projection method by event_type.
+func (c *AnalyticsConsumer) applyEvent(ctx context.Context, env analyticsEnvelope, data analyticsData) error {
 	switch env.EventType {
 	case "StockReceived":
 		return c.Projection.ApplyStockReceived(ctx, env.EventId, data.SKU, data.Quantity, env.OccurredAt)

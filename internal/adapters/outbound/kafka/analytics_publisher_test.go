@@ -128,49 +128,58 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			w := &fakeAnalyticsWriter{}
-			p := outboundkafka.NewAnalyticsPublisher(nil, fakeReservationRepo{}, func() string { return "evt-fixed" })
-			p.Writer = w
-
-			if err := p.Publish(context.Background(), tt.event); err != nil {
-				t.Fatalf("Publish: %v", err)
-			}
-			if len(w.msgs) != 1 {
-				t.Fatalf("expected 1 message, got %d", len(w.msgs))
-			}
-			msg := w.msgs[0]
-			if string(msg.Key) != tt.wantKey {
-				t.Errorf("key = %q, want %q", string(msg.Key), tt.wantKey)
-			}
-
-			var env outboundkafka.AnalyticsEnvelope
-			if err := json.Unmarshal(msg.Value, &env); err != nil {
-				t.Fatalf("unmarshal envelope: %v", err)
-			}
-			if env.EventType != tt.wantType {
-				t.Errorf("event_type = %q, want %q", env.EventType, tt.wantType)
-			}
-			if env.EventId != "evt-fixed" {
-				t.Errorf("event_id = %q, want evt-fixed", env.EventId)
-			}
-			if env.Source != "inventory-storage" {
-				t.Errorf("source = %q, want inventory-storage", env.Source)
-			}
-			if env.SchemaVersion != 1 {
-				t.Errorf("schema_version = %d, want 1", env.SchemaVersion)
-			}
-			if !env.OccurredAt.Equal(at) {
-				t.Errorf("occurred_at = %v, want %v", env.OccurredAt, at)
-			}
-
-			var data map[string]any
-			if err := json.Unmarshal(env.Data, &data); err != nil {
-				t.Fatalf("unmarshal data: %v", err)
-			}
-			if got := data[tt.wantDataField]; got != tt.wantDataValue {
-				t.Errorf("data[%q] = %v (%T), want %v (%T)", tt.wantDataField, got, got, tt.wantDataValue, tt.wantDataValue)
-			}
+			assertAnalyticsEventPublished(t, tt.event, tt.wantType, tt.wantKey, tt.wantDataField, tt.wantDataValue, at)
 		})
+	}
+}
+
+// assertAnalyticsEventPublished publishes one event through a capturing
+// writer and pins the resulting analytics envelope: message key, event
+// type, generated event_id, source, schema version, occurred-at timestamp,
+// and the case's one asserted data field.
+func assertAnalyticsEventPublished(t *testing.T, event shared.DomainEvent, wantType, wantKey, wantDataField string, wantDataValue any, at time.Time) {
+	t.Helper()
+	w := &fakeAnalyticsWriter{}
+	p := outboundkafka.NewAnalyticsPublisher(nil, fakeReservationRepo{}, func() string { return "evt-fixed" })
+	p.Writer = w
+
+	if err := p.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if len(w.msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(w.msgs))
+	}
+	msg := w.msgs[0]
+	if string(msg.Key) != wantKey {
+		t.Errorf("key = %q, want %q", string(msg.Key), wantKey)
+	}
+
+	var env outboundkafka.AnalyticsEnvelope
+	if err := json.Unmarshal(msg.Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.EventType != wantType {
+		t.Errorf("event_type = %q, want %q", env.EventType, wantType)
+	}
+	if env.EventId != "evt-fixed" {
+		t.Errorf("event_id = %q, want evt-fixed", env.EventId)
+	}
+	if env.Source != "inventory-storage" {
+		t.Errorf("source = %q, want inventory-storage", env.Source)
+	}
+	if env.SchemaVersion != 1 {
+		t.Errorf("schema_version = %d, want 1", env.SchemaVersion)
+	}
+	if !env.OccurredAt.Equal(at) {
+		t.Errorf("occurred_at = %v, want %v", env.OccurredAt, at)
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if got := data[wantDataField]; got != wantDataValue {
+		t.Errorf("data[%q] = %v (%T), want %v (%T)", wantDataField, got, got, wantDataValue, wantDataValue)
 	}
 }
 

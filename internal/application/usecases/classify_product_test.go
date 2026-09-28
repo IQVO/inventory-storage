@@ -57,37 +57,46 @@ func TestClassifyProduct_TableDriven(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := newEnv()
-			uc := &usecases.ClassifyProduct{Classifications: e.Classifications, Events: e.Events, Clock: e.Clock}
-
-			c, err := uc.Execute(context.Background(), mustSKU(t, tt.sku), tt.tags, tt.temp, tt.dot)
-			if err != tt.wantErr {
-				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
-			}
-			if tt.wantErr != nil {
-				if c != nil {
-					t.Fatalf("expected nil classification on error, got %+v", c)
-				}
-				return
-			}
-			if c == nil {
-				t.Fatalf("expected a classification, got nil")
-			}
-			if c.DOTHazardClass() != tt.dot {
-				t.Fatalf("expected DOTHazardClass=%v, got %v", tt.dot, c.DOTHazardClass())
-			}
-
-			stored, err := e.Classifications.FindBySKU(context.Background(), mustSKU(t, tt.sku))
-			if err != nil {
-				t.Fatalf("unexpected error finding stored classification: %v", err)
-			}
-			if stored == nil {
-				t.Fatalf("expected classification to be persisted")
-			}
-			if stored.DOTHazardClass() != tt.dot {
-				t.Fatalf("expected stored DOTHazardClass=%v, got %v", tt.dot, stored.DOTHazardClass())
-			}
+			runClassifyProductCase(t, tt.sku, tt.tags, tt.temp, tt.dot, tt.wantErr)
 		})
+	}
+}
+
+// runClassifyProductCase executes one ClassifyProduct table case against a
+// fresh env: the returned error must match wantErr exactly, a success must
+// return the classification and persist it with the same DOT hazard class,
+// and an error must return a nil classification.
+func runClassifyProductCase(t *testing.T, sku string, tags []product.HandlingTag, temp product.TemperatureClass, dot product.DOTHazardClass, wantErr error) {
+	t.Helper()
+	e := newEnv()
+	uc := &usecases.ClassifyProduct{Classifications: e.Classifications, Events: e.Events, Clock: e.Clock}
+
+	c, err := uc.Execute(context.Background(), mustSKU(t, sku), tags, temp, dot)
+	if err != wantErr {
+		t.Fatalf("expected error %v, got %v", wantErr, err)
+	}
+	if wantErr != nil {
+		if c != nil {
+			t.Fatalf("expected nil classification on error, got %+v", c)
+		}
+		return
+	}
+	if c == nil {
+		t.Fatalf("expected a classification, got nil")
+	}
+	if c.DOTHazardClass() != dot {
+		t.Fatalf("expected DOTHazardClass=%v, got %v", dot, c.DOTHazardClass())
+	}
+
+	stored, err := e.Classifications.FindBySKU(context.Background(), mustSKU(t, sku))
+	if err != nil {
+		t.Fatalf("unexpected error finding stored classification: %v", err)
+	}
+	if stored == nil {
+		t.Fatalf("expected classification to be persisted")
+	}
+	if stored.DOTHazardClass() != dot {
+		t.Fatalf("expected stored DOTHazardClass=%v, got %v", dot, stored.DOTHazardClass())
 	}
 }
 

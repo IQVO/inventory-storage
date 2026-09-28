@@ -28,6 +28,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/resilience"
+	kafkago "github.com/segmentio/kafka-go"
 )
 
 // telemetryFlushTimeout bounds the final export attempt. Without a deadline
@@ -143,7 +144,34 @@ func run() error {
 		return err
 	}
 
-	server := &inboundhttp.Server{
+	server := buildServer(stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, clock, locationLookup, reservationMetrics, uow, idempotencyPool, readiness)
+
+	httpServer := &http.Server{
+		Addr:              httpAddr,
+		Handler:           inboundhttp.NewRouter(server, logger, serviceName),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	return serveHTTPUntilSignal(logger, httpServer, readiness, stopLookup, closeLocationLookup, lookupRunDone)
+}
+
+// buildServer wires the repositories, event publisher, location lookup,
+// clock and reservation metrics into use cases and returns the inbound
+// HTTP server's dependency struct.
+func buildServer(
+	stockRepo ports.StockRepo,
+	locationRepo ports.LocationRepo,
+	reservationRepo ports.ReservationRepo,
+	classificationRepo ports.ProductClassificationRepo,
+	publisher ports.EventPublisher,
+	clock ports.Clock,
+	locationLookup ports.LocationClassificationLookup,
+	reservationMetrics ports.ReservationMetrics,
+	uow ports.UnitOfWork,
+	idempotencyPool *pgxpool.Pool,
+	readiness *inboundhttp.Readiness,
+) *inboundhttp.Server {
+	return &inboundhttp.Server{
 		ReceiveStock: &usecases.ReceiveStock{Events: publisher, Clock: clock, UnitOfWork: uow},
 		StowStock: &usecases.StowStock{
 			Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
@@ -168,16 +196,15 @@ func run() error {
 		// before anything else stops.
 		Readiness: readiness,
 	}
+}
 
-	httpServer := &http.Server{
-		Addr:              httpAddr,
-		Handler:           inboundhttp.NewRouter(server, logger, serviceName),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
+// serveHTTPUntilSignal runs the HTTP server until SIGINT/SIGTERM (or a
+// listen error), then drains it together with the facility location
+// cache consumer, bounded by a grace deadline.
+func serveHTTPUntilSignal(logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness, stopLookup context.CancelFunc, closeLocationLookup func(), lookupRunDone <-chan struct{}) error {
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("http server listening", "addr", httpAddr)
+		logger.Info("http server listening", "addr", httpServer.Addr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
@@ -218,7 +245,7 @@ func run() error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	err = httpServer.Shutdown(shutdownCtx)
+	err := httpServer.Shutdown(shutdownCtx)
 
 	// Stop the facility location cache consumer's loop cleanly: cancel
 	// so no NEW message is fetched, then wait (bounded) for the Run
@@ -288,39 +315,13 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 	)
 
 	if databaseURL == "" {
-		logger.Info("database url not configured; using in-memory adapters")
-		stockRepo = memory.NewStockRepo()
-		locationRepo = memory.NewLocationRepo()
-		reservationRepo = memory.NewReservationRepo()
-		classificationRepo = memory.NewProductClassificationRepo()
-		defaultPub = events.NewLogPublisher(logger)
+		stockRepo, locationRepo, reservationRepo, classificationRepo, defaultPub = memoryAdapters(logger)
 	} else {
-		// Retried: this fleet's Istio native sidecars reset EVERY pod's
-		// first outbound TCP dial ~10s after the app starts
-		// (holdApplicationUntilProxyStarts is a no-op for native
-		// sidecars). A single attempt turns that transient condition into
-		// CrashLoopBackOff; the retry still fails closed once its budget
-		// is exhausted.
-		if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
-			return postgres.RunMigrations(databaseURL, migrationsPath)
-		}); err != nil {
-			return nil, nil, nil, nil, nil, nil, nil, noop, err
-		}
-
-		p, err := postgres.NewPool(ctx, databaseURL)
+		p, err := openPostgresPool(ctx, databaseURL, migrationsPath, logger)
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, noop, err
 		}
 		pool = p
-		// ParseConfig/NewWithConfig do not themselves establish a
-		// connection, so without this the first-dial reset would surface
-		// inside the first real request instead of at boot.
-		if err := bootretry.Retry(ctx, logger, "ping database", func() error {
-			return pool.Ping(ctx)
-		}); err != nil {
-			pool.Close()
-			return nil, nil, nil, nil, nil, nil, nil, noop, err
-		}
 
 		stockRepo = postgres.NewStockRepo(pool)
 		locationRepo = postgres.NewLocationRepo(pool)
@@ -354,15 +355,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 		publisher := events.NewMultiPublisher(integrationPub, analyticsPub)
 		logger.Info("event publisher configured", "publisher", "kafka (direct, no outbox)",
 			"integration_topic", kafkaadapter.Topic, "analytics_topic", kafkaadapter.AnalyticsTopic, "brokers", brokers)
-		closeAll := func() {
-			if err := writer.Close(); err != nil {
-				logger.Error("error closing kafka integration writer", "error", err)
-			}
-			if err := analyticsPub.Close(); err != nil {
-				logger.Error("error closing kafka analytics writer", "error", err)
-			}
-		}
-		return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, nil, pool, closeAll, nil
+		return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, nil, pool, func() { closeKafkaWriters(writer, analyticsPub, logger) }, nil
 	}
 
 	// Transactional outbox (ADR 0017): the use cases publish through
@@ -377,12 +370,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 		"integration_topic", kafkaadapter.Topic, "analytics_topic", kafkaadapter.AnalyticsTopic, "brokers", brokers)
 
 	relaySink := kafkaadapter.NewRelaySink(brokers)
-	relayInterval := getenv("OUTBOX_RELAY_INTERVAL", "1s")
-	interval, err := time.ParseDuration(relayInterval)
-	if err != nil {
-		logger.Warn("invalid OUTBOX_RELAY_INTERVAL, using 1s default", "value", relayInterval, "error", err)
-		interval = time.Second
-	}
+	interval := outboxRelayInterval(logger)
 	relay := postgres.NewOutboxRelay(pool, relaySink, postgres.WithLogger(logger), postgres.WithInterval(interval))
 	relayCtx, stopRelay := context.WithCancel(context.Background())
 	relayDone := make(chan struct{})
@@ -393,7 +381,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 	}()
 	logger.Info("outbox relay started", "interval", interval)
 
-	closeAll := func() {
+	return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, uow, pool, func() {
 		stopRelay()
 		select {
 		case <-relayDone:
@@ -403,16 +391,9 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath, eventPublis
 		if err := relaySink.Close(); err != nil {
 			logger.Error("error closing outbox relay sink", "error", err)
 		}
-		if err := writer.Close(); err != nil {
-			logger.Error("error closing kafka integration writer", "error", err)
-		}
-		if err := analyticsPub.Close(); err != nil {
-			logger.Error("error closing kafka analytics writer", "error", err)
-		}
+		closeKafkaWriters(writer, analyticsPub, logger)
 		closeRepos()
-	}
-
-	return stockRepo, locationRepo, reservationRepo, classificationRepo, publisher, uow, pool, closeAll, nil
+	}, nil
 }
 
 // buildLocationLookup selects the outbound LocationClassificationLookup
@@ -510,6 +491,65 @@ func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string
 	default:
 		return facilitylayout.NewPermissiveLookup(), nil, func() {}, nil
 	}
+}
+
+// memoryAdapters builds the in-memory outbound set for local runs
+// without a database.
+func memoryAdapters(logger *slog.Logger) (ports.StockRepo, ports.LocationRepo, ports.ReservationRepo, ports.ProductClassificationRepo, ports.EventPublisher) {
+	logger.Info("database url not configured; using in-memory adapters")
+	return memory.NewStockRepo(), memory.NewLocationRepo(), memory.NewReservationRepo(), memory.NewProductClassificationRepo(), events.NewLogPublisher(logger)
+}
+
+// closeKafkaWriters closes the integration and analytics Kafka writers,
+// logging (not failing) on error — shutdown-time cleanup only.
+func closeKafkaWriters(writer *kafkago.Writer, analyticsPub *kafkaadapter.AnalyticsPublisher, logger *slog.Logger) {
+	if err := writer.Close(); err != nil {
+		logger.Error("error closing kafka integration writer", "error", err)
+	}
+	if err := analyticsPub.Close(); err != nil {
+		logger.Error("error closing kafka analytics writer", "error", err)
+	}
+}
+
+// outboxRelayInterval parses OUTBOX_RELAY_INTERVAL, falling back to 1s
+// with a warning on an invalid value.
+func outboxRelayInterval(logger *slog.Logger) time.Duration {
+	raw := getenv("OUTBOX_RELAY_INTERVAL", "1s")
+	interval, err := time.ParseDuration(raw)
+	if err != nil {
+		logger.Warn("invalid OUTBOX_RELAY_INTERVAL, using 1s default", "value", raw, "error", err)
+		return time.Second
+	}
+	return interval
+}
+
+// openPostgresPool runs the schema migrations, opens the pool, and verifies
+// it with a ping, each under boot retry: this fleet's Istio native
+// sidecars reset EVERY pod's first outbound TCP dial ~10s after the app
+// starts (holdApplicationUntilProxyStarts is a no-op for native
+// sidecars). A single attempt turns that transient condition into
+// CrashLoopBackOff; the retry still fails closed once its budget is
+// exhausted. ParseConfig/NewWithConfig do not themselves establish a
+// connection, so without the ping the first-dial reset would surface
+// inside the first real request instead of at boot.
+func openPostgresPool(ctx context.Context, databaseURL, migrationsPath string, logger *slog.Logger) (*pgxpool.Pool, error) {
+	if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
+		return postgres.RunMigrations(databaseURL, migrationsPath)
+	}); err != nil {
+		return nil, err
+	}
+
+	pool, err := postgres.NewPool(ctx, databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := bootretry.Retry(ctx, logger, "ping database", func() error {
+		return pool.Ping(ctx)
+	}); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
 }
 
 func getenv(key, fallback string) string {

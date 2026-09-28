@@ -47,33 +47,7 @@ func (uc *ConfirmPick) Execute(ctx context.Context, reservationID string) error 
 
 	return atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		for _, alloc := range res.Allocations() {
-			unit, err := uc.Stock.FindByID(ctx, alloc.StockUnitID)
-			if err != nil {
-				return err
-			}
-			if unit == nil {
-				return ErrStockUnitNotFound
-			}
-
-			binID := unit.BinID()
-			if err := unit.Pick(alloc.Quantity); err != nil {
-				return err
-			}
-			if err := uc.Stock.Save(ctx, unit); err != nil {
-				return err
-			}
-
-			bin, err := uc.Locations.FindByID(ctx, binID)
-			if err != nil {
-				return err
-			}
-			if bin == nil {
-				return ErrBinNotFound
-			}
-			if err := bin.Release(alloc.Quantity); err != nil {
-				return err
-			}
-			if err := uc.Locations.Save(ctx, bin); err != nil {
+			if err := uc.pickFromBin(ctx, alloc.StockUnitID, alloc.Quantity); err != nil {
 				return err
 			}
 		}
@@ -84,4 +58,37 @@ func (uc *ConfirmPick) Execute(ctx context.Context, reservationID string) error 
 
 		return uc.Events.Publish(ctx, shared.NewStockPicked(now, res.ID(), res.SKU(), res.Quantity()))
 	})
+}
+
+// pickFromBin physically removes qty from the stock unit identified by
+// stockUnitID and releases the same quantity of capacity in that unit's bin,
+// persisting both. It is one allocation's slice of the pick.
+func (uc *ConfirmPick) pickFromBin(ctx context.Context, stockUnitID string, qty shared.Quantity) error {
+	unit, err := uc.Stock.FindByID(ctx, stockUnitID)
+	if err != nil {
+		return err
+	}
+	if unit == nil {
+		return ErrStockUnitNotFound
+	}
+
+	binID := unit.BinID()
+	if err := unit.Pick(qty); err != nil {
+		return err
+	}
+	if err := uc.Stock.Save(ctx, unit); err != nil {
+		return err
+	}
+
+	bin, err := uc.Locations.FindByID(ctx, binID)
+	if err != nil {
+		return err
+	}
+	if bin == nil {
+		return ErrBinNotFound
+	}
+	if err := bin.Release(qty); err != nil {
+		return err
+	}
+	return uc.Locations.Save(ctx, bin)
 }

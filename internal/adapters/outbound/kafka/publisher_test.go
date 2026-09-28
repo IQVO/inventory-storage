@@ -187,6 +187,47 @@ func TestPublisher_InjectsTraceContextIntoHeaders(t *testing.T) {
 	qty, _ := shared.NewPositiveQuantity(5)
 	event := shared.NewStockReserved(time.Now(), "res-1", sku, qty, "order-42")
 
+	ctx, traceID, spanID := publishParentContext(t)
+
+	if err := pub.Publish(ctx, event); err != nil {
+		t.Fatalf("Publish returned error: %v", err)
+	}
+
+	if len(writer.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(writer.messages))
+	}
+
+	traceparent := headerValue(writer.messages[0].Headers, "traceparent")
+	if traceparent == "" {
+		t.Fatalf("no traceparent header on the published message: %+v", writer.messages[0].Headers)
+	}
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("recorded %d spans, want 1", len(spans))
+	}
+	published := spans[0]
+
+	assertPublishSpan(t, published, spanID)
+
+	// The traceparent must carry the shared trace id and the publish span's
+	// own id — a consumer extracting it lands on this trace, as a child of
+	// this span rather than a sibling.
+	want := "00-" + traceID.String() + "-" + published.SpanContext().SpanID().String() + "-01"
+	if traceparent != want {
+		t.Errorf("traceparent = %q, want %q", traceparent, want)
+	}
+
+	assertMessagingAttributes(t, published)
+}
+
+// publishParentContext builds a context carrying a fixed, sampled span
+// context, so the publish span's parent linkage can be asserted without an
+// SDK exporter. It returns the context plus the parent's trace and span ids,
+// for comparison against what the publisher stamped.
+func publishParentContext(t *testing.T) (context.Context, trace.TraceID, trace.SpanID) {
+	t.Helper()
+
 	traceID, err := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
 	if err != nil {
 		t.Fatalf("TraceIDFromHex: %v", err)
@@ -200,51 +241,43 @@ func TestPublisher_InjectsTraceContextIntoHeaders(t *testing.T) {
 		SpanID:     spanID,
 		TraceFlags: trace.FlagsSampled,
 	}))
+	return ctx, traceID, spanID
+}
 
-	if err := pub.Publish(ctx, event); err != nil {
-		t.Fatalf("Publish returned error: %v", err)
-	}
-
-	if len(writer.messages) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(writer.messages))
-	}
-
-	var traceparent string
-	for _, h := range writer.messages[0].Headers {
-		if h.Key == "traceparent" {
-			traceparent = string(h.Value)
+// headerValue returns the value of the last header named key, or "" when no
+// such header is present.
+func headerValue(headers []kafkago.Header, key string) string {
+	value := ""
+	for _, h := range headers {
+		if h.Key == key {
+			value = string(h.Value)
 		}
 	}
-	if traceparent == "" {
-		t.Fatalf("no traceparent header on the published message: %+v", writer.messages[0].Headers)
-	}
+	return value
+}
 
-	spans := recorder.Ended()
-	if len(spans) != 1 {
-		t.Fatalf("recorded %d spans, want 1", len(spans))
-	}
-	published := spans[0]
+// assertPublishSpan pins the publish span's name, kind and parent — the
+// fleet-wide convention the other four services follow.
+func assertPublishSpan(t *testing.T, span sdktrace.ReadOnlySpan, parentSpanID trace.SpanID) {
+	t.Helper()
 
-	if published.Name() != "kafka.publish "+kafka.Topic {
-		t.Errorf("span name = %q, want %q", published.Name(), "kafka.publish "+kafka.Topic)
+	if span.Name() != "kafka.publish "+kafka.Topic {
+		t.Errorf("span name = %q, want %q", span.Name(), "kafka.publish "+kafka.Topic)
 	}
-	if published.SpanKind() != trace.SpanKindProducer {
-		t.Errorf("span kind = %v, want producer", published.SpanKind())
+	if span.SpanKind() != trace.SpanKindProducer {
+		t.Errorf("span kind = %v, want producer", span.SpanKind())
 	}
-	if published.Parent().SpanID() != spanID {
-		t.Errorf("publish span parent = %s, want the caller's span %s", published.Parent().SpanID(), spanID)
+	if span.Parent().SpanID() != parentSpanID {
+		t.Errorf("publish span parent = %s, want the caller's span %s", span.Parent().SpanID(), parentSpanID)
 	}
+}
 
-	// The traceparent must carry the shared trace id and the publish span's
-	// own id — a consumer extracting it lands on this trace, as a child of
-	// this span rather than a sibling.
-	want := "00-" + traceID.String() + "-" + published.SpanContext().SpanID().String() + "-01"
-	if traceparent != want {
-		t.Errorf("traceparent = %q, want %q", traceparent, want)
-	}
+// assertMessagingAttributes pins the publish span's messaging attributes.
+func assertMessagingAttributes(t *testing.T, span sdktrace.ReadOnlySpan) {
+	t.Helper()
 
 	attrs := map[string]string{}
-	for _, attr := range published.Attributes() {
+	for _, attr := range span.Attributes() {
 		attrs[string(attr.Key)] = attr.Value.AsString()
 	}
 	if attrs["messaging.system"] != "kafka" {
