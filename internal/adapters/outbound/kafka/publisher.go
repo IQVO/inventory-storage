@@ -85,12 +85,19 @@ func NewPublisher(writer Writer, reservations ports.ReservationRepo) *Publisher 
 }
 
 // NewWriter builds a *kafkago.Writer addressed at Topic on the given broker
-// addresses.
+// addresses. Balancer is kafkago.Hash (FNV-1a of the message Key), not
+// LeastBytes: LeastBytes ignores Message.Key entirely when choosing a
+// partition (it only uses len(Key) to track a byte counter), so it cannot
+// route same-key messages to the same partition no matter what Key Encode
+// sets — confirmed against a real broker (see
+// TestPublisher_RealBroker_SameReservationLandsOnSamePartition). Hash is
+// what actually makes the per-reservation ordering guarantee in Encode's
+// doc comment true (ADR-0021).
 func NewWriter(brokers ...string) *kafkago.Writer {
 	return &kafkago.Writer{
 		Addr:                   kafkago.TCP(brokers...),
 		Topic:                  Topic,
-		Balancer:               &kafkago.LeastBytes{},
+		Balancer:               &kafkago.Hash{},
 		AllowAutoTopicCreation: true,
 	}
 }
@@ -109,9 +116,14 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 
 // Encode maps event onto its integration wire form: the envelope, the
 // event's data payload, and W3C trace headers injected from whatever span
-// is active on ctx. It returns an empty slice (never an error) for an
-// event outside this publisher's contract, so a caller — the outbox
-// publisher included — can hand it the full event stream indiscriminately.
+// is active on ctx. The Kafka message Key is always the reservation
+// aggregate id (ReservationID) — StockReserved and ReservationRevoked for
+// the SAME reservation must land on the same partition so a consumer never
+// observes them out of order (a real bug exposed when the shared broker's
+// business topics grew from 1 to 8 partitions — see ADR-0021). It returns
+// an empty slice (never an error) for an event outside this publisher's
+// contract, so a caller — the outbox publisher included — can hand it the
+// full event stream indiscriminately.
 //
 // The trace headers carry whatever span is active on ctx at the moment
 // Encode runs: for a direct Publish call that is the "kafka.publish
@@ -121,10 +133,12 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 // Kafka write happens later, asynchronously, via the relay.
 func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Encoded, error) {
 	var data reservationData
+	var key string
 
 	switch e := event.(type) {
 	case shared.StockReserved:
 		data = reservationData{SKU: e.SKU.String(), Quantity: e.Quantity.Int(), DemandRef: e.DemandRef}
+		key = e.ReservationID
 	case shared.ReservationRevoked:
 		res, err := p.reservations.FindByID(ctx, e.ReservationID)
 		if err != nil {
@@ -134,6 +148,7 @@ func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Enc
 			return nil, ErrReservationNotFound
 		}
 		data = reservationData{SKU: res.SKU().String(), Quantity: res.Quantity().Int(), DemandRef: res.DemandRef()}
+		key = e.ReservationID
 	default:
 		return nil, nil
 	}
@@ -162,7 +177,7 @@ func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Enc
 	headers := []kafkago.Header{}
 	otel.GetTextMapPropagator().Inject(ctx, headerCarrier{headers: &headers})
 
-	return []Encoded{{Topic: Topic, EventType: env.EventType, Value: msg, Headers: headers}}, nil
+	return []Encoded{{Topic: Topic, EventType: env.EventType, Key: []byte(key), Value: msg, Headers: headers}}, nil
 }
 
 // Compile-time assertion that Publisher satisfies the outbox's Encoder port.

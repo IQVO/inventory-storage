@@ -17,12 +17,16 @@ type RelaySink struct {
 
 // NewRelaySink builds a RelaySink writing to brokers with auto topic
 // creation enabled (both topics already exist in a real cluster, but a
-// throwaway integration-test broker starts empty).
+// throwaway integration-test broker starts empty). Balancer is
+// kafkago.Hash, not LeastBytes, for the same reason as the direct
+// Publisher/AnalyticsPublisher writers (see kafka.NewWriter's doc comment,
+// ADR-0021): LeastBytes ignores Message.Key when routing, so it cannot
+// honor the aggregate-id Key every Encoder on this path already sets.
 func NewRelaySink(brokers []string) *RelaySink {
 	return &RelaySink{
 		writer: &kafkago.Writer{
 			Addr:                   kafkago.TCP(brokers...),
-			Balancer:               &kafkago.LeastBytes{},
+			Balancer:               &kafkago.Hash{},
 			AllowAutoTopicCreation: true,
 		},
 	}

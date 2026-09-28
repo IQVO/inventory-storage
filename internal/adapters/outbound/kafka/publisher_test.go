@@ -91,6 +91,9 @@ func TestPublisher_StockReserved_EnvelopeShape(t *testing.T) {
 	if data.SKU != "SKU-1" || data.Quantity != 5 || data.DemandRef != "order-42" {
 		t.Errorf("data = %+v, want {SKU-1 5 order-42}", data)
 	}
+	if string(writer.messages[0].Key) != "res-1" {
+		t.Errorf("Key = %q, want %q (the reservation id)", string(writer.messages[0].Key), "res-1")
+	}
 }
 
 func TestPublisher_ReservationRevoked_EnvelopeShape(t *testing.T) {
@@ -139,6 +142,72 @@ func TestPublisher_ReservationRevoked_EnvelopeShape(t *testing.T) {
 	}
 	if data.SKU != "SKU-2" || data.Quantity != 3 || data.DemandRef != "order-99" {
 		t.Errorf("data = %+v, want {SKU-2 3 order-99}", data)
+	}
+	if string(writer.messages[0].Key) != "res-2" {
+		t.Errorf("Key = %q, want %q (the reservation id)", string(writer.messages[0].Key), "res-2")
+	}
+}
+
+// TestPublisher_SameReservation_AllEventsShareTheSameKey proves every
+// integration event for the SAME reservation carries an identical Kafka
+// message Key, regardless of event type. With the shared broker's business
+// topics now at 8 partitions (up from 1 — the partition-scaleup that
+// exposed this gap, see ADR-0021), a stable per-aggregate key is what
+// guarantees StockReserved and a later ReservationRevoked for that exact
+// reservation land on the same partition, and so are never observed out of
+// order by a consumer. A round-robin/unkeyed publish would scatter them
+// across up to 8 partitions in publish order instead.
+func TestPublisher_SameReservation_AllEventsShareTheSameKey(t *testing.T) {
+	writer := &fakeWriter{}
+	repo := memory.NewReservationRepo()
+
+	sku, _ := shared.NewSKU("SKU-9")
+	qty, _ := shared.NewPositiveQuantity(7)
+	res, err := reservation.New("res-shared", sku, qty, "order-shared",
+		[]reservation.Allocation{{StockUnitID: "unit-9", Quantity: qty}},
+		time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Hour)
+	if err != nil {
+		t.Fatalf("failed to build reservation: %v", err)
+	}
+	if err := repo.Save(context.Background(), res); err != nil {
+		t.Fatalf("failed to save reservation: %v", err)
+	}
+
+	pub := kafka.NewPublisher(writer, repo)
+
+	// StockReserved first, for the same reservation id.
+	stockReserved := shared.NewStockReserved(time.Now(), "res-shared", sku, qty, "order-shared")
+	if err := pub.Publish(context.Background(), stockReserved); err != nil {
+		t.Fatalf("Publish StockReserved returned error: %v", err)
+	}
+
+	// Then the reservation is revoked; the repo must reflect that for the
+	// revoked-lookup enrichment to succeed.
+	if err := res.Revoke(); err != nil {
+		t.Fatalf("failed to revoke reservation: %v", err)
+	}
+	if err := repo.Save(context.Background(), res); err != nil {
+		t.Fatalf("failed to re-save revoked reservation: %v", err)
+	}
+	revoked := shared.NewReservationRevoked(time.Now(), "res-shared")
+	if err := pub.Publish(context.Background(), revoked); err != nil {
+		t.Fatalf("Publish ReservationRevoked returned error: %v", err)
+	}
+
+	if len(writer.messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(writer.messages))
+	}
+
+	firstKey := string(writer.messages[0].Key)
+	secondKey := string(writer.messages[1].Key)
+	if firstKey == "" {
+		t.Fatal("expected a non-empty partition key on the StockReserved message")
+	}
+	if firstKey != secondKey {
+		t.Errorf("Key mismatch across events for the same reservation: StockReserved Key = %q, ReservationRevoked Key = %q", firstKey, secondKey)
+	}
+	if firstKey != "res-shared" {
+		t.Errorf("Key = %q, want %q (the reservation id)", firstKey, "res-shared")
 	}
 }
 

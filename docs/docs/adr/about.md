@@ -76,6 +76,7 @@ Typos, broken links and formatting are of course fair game.
 | [0016](./0016-standard-metrics-convention.md) | Standard metrics convention across the fleet | Accepted |
 | [0017](./0017-transactional-outbox.md) | Transactional outbox + relay for Kafka publishing | Accepted |
 | [0018](./0018-idempotency-key-middleware.md) | Transactional Idempotency-Key middleware for POST /stock/receive and POST /reservations | Accepted |
+| [0021](./0021-kafka-producer-partition-key.md) | Key every integration/analytics Kafka message by its aggregate id, and route by Hash not LeastBytes | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

@@ -88,6 +88,7 @@ const sidebars: SidebarsConfig = {
         'adr/0016-standard-metrics-convention',
         'adr/0017-transactional-outbox',
         'adr/0020-resilience-circuit-breaker-retry-dlq-shutdown',
+        'adr/0021-kafka-producer-partition-key',
       ],
     },
   ],

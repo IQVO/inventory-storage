@@ -36,6 +36,9 @@ func TestPublisher_Encode_StockReserved(t *testing.T) {
 	if enc.EventType != "StockReserved" {
 		t.Errorf("EventType = %q, want StockReserved", enc.EventType)
 	}
+	if string(enc.Key) != "res-1" {
+		t.Errorf("Key = %q, want %q (the reservation id)", string(enc.Key), "res-1")
+	}
 
 	var env envelope
 	if err := json.Unmarshal(enc.Value, &env); err != nil {
