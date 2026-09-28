@@ -70,10 +70,13 @@ new event names when wiring a publisher; carry them through with this exact
 `data` shape.
 
 Consumers should tolerate unknown `type` values (the catalog will grow),
-deduplicate on `(source, id)` (Kafka delivery is at-least-once), and not
-assume cross-SKU ordering (`LeastBytes` balancer, no partition key). The
-authoritative answer for correctness-sensitive reads is always
-`GET /inventory/{sku}/usable`, not the event stream.
+deduplicate on `(source, id)` (Kafka delivery is at-least-once). Every
+message is keyed by the reservation id (`ReservationID`), so per-reservation
+ordering (StockReserved before its later ReservationRevoked) is guaranteed
+regardless of the topic's partition count (ADR-0021) — cross-reservation/
+cross-SKU ordering is still not guaranteed, and the authoritative answer
+for correctness-sensitive reads is always `GET /inventory/{sku}/usable`,
+not the event stream.
 
 ## Consumed: `warehouse.facility.events` (ADR-0013)
 

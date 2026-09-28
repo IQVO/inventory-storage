@@ -64,13 +64,19 @@ type AnalyticsPublisher struct {
 
 // NewAnalyticsPublisher constructs an AnalyticsPublisher writing to
 // AnalyticsTopic on brokers. newId mints the envelope event_id; reservations
-// is used to enrich reservation-lifecycle events with their SKU.
+// is used to enrich reservation-lifecycle events with their SKU. Balancer
+// is kafkago.Hash, not LeastBytes: LeastBytes ignores Message.Key entirely
+// when routing (it only tracks per-partition byte counts), so it cannot
+// honor the aggregate-id Key marshalData already sets on every message —
+// confirmed against a real broker in the integration publisher's own
+// TestPublisher_RealBroker_SameReservationLandsOnSamePartition (ADR-0021).
+// Hash is what actually makes same-key messages land on the same partition.
 func NewAnalyticsPublisher(brokers []string, reservations ports.ReservationRepo, newId func() string) *AnalyticsPublisher {
 	return &AnalyticsPublisher{
 		Writer: &kafkago.Writer{
 			Addr:                   kafkago.TCP(brokers...),
 			Topic:                  AnalyticsTopic,
-			Balancer:               &kafkago.LeastBytes{},
+			Balancer:               &kafkago.Hash{},
 			AllowAutoTopicCreation: true,
 		},
 		Reservations: reservations,
