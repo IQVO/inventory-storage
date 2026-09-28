@@ -5,19 +5,61 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/exaring/otelpgx"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// MaxConns is the OLTP pool's per-process connection ceiling, shared by
+// both cmd/inventory (the api Deployment, HPA-scalable up to
+// charts/inventory-storage values.yaml's autoscaling.api.maxReplicas, 4)
+// and cmd/mcp (the mcp Deployment, fixed at 1 replica — see that chart
+// value's own doc comment for why it does not get an HPA).
+//
+// Sized against this shared Postgres instance's REAL max_connections
+// (100, the Bitnami chart's own default — warehouse-infra's
+// terraform/postgres.tf does not override it): at the OLTP Deployment's
+// HPA ceiling of 4 replicas, 4 * 10 = 40 connections, ~40% of the
+// instance-wide ceiling for this ONE of 10 backend services' OLTP path
+// alone, deliberately leaving headroom for the other 9 services (and
+// this service's own mcp/projector/reports processes) sharing the SAME
+// Postgres instance. Mirrors order-management's ADR-0026 reference
+// value exactly — see docs/docs/adr/0022-horizontal-autoscaling-and-
+// pgxpool-tuning.md for the full connection-budget accounting.
+const MaxConns = 10
+
+// StatementTimeout bounds how long a single query may hold a connection
+// on the OLTP database before Postgres cancels it. inventory-storage's
+// OLTP queries are single-aggregate reads/writes (one StockUnit,
+// Location/Bin, Reservation or ProductClassification row, keyed by id)
+// that normally complete in low milliseconds; 5s is generous headroom
+// for lock contention or a slow disk without letting one runaway or
+// blocked query hold a pool slot — and therefore a bulkhead slot the
+// HPA's replica math is sizing capacity around — indefinitely. See the
+// pgxpool/statement_timeout ADR.
+const StatementTimeout = "5s"
+
 // NewPool opens a connection pool against databaseURL, traced by otelpgx so
 // every query, batch, copy and pool acquire becomes a child span of whatever
-// span is active on the calling context.
+// span is active on the calling context, with MaxConns and StatementTimeout
+// applied to every connection.
 //
 // otelpgx records the *normalized* statement, never the bound arguments, so
 // SKUs, bin codes and demand references never leave the process as span
 // attributes.
 func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	return NewPoolWithLimits(ctx, databaseURL, MaxConns, StatementTimeout)
+}
+
+// NewPoolWithLimits is NewPool's shared implementation, taking maxConns and
+// statementTimeout explicitly so an integration test can drive a much
+// shorter timeout directly — proving the AfterConnect hook really applies
+// the setting to every new connection, by triggering an actual
+// cancellation — without waiting out the real production value. Production
+// callers should use NewPool.
+func NewPoolWithLimits(ctx context.Context, databaseURL string, maxConns int32, statementTimeout string) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, err
@@ -26,6 +68,12 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	// pgxpool promotes this to its acquire tracer too, since otelpgx's
 	// Tracer also satisfies pgxpool.AcquireTracer.
 	config.ConnConfig.Tracer = otelpgx.NewTracer()
+
+	config.MaxConns = maxConns
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, fmt.Sprintf("SET statement_timeout = '%s'", statementTimeout))
+		return err
+	}
 
 	return pgxpool.NewWithConfig(ctx, config)
 }
