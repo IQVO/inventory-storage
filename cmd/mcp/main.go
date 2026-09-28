@@ -60,9 +60,17 @@ func run() error {
 
 	httpAddr := getenv("MCP_ADDR", ":8090")
 	databaseURL := os.Getenv("DATABASE_URL")
+	// See cmd/inventory/main.go's identical fallback and buildAdapters'
+	// doc comment for the full "why" (session-scoped pg_advisory_lock vs
+	// PgBouncer transaction-pooling incompatibility, ADR
+	// 0023-migrations-direct-postgres-connection.md, mirroring
+	// order-management's ADR-0029). This binary also runs migrations on
+	// start (buildAdapters below), so it needs the same direct-connection
+	// split.
+	migrationsDatabaseURL := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
 	migrationsPath := getenv("MIGRATIONS_PATH", "migrations")
 
-	stockRepo, reservationRepo, publisher, closeAdapters, err := buildAdapters(context.Background(), databaseURL, migrationsPath, logger)
+	stockRepo, reservationRepo, publisher, closeAdapters, err := buildAdapters(context.Background(), databaseURL, migrationsDatabaseURL, migrationsPath, logger)
 	if err != nil {
 		return err
 	}
@@ -146,7 +154,13 @@ func newRouter(mcpHandler http.Handler) http.Handler {
 // exactly the selection cmd/inventory makes. The MCP server always logs its
 // events (it is not the primary Kafka publisher), so a plain LogPublisher is
 // used regardless of the repo choice.
-func buildAdapters(ctx context.Context, databaseURL, migrationsPath string, logger *slog.Logger) (
+//
+// migrationsDatabaseURL is used ONLY for the golang-migrate step below,
+// mirroring cmd/inventory/main.go's openPostgresPool exactly — see its doc
+// comment for the full "why" a direct, non-pooled connection is needed
+// here even though the pgxpool opened just after (databaseURL) stays on
+// PgBouncer.
+func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migrationsPath string, logger *slog.Logger) (
 	ports.StockRepo, ports.ReservationRepo, ports.EventPublisher, func(), error,
 ) {
 	noop := func() {}
@@ -163,7 +177,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsPath string, logg
 	// single attempt turns that transient condition into CrashLoopBackOff;
 	// the retry still fails closed once its budget is exhausted.
 	if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
-		return postgres.RunMigrations(databaseURL, migrationsPath)
+		return postgres.RunMigrations(migrationsDatabaseURL, migrationsPath)
 	}); err != nil {
 		return nil, nil, nil, noop, err
 	}
