@@ -40,6 +40,9 @@ type StowStock struct {
 	Clock           ports.Clock
 	Classifications ports.ProductClassificationRepo
 	LocationLookup  ports.LocationClassificationLookup
+	// UnitOfWork brackets every Save and Publish below atomically (ADR
+	// 0017). Optional: nil means "no transactional backing".
+	UnitOfWork ports.UnitOfWork
 }
 
 func (uc *StowStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Quantity, binID shared.BinId) (*stock.StockUnit, error) {
@@ -72,18 +75,20 @@ func (uc *StowStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Qua
 		return nil, err
 	}
 
-	if err := uc.Locations.Save(ctx, bin); err != nil {
-		return nil, err
-	}
-	if err := uc.Stock.Save(ctx, unit); err != nil {
-		return nil, err
-	}
-
 	now := uc.Clock.Now()
-	if err := uc.Events.Publish(ctx, shared.NewItemStowed(now, sku, binID, qty)); err != nil {
-		return nil, err
-	}
-	if err := uc.Events.Publish(ctx, shared.NewLocationRecorded(now, unit.ID(), binID)); err != nil {
+	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		if err := uc.Locations.Save(ctx, bin); err != nil {
+			return err
+		}
+		if err := uc.Stock.Save(ctx, unit); err != nil {
+			return err
+		}
+		if err := uc.Events.Publish(ctx, shared.NewItemStowed(now, sku, binID, qty)); err != nil {
+			return err
+		}
+		return uc.Events.Publish(ctx, shared.NewLocationRecorded(now, unit.ID(), binID))
+	})
+	if err != nil {
 		return nil, err
 	}
 

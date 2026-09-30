@@ -16,6 +16,7 @@ import (
 	"time"
 
 	inboundmcp "github.com/claudioed/inventory-storage/internal/adapters/inbound/mcp"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/bootretry"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
@@ -59,9 +60,17 @@ func run() error {
 
 	httpAddr := getenv("MCP_ADDR", ":8090")
 	databaseURL := os.Getenv("DATABASE_URL")
+	// See cmd/inventory/main.go's identical fallback and buildAdapters'
+	// doc comment for the full "why" (session-scoped pg_advisory_lock vs
+	// PgBouncer transaction-pooling incompatibility, ADR
+	// 0023-migrations-direct-postgres-connection.md, mirroring
+	// order-management's ADR-0029). This binary also runs migrations on
+	// start (buildAdapters below), so it needs the same direct-connection
+	// split.
+	migrationsDatabaseURL := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
 	migrationsPath := getenv("MIGRATIONS_PATH", "migrations")
 
-	stockRepo, reservationRepo, publisher, closeAdapters, err := buildAdapters(databaseURL, migrationsPath, logger)
+	stockRepo, reservationRepo, publisher, closeAdapters, err := buildAdapters(context.Background(), databaseURL, migrationsDatabaseURL, migrationsPath, logger)
 	if err != nil {
 		return err
 	}
@@ -145,7 +154,13 @@ func newRouter(mcpHandler http.Handler) http.Handler {
 // exactly the selection cmd/inventory makes. The MCP server always logs its
 // events (it is not the primary Kafka publisher), so a plain LogPublisher is
 // used regardless of the repo choice.
-func buildAdapters(databaseURL, migrationsPath string, logger *slog.Logger) (
+//
+// migrationsDatabaseURL is used ONLY for the golang-migrate step below,
+// mirroring cmd/inventory/main.go's openPostgresPool exactly — see its doc
+// comment for the full "why" a direct, non-pooled connection is needed
+// here even though the pgxpool opened just after (databaseURL) stays on
+// PgBouncer.
+func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migrationsPath string, logger *slog.Logger) (
 	ports.StockRepo, ports.ReservationRepo, ports.EventPublisher, func(), error,
 ) {
 	noop := func() {}
@@ -156,11 +171,27 @@ func buildAdapters(databaseURL, migrationsPath string, logger *slog.Logger) (
 		return memory.NewStockRepo(), memory.NewReservationRepo(), publisher, noop, nil
 	}
 
-	if err := postgres.RunMigrations(databaseURL, migrationsPath); err != nil {
+	// Retried: this fleet's Istio native sidecars reset EVERY pod's first
+	// outbound TCP dial ~10s after the app starts
+	// (holdApplicationUntilProxyStarts is a no-op for native sidecars). A
+	// single attempt turns that transient condition into CrashLoopBackOff;
+	// the retry still fails closed once its budget is exhausted.
+	if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
+		return postgres.RunMigrations(migrationsDatabaseURL, migrationsPath)
+	}); err != nil {
 		return nil, nil, nil, noop, err
 	}
-	pool, err := postgres.NewPool(context.Background(), databaseURL)
+	pool, err := postgres.NewPool(ctx, databaseURL)
 	if err != nil {
+		return nil, nil, nil, noop, err
+	}
+	// ParseConfig/NewWithConfig do not themselves establish a connection,
+	// so without this the first-dial reset would surface inside the first
+	// served request instead of at boot.
+	if err := bootretry.Retry(ctx, logger, "ping database", func() error {
+		return pool.Ping(ctx)
+	}); err != nil {
+		pool.Close()
 		return nil, nil, nil, noop, err
 	}
 	return postgres.NewStockRepo(pool), postgres.NewReservationRepo(pool), publisher, pool.Close, nil

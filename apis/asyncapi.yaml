@@ -298,15 +298,21 @@ components:
       summary: A reservation's timeout elapsed before pick confirmation.
       description: >
         Describes a reservation that timed out without being confirmed or
-        revoked, so its quantity returns to usable. The Reservation aggregate
-        supports this transition (`IsExpired`, `Expire`), but no use case
-        currently raises the event.
+        revoked, so its quantity returns to usable. Raised lazily: the
+        Reservation aggregate's `IsExpired`/`Expire()` are invoked the next
+        time the reservation is read (GetReservationsByDemandRef,
+        RevokeReservation, ConfirmPick, or ReserveStock's own idempotency
+        lookup), not by a background sweeper — see ADR 0003's "Lazy expiry"
+        section for the full rationale.
 
 
-        Not yet wired to the outbound Kafka adapter — documented here as part
-        of the domain-event catalog. Stronger still than the other
-        catalog-only entries: it is not emitted by any use case today, so
-        nothing observes it even in-process.
+        Delivered in-process to every consumer of `ports.EventPublisher`,
+        and reaches the analytics Kafka topic
+        (`warehouse.inventory.analytics`) via
+        `kafka/analytics_publisher.go`, the same way `ReservationRevoked`
+        does. It does not cross to the integration topic
+        (`warehouse.inventory.events`) — that topic still forwards only
+        `StockReserved` and `ReservationRevoked`; see the catalog note above.
       contentType: application/cloudevents+json
       tags:
         - name: reservation

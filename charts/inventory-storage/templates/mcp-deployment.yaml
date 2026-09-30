@@ -62,6 +62,17 @@ spec:
                 secretKeyRef:
                   name: {{ include "inventory-storage.databaseSecretName" . }}
                   key: {{ .Values.database.existingSecretKey }}
+            {{- if .Values.database.migrationsExistingSecretKey }}
+            # See values.yaml's database.migrationsExistingSecretKey comment
+            # and ADR-0023: cmd/mcp also runs migrations on start (see the
+            # comment above), so it needs the same direct-connection split.
+            - name: MIGRATIONS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "inventory-storage.databaseSecretName" . }}
+                  key: {{ .Values.database.migrationsExistingSecretKey }}
+                  optional: true
+            {{- end }}
             {{- end }}
             {{- if .Values.analytics.enabled }}
             # Enables the read-only get_inventory_flow_accuracy_report tool,
@@ -73,6 +84,15 @@ spec:
             - {{ toYaml . | nindent 14 | trim }}
             {{- end }}
           # GET /healthz is served by cmd/mcp, so the probes have a cheap target.
+          # startupProbe covers this fleet's known ~10s post-start
+          # first-outbound-dial reset (Istio native sidecars); see
+          # values.yaml's startupProbe comment for the full rationale.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /healthz

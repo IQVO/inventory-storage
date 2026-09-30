@@ -30,7 +30,7 @@ table, Kafka) is a composition-root decision.
 | `ItemStowed` | StockUnit | `StowStock` succeeds — item-scan + location-scan both present | `sku`, `binId`, `quantity` |
 | `LocationRecorded` | StockUnit | Immediately after `ItemStowed`; the bin now authoritatively holds this unit | `stockUnitId`, `binId` |
 | `StockReserved` | Reservation | `ReserveStock` succeeds | `reservationId`, `sku`, `quantity`, `demandRef` |
-| `ReservationExpired` | Reservation | A reservation's timeout elapses before confirmation — **defined, not yet raised**, see below | `reservationId` |
+| `ReservationExpired` | Reservation | A reservation's timeout elapses and is discovered at the next read (`GetReservationsByDemandRef`, `RevokeReservation`, `ConfirmPick`, or `ReserveStock`'s own idempotency lookup) — **lazy, not swept**, see below | `reservationId` |
 | `ReservationRevoked` | Reservation | `RevokeReservation` succeeds | `reservationId` |
 | `StockPicked` | Reservation | `ConfirmPick` consumes a reservation | `reservationId`, `sku`, `quantity` |
 | `ItemUnlocated` | StockUnit | A cycle-count shortfall cannot account for stock | `stockUnitId`, `sku`, `binId`, `quantity` |
@@ -51,7 +51,7 @@ flowchart LR
   CC["RunCycleCount"] --> E7["CycleCountCompleted"]
   CC --> E8["DiscrepancyDetected"]
   CC --> E9["ItemUnlocated"]
-  EXP["timeout"] --> E10["ReservationExpired"]
+  EXP["lazy read"] --> E10["ReservationExpired"]
   CLS["ClassifyProduct"] --> E11["ProductClassified"]
 
   E1 & E2 & E3 & E6 & E7 & E8 & E9 & E10 & E11 --> LOG["ports.EventPublisher<br/>in-process only"]
@@ -71,23 +71,41 @@ two are the published integration contract, and the other nine (including
 full catalog and marks each catalog-only message as such, so a downstream
 team cannot mistake a documented event for a wired one.
 
-## One honest gap: nothing sweeps expirations yet
+## Lazy expiry: no sweeper, resolved at the next read
 
 `ReservationExpired` and `Reservation.Expire()` exist in the domain and are
-unit-tested, but **no use case calls `Expire()` and nothing publishes
-`ReservationExpired` today** — there is no background sweeper. The timeout is
-still enforced, just lazily and at a different point:
+unit-tested, and **are now genuinely raised** — but not by a background
+sweeper. The decision (2026-09-26, see [ADR 0003](/docs/adr/0003-revocable-reservations))
+is **lazy expiry**: a timed-out reservation is discovered and resolved the
+next time it is read, not on a schedule. Every read path that can return a
+`Reservation` runs the same check first — `GetReservationsByDemandRef`,
+`RevokeReservation`, `ConfirmPick`, and `ReserveStock`'s own idempotency
+lookup — so there is no window where a stale `ACTIVE` reservation can be
+returned to a caller:
 
-- `Reservation.Confirm(now)` returns `ErrExpired` past `expiresAt`, so a
-  timed-out reservation can never be confirmed into a pick;
-- a timed-out reservation's status remains `ACTIVE` in storage, so
-  `RevokeReservation` still accepts it and returns its quantity to usable.
+- if the reservation is `ACTIVE` and past `expiresAt`, the read transitions
+  it to `EXPIRED`, returns its allocated quantity to the owning `StockUnit`'s
+  usable pool, persists both changes, and publishes `ReservationExpired`
+  through the same `ports.EventPublisher` every other domain event uses —
+  all before the read returns;
+- if it is already `EXPIRED`, `CONFIRMED`, or `REVOKED`, the read is a no-op:
+  the event is never raised twice for the same reservation;
+- `Reservation.Confirm(now)` still independently returns `ErrExpired` past
+  `expiresAt` as a second line of defence — but by the time `ConfirmPick`
+  reaches that call, the lazy-expiry check on its own read has usually
+  already resolved the reservation to `EXPIRED`, so the caller sees
+  `ErrAlreadyResolved` instead.
 
-The practical consequence is that a reservation nobody revokes keeps holding
-quantity out of usable until someone calls `DELETE /reservations/{id}`. A
-sweeper that periodically expires and releases them is a real gap, listed here
-rather than papered over. `apis/asyncapi.yaml` likewise documents
-`ReservationExpired` as catalog-only.
+The practical consequence: a reservation nobody revokes still holds quantity
+out of usable until it is *read* — there remains no proactive reclaim of
+quantity for a reservation that both times out **and** is never looked up
+again. That is judged an acceptable trade-off for this service's read
+volume; if it stops being one, the fix is a scheduled read (e.g. a periodic
+call to `GetReservationsByDemandRef` or a dedicated sweep use case), not a
+change to the lazy check itself. `apis/asyncapi.yaml` documents
+`ReservationExpired`'s payload; it reaches the analytics topic
+(`warehouse.inventory.analytics`) the same way `ReservationRevoked` does, via
+`kafka/analytics_publisher.go`.
 
 ## Naming conventions
 

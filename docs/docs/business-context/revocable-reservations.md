@@ -75,12 +75,15 @@ pick against a claim whose window has closed. The claim is therefore bounded —
 past `expiresAt` it can no longer turn into a pick, and revoking it returns the
 quantity to usable.
 
-:::caution No expiry sweeper yet
-`Reservation.Expire()` and the `ReservationExpired` event exist and are
-unit-tested, but nothing calls them on a timer. Until a sweeper is added, a
-timed-out reservation keeps holding quantity out of usable until something
-issues `DELETE /reservations/{id}`. See
-[Domain Events](/docs/ddd/domain-events) for the detail.
+:::info Lazy expiry, not a sweeper
+`Reservation.Expire()` and the `ReservationExpired` event exist, are
+unit-tested, and are genuinely raised — but only when something reads the
+reservation (listing it by demand ref, revoking it, confirming its pick, or
+retrying `ReserveStock` against the same demand ref) after its window has
+closed. There is still no background timer: a timed-out reservation that
+nobody ever reads again keeps holding quantity out of usable until it is. See
+[Domain Events](/docs/ddd/domain-events#lazy-expiry-no-sweeper-resolved-at-the-next-read)
+for the detail.
 :::
 
 ### 3. Not bound to one physical holding

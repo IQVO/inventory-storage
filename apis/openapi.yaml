@@ -278,6 +278,14 @@ paths:
                     status: 409
                     detail: dot hazard class incompatible with another sku already stowed in this bin
                     instance: /stock/stow
+                concurrentModification:
+                  summary: The bin or stock unit was modified by another request (ADR 0019)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/concurrent-modification
+                    title: The resource was modified by another request; re-fetch the latest version and retry
+                    status: 409
+                    detail: the resource was modified by another request; re-fetch the latest version and retry
+                    instance: /stock/stow
         "422":
           description: Quantity present but not a positive number.
           content:
@@ -424,17 +432,30 @@ paths:
         "409":
           description: >
             Requested quantity exceeds this SKU's currently usable
-            inventory across all its StockUnits.
+            inventory across all its StockUnits, or a racing request
+            modified the same StockUnit first (ADR 0019 — re-fetch and
+            retry).
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/insufficient-usable
-                title: Requested quantity exceeds usable inventory
-                status: 409
-                detail: requested quantity exceeds usable inventory
-                instance: /reservations
+              examples:
+                insufficientUsable:
+                  summary: Requested quantity exceeds usable inventory
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/insufficient-usable
+                    title: Requested quantity exceeds usable inventory
+                    status: 409
+                    detail: requested quantity exceeds usable inventory
+                    instance: /reservations
+                concurrentModification:
+                  summary: A racing request modified the same stock unit first (ADR 0019)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/concurrent-modification
+                    title: The resource was modified by another request; re-fetch the latest version and retry
+                    status: 409
+                    detail: the resource was modified by another request; re-fetch the latest version and retry
+                    instance: /reservations
         "422":
           description: Quantity present but not a positive number.
           content:
@@ -483,17 +504,31 @@ paths:
                 detail: reservation not found
                 instance: /reservations/does-not-exist
         "409":
-          description: The reservation is already resolved (confirmed, revoked, or expired).
+          description: >
+            The reservation is already resolved (confirmed, revoked, or
+            expired), or a racing request modified the same reservation
+            first (ADR 0019 — re-fetch and retry).
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/reservation-already-resolved
-                title: Reservation is already resolved
-                status: 409
-                detail: reservation is already resolved (confirmed, revoked, or expired)
-                instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001
+              examples:
+                reservationAlreadyResolved:
+                  summary: Reservation is already resolved
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/reservation-already-resolved
+                    title: Reservation is already resolved
+                    status: 409
+                    detail: reservation is already resolved (confirmed, revoked, or expired)
+                    instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001
+                concurrentModification:
+                  summary: A racing request modified the same reservation first (ADR 0019)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/concurrent-modification
+                    title: The resource was modified by another request; re-fetch the latest version and retry
+                    status: 409
+                    detail: the resource was modified by another request; re-fetch the latest version and retry
+                    instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -533,17 +568,30 @@ paths:
           description: >
             The reservation cannot be confirmed: already resolved,
             expired, has no allocations, or the pick quantity/bin
-            release is inconsistent with current stock state.
+            release is inconsistent with current stock state — or a
+            racing request modified the same reservation, stock unit, or
+            bin first (ADR 0019 — re-fetch and retry).
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/reservation-expired
-                title: Reservation has expired
-                status: 409
-                detail: reservation has expired
-                instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001/confirm-pick
+              examples:
+                reservationExpired:
+                  summary: Reservation has expired
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/reservation-expired
+                    title: Reservation has expired
+                    status: 409
+                    detail: reservation has expired
+                    instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001/confirm-pick
+                concurrentModification:
+                  summary: A racing request modified the same aggregate first (ADR 0019)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/concurrent-modification
+                    title: The resource was modified by another request; re-fetch the latest version and retry
+                    status: 409
+                    detail: the resource was modified by another request; re-fetch the latest version and retry
+                    instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001/confirm-pick
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -629,7 +677,10 @@ paths:
                 systemQuantity: 10
                 discrepancy: true
         "400":
-          description: Malformed JSON body, or binId path segment missing/empty.
+          description: >
+            Malformed JSON body, binId path segment missing/empty, or the
+            body omits countedQuantity (an explicit 0 is a valid empty-bin
+            count; omitting the field is a client mistake).
           content:
             application/problem+json:
               schema:
@@ -818,6 +869,7 @@ components:
         list-all semantics for this endpoint.
       schema:
         type: string
+        minLength: 1
         example: order-42
     BinId:
       name: binId
@@ -881,11 +933,12 @@ components:
       properties:
         sku:
           type: string
+          minLength: 1
           description: Stock-keeping unit identifier for the inbound goods.
           example: SKU-1
         quantity:
           type: integer
-          format: int32
+          format: int64
           minimum: 1
           description: Quantity received. Must be a positive integer.
           example: 10
@@ -912,6 +965,7 @@ components:
       properties:
         sku:
           type: string
+          minLength: 1
           description: Stock-keeping unit identifier (item-scan).
           example: SKU-1
         quantity:
@@ -922,6 +976,7 @@ components:
           example: 10
         binId:
           type: string
+          minLength: 1
           description: Target bin's coded slot identifier (location-scan).
           example: A-1-1
 
@@ -961,6 +1016,7 @@ components:
       properties:
         sku:
           type: string
+          minLength: 1
           example: SKU-1
         quantity:
           type: integer
@@ -970,6 +1026,7 @@ components:
           example: 6
         demandRef:
           type: string
+          minLength: 1
           description: Caller-supplied reference identifying the demand this reservation satisfies (e.g. an order id).
           example: order-42
 
@@ -1039,9 +1096,9 @@ components:
       properties:
         countedQuantity:
           type: integer
-          format: int32
+          format: int64
           minimum: 0
-          description: Physically counted quantity at the bin. Zero is valid (an empty bin); negative is rejected.
+          description: Physically counted quantity at the bin. Zero is valid (an empty bin); negative is rejected. The field itself is required — omitting it (or sending null) is a 400, not an implicit zero.
           example: 9
 
     CycleCountResult:

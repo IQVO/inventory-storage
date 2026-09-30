@@ -26,3 +26,21 @@ Feature: Cycle count
     And the domain event "DiscrepancyDetected" was published
     And the domain event "ItemUnlocated" was published
     And the Usable inventory for SKU "SKU-C" is 0
+
+  # Derived from apis/openapi.yaml — POST /bins/{binId}/cycle-count
+  # (runCycleCount): "An overage (counted > system) is reported as a
+  # DiscrepancyDetected/CycleCountCompleted(discrepancy=true) pair for a
+  # separate receiving/audit process to reconcile — this endpoint does not
+  # itself create the extra stock." Also .claude/rules/domain-model.md —
+  # "Design notes": only a shortfall flags StockUnits Unlocated; an
+  # overage is reported for reconciliation.
+
+  @bdd
+  Scenario: A cycle count overage is flagged without marking stock Unlocated
+    When I run a Cycle count on Bin "C-1-1" with counted quantity 10
+    Then the response status is 200
+    And the Cycle count reports system quantity 8 and counted quantity 10
+    And the Cycle count reports a discrepancy
+    And the domain event "DiscrepancyDetected" was published
+    And the domain event "ItemUnlocated" was not published
+    And the Usable inventory for SKU "SKU-C" is 8

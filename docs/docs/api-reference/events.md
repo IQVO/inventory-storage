@@ -120,7 +120,7 @@ message in its own `description`.
 | --- | --- | --- | --- |
 | **StockReserved** | `com.warehouse.wms.inventory-storage.reservation.StockReserved` | `sku` (string, req), `quantity` (int, req), `demand_ref` (string, req) | ✅ **Published** |
 | **ReservationRevoked** | `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | `sku` (string, req), `quantity` (int, req), `demand_ref` (string, req) | ✅ **Published** |
-| ReservationExpired | `com.warehouse.wms.inventory-storage.reservation.ReservationExpired` | `reservation_id` (string, req) | Catalog only — and not yet raised at all, see [Domain Events](/docs/ddd/domain-events#one-honest-gap-nothing-sweeps-expirations-yet) |
+| ReservationExpired | `com.warehouse.wms.inventory-storage.reservation.ReservationExpired` | `reservation_id` (string, req) | Catalog only for the integration topic — genuinely raised on lazy read and delivered to the analytics topic, see [Domain Events](/docs/ddd/domain-events#lazy-expiry-no-sweeper-resolved-at-the-next-read) |
 | StockPicked | `com.warehouse.wms.inventory-storage.reservation.StockPicked` | `reservation_id`, `sku`, `quantity` | Catalog only |
 
 ### Stock entity

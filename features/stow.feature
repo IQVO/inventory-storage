@@ -26,3 +26,16 @@ Feature: Stow
     Then the response status is 409
     And the problem detail type is "bin-full"
     And the Usable inventory for SKU "SKU-2" is 5
+
+  # Derived from apis/openapi.yaml — POST /stock/stow (stowStock): 404
+  # bin-not-found, "The target bin does not exist." A location-scan
+  # against a bin the system does not know is not a Stow: without a known
+  # Bin there is no StockUnit, so nothing becomes usable.
+
+  @bdd
+  Scenario: Stowing into an unknown bin is rejected
+    Given 5 units of SKU "SKU-3" have been Received
+    When I Stow 5 units of SKU "SKU-3" into Bin "NOPE-1"
+    Then the response status is 404
+    And the problem detail type is "bin-not-found"
+    And the Usable inventory for SKU "SKU-3" is 0

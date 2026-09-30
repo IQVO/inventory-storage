@@ -215,7 +215,8 @@ derived from 49 CFR §177.848 under four explicit simplification rules.**
   both in group C). A warehouse that genuinely needs to co-store
   multiple explosives divisions/groups in one bin will find this matrix
   over-blocks and needs the real §177.848(f) table — the same class of
-  gap ADR 0003 documented for the missing reservation-expiry sweeper:
+  gap ADR 0003 documents for lazy reservation expiry (resolved on read,
+  not swept — see its "Lazy expiry" section):
   recorded here rather than silently assumed away.
 - **The class-level collapse (Rules 1 and 4) necessarily loses
   precision relative to the real division-level table**, always in the

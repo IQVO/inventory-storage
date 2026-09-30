@@ -121,13 +121,26 @@ SKU-scoped claim against *usable* inventory.**
   `ErrAlreadyResolved` has dedicated tests at the aggregate, use-case and
   Gherkin levels.
 
-### Known gap
+### Lazy expiry (decided 2026-09-26)
 
-**There is no expiry sweeper.** `Reservation.Expire()` and the
-`ReservationExpired` event are modelled and unit-tested, but nothing calls them
-on a timer. The timeout is enforced lazily — `Confirm` refuses past
-`expiresAt` — and a timed-out reservation's status stays `ACTIVE`, so
-`RevokeReservation` still accepts it. The practical consequence is that a
-reservation nobody revokes keeps holding quantity out of usable until something
-issues `DELETE /reservations/{id}`. A scheduled sweeper that expires and
-releases them is outstanding work, recorded here rather than papered over.
+**There is no expiry sweeper, by choice.** `Reservation.Expire()` and the
+`ReservationExpired` event are modelled, unit-tested, and now genuinely
+raised — but the trigger is a *read*, not a timer. Every use case that looks
+up a `Reservation` (`GetReservationsByDemandRef`, `RevokeReservation`,
+`ConfirmPick`, and `ReserveStock`'s own idempotency lookup) first checks
+whether it is `ACTIVE` and past `expiresAt`; if so, it transitions it to
+`EXPIRED`, releases its allocated quantity back to usable, persists both
+changes, and publishes `ReservationExpired` — all before returning. A
+second, later read of the same reservation is a no-op (already `EXPIRED`,
+`CONFIRMED`, or `REVOKED` reservations are never re-processed). `Confirm`
+still independently refuses past `expiresAt` as a defence-in-depth check, but
+in practice the lazy-expiry check on `ConfirmPick`'s own read usually gets
+there first.
+
+The remaining trade-off: a reservation nobody revokes and nobody reads again
+still holds quantity out of usable indefinitely — lazy expiry only resolves a
+reservation at the moment something looks it up. That gap is accepted for
+now given this service's read volume (`GetReservationsByDemandRef` and the
+reservation list surface are read regularly); if it becomes a problem, the
+fix is a scheduled *read* (not a new domain concept) rather than reopening
+this decision.

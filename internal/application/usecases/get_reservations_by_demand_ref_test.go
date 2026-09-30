@@ -32,7 +32,7 @@ func TestGetReservationsByDemandRef_NoReservations_ReturnsEmpty(t *testing.T) {
 func TestGetReservationsByDemandRef_ReturnsMatchingReservation(t *testing.T) {
 	e := newEnv()
 	reserveDemand(t, e, "SKU-1", "A-1-1", "order-1", 10, 10, 6)
-	uc := &usecases.GetReservationsByDemandRef{Reservations: e.Reservations}
+	uc := &usecases.GetReservationsByDemandRef{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
 
 	res, err := uc.Execute(context.Background(), "order-1")
 	if err != nil {
@@ -68,7 +68,7 @@ func TestGetReservationsByDemandRef_MultipleReservationsForSameDemand_ReturnsAll
 		t.Fatalf("unexpected error retrying reserve: %v", err)
 	}
 
-	uc := &usecases.GetReservationsByDemandRef{Reservations: e.Reservations}
+	uc := &usecases.GetReservationsByDemandRef{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
 	res, err := uc.Execute(context.Background(), "order-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -83,7 +83,7 @@ func TestGetReservationsByDemandRef_DoesNotMatchOtherDemandRefs(t *testing.T) {
 	reserveDemand(t, e, "SKU-1", "A-1-1", "order-1", 10, 5, 5)
 	reserveDemand(t, e, "SKU-1", "A-1-2", "order-2", 10, 5, 5)
 
-	uc := &usecases.GetReservationsByDemandRef{Reservations: e.Reservations}
+	uc := &usecases.GetReservationsByDemandRef{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
 	res, err := uc.Execute(context.Background(), "order-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -96,7 +96,7 @@ func TestGetReservationsByDemandRef_DoesNotMatchOtherDemandRefs(t *testing.T) {
 func TestGetReservationsByDemandRef_RepoFails_PropagatesError(t *testing.T) {
 	e := newEnv()
 	resRepo := &failingReservationRepo{delegate: e.Reservations, failFindByDemandRef: true}
-	uc := &usecases.GetReservationsByDemandRef{Reservations: resRepo}
+	uc := &usecases.GetReservationsByDemandRef{Stock: e.Stock, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
 
 	if _, err := uc.Execute(context.Background(), "order-1"); err != errFake {
 		t.Fatalf("expected errFake, got %v", err)

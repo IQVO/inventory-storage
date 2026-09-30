@@ -113,6 +113,29 @@ type Reader interface {
 	Close() error
 }
 
+// dlqTopicSuffix names the dead-letter topic this consumer publishes an
+// unparseable/malformed message to, relative to its OWN source topic
+// (never a fixed constant): NewConsumerForTopic's isolated test topics
+// each get their own matching "<topic>.dlq".
+//
+// Unlike order-management's RepromiseConsumer (ADR-0025 §DLQ over
+// there), this consumer does NOT retry apply() before dead-lettering:
+// apply()'s only failure mode is a permanently-malformed JSON payload
+// (bad envelope/data shape, an empty required field) — a deterministic
+// parse failure that would fail identically on every retry attempt,
+// never a transient infrastructure error. Retrying it would just burn
+// CPU for zero benefit. The value this DLQ still adds (ADR-0020) is
+// pure visibility/replay: today a malformed message is logged and
+// silently skipped forever; now it is ALSO preserved on
+// Topic+dlqTopicSuffix (raw payload plus x-dlq-* headers) so an operator
+// can inspect and, if facility-layout ever fixes its own publish bug,
+// replay it. Readiness still advances past it either way (observe()
+// runs unconditionally) — this consumer was already fail-open/
+// non-blocking on a bad message before this change, unlike
+// RepromiseConsumer's redelivery-blocking risk that originally
+// motivated retry-then-DLQ there.
+const dlqTopicSuffix = ".dlq"
+
 // Consumer maintains the local location-classification view by replaying
 // Topic from its earliest offset and applying facility-layout's events.
 //
@@ -135,6 +158,19 @@ type Consumer struct {
 	ready   bool
 	readyCh chan struct{}
 	target  targetOffsets
+
+	// topic is the source topic this Consumer reads (Topic in
+	// production, an isolated test topic in integration tests) — kept
+	// so dlqPublish can derive topic+dlqTopicSuffix without a second
+	// constructor parameter.
+	topic string
+	// dlqWriter publishes a malformed message (ADR-0020 §DLQ) to
+	// topic+dlqTopicSuffix. nil in the zero-value struct every existing
+	// unit test builds directly via newTestConsumer (they never reach
+	// Run's DLQ path, only apply()/observe() directly) — dlqPublish
+	// itself guards against a nil writer so those tests keep compiling
+	// unchanged.
+	dlqWriter *kafkago.Writer
 }
 
 // targetOffsets is the per-partition "caught up" watermark captured once at
@@ -183,6 +219,11 @@ func NewConsumerForTopic(ctx context.Context, brokers []string, topic string, lo
 		slots:   make(map[string]string),
 		readyCh: make(chan struct{}),
 		target:  target,
+		topic:   topic,
+		dlqWriter: &kafkago.Writer{
+			Addr:  kafkago.TCP(brokers...),
+			Topic: topic + dlqTopicSuffix,
+		},
 	}
 	if len(target) == 0 {
 		// The topic has no partitions carrying any messages yet (brand
@@ -278,9 +319,14 @@ func isUnknownTopic(err error) bool {
 	return errors.Is(err, kafkago.UnknownTopicOrPartition)
 }
 
-// Close releases the underlying Kafka reader.
+// Close releases the underlying Kafka reader and, if configured, the DLQ
+// writer.
 func (c *Consumer) Close() error {
-	return c.Reader.Close()
+	readerErr := c.Reader.Close()
+	if c.dlqWriter == nil {
+		return readerErr
+	}
+	return errors.Join(readerErr, c.dlqWriter.Close())
 }
 
 // Ready reports whether this consumer has processed every message that
@@ -363,6 +409,16 @@ func (c *Consumer) GetSlotAttributes(_ context.Context, binID shared.BinId) (pro
 // Run consumes Topic until ctx is cancelled or the reader fails, applying
 // every recognized event to the local cache. It is intended to run in its
 // own goroutine for the life of the process.
+//
+// A message apply() cannot parse (malformed envelope/data JSON, a
+// required field missing) is dead-lettered to topic+dlqTopicSuffix
+// (ADR-0020 §DLQ) — the raw payload plus x-dlq-* headers preserved for
+// operator inspection/replay — then observe() still runs, exactly as
+// before this change, so readiness and the read model keep advancing
+// unaffected by one bad message. A dlqPublish failure is logged but does
+// NOT stop the consume loop: this consumer's whole reason to exist is
+// availability of the read model, and a broker hiccup writing to the DLQ
+// must never become a reason to stop reading the SOURCE topic.
 func (c *Consumer) Run(ctx context.Context) error {
 	for {
 		msg, err := c.Reader.ReadMessage(ctx)
@@ -375,9 +431,36 @@ func (c *Consumer) Run(ctx context.Context) error {
 			// tolerant reader should.
 			c.Logger.ErrorContext(ctx, "facility event handling failed",
 				"error", err, "partition", msg.Partition, "offset", msg.Offset)
+			if dlqErr := c.dlqPublish(ctx, msg, err); dlqErr != nil {
+				c.Logger.ErrorContext(ctx, "facility event dead-letter publish failed",
+					"error", dlqErr, "partition", msg.Partition, "offset", msg.Offset)
+			}
 		}
 		c.observe(msg.Partition, msg.Offset)
 	}
+}
+
+// dlqPublish writes the raw, unmodified message payload plus error
+// context (as headers, so the raw body stays byte-identical for a
+// manual replay tool) to the dead-letter topic. A nil dlqWriter (the
+// zero-value Consumer every existing unit test constructs directly via
+// newTestConsumer, which never exercises this path) is a documented
+// no-op rather than a nil-pointer panic.
+func (c *Consumer) dlqPublish(ctx context.Context, msg kafkago.Message, cause error) error {
+	if c.dlqWriter == nil {
+		return nil
+	}
+	headers := append([]kafkago.Header{}, msg.Headers...)
+	headers = append(headers,
+		kafkago.Header{Key: "x-dlq-source-topic", Value: []byte(c.topic)},
+		kafkago.Header{Key: "x-dlq-error", Value: []byte(cause.Error())},
+		kafkago.Header{Key: "x-dlq-failed-at", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
+	)
+	return c.dlqWriter.WriteMessages(ctx, kafkago.Message{
+		Key:     msg.Key,
+		Value:   msg.Value,
+		Headers: headers,
+	})
 }
 
 // observe records that a message was processed and flips readiness once

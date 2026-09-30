@@ -140,9 +140,9 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 
 | Method | Path | Use case |
 |--------|------|----------|
-| POST   | `/stock/receive` | ReceiveStock |
+| POST   | `/stock/receive` | ReceiveStock — requires `Idempotency-Key` (ADR-0018) |
 | POST   | `/stock/stow` | StowStock |
-| POST   | `/reservations` | ReserveStock |
+| POST   | `/reservations` | ReserveStock — requires `Idempotency-Key` (ADR-0018) |
 | GET    | `/reservations?demandRef=` | GetReservationsByDemandRef |
 | DELETE | `/reservations/{id}` | RevokeReservation |
 | POST   | `/reservations/{id}/confirm-pick` | ConfirmPick |
@@ -151,6 +151,19 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | PUT    | `/products/{sku}/classification` | ClassifyProduct |
 | GET    | `/products/{sku}/classification` | current ProductClassification |
 | GET    | `/healthz` | liveness |
+
+`POST /stock/receive` and `POST /reservations` are the two true
+resource-creation endpoints (server-generated id, no caller-supplied
+identity), so they are route-scoped behind a transactional
+`Idempotency-Key` HTTP middleware (see
+[ADR-0018](docs/docs/adr/0018-idempotency-key-middleware.md)): a missing
+header is a 400, a reused key with a different request body is a 422, and
+a retried identical request returns the exact same cached response
+without re-executing the handler — a client-side retry after a dropped
+response can never double-create a resource. The middleware only applies
+when the service is Postgres-backed (`DATABASE_URL` set); in-memory dev
+mode leaves these two routes unprotected, matching this repo's existing
+"nil = no transactional backing" convention.
 
 None of these routes is authenticated: the static-bearer-key layer added by
 ADR-0014 was removed again by
@@ -167,6 +180,7 @@ REST and the MCP surface.
 curl -s localhost:8080/healthz
 
 curl -s -X POST localhost:8080/stock/receive \
+  -H 'Idempotency-Key: 8b1a...' \
   -d '{"sku":"SKU-1","quantity":10}'
 # => 202 Accepted (a staged receipt has no addressable resource yet)
 
@@ -175,8 +189,12 @@ curl -s -i -X POST localhost:8080/stock/stow \
 # => 201 Created, Location: /stock/<stock-unit-id>
 
 curl -s -i -X POST localhost:8080/reservations \
+  -H 'Idempotency-Key: 8b1a...' \
   -d '{"sku":"SKU-1","quantity":6,"demandRef":"order-42"}'
 # => 201 Created, Location: /reservations/<id>, body {"id":"res-...", ...}
+# A retry with the SAME Idempotency-Key + body returns this exact response
+# again without creating a second reservation (ADR-0018); omitting the
+# header entirely on these two routes is a 400.
 
 curl -s localhost:8080/inventory/SKU-1/usable
 
@@ -219,9 +237,16 @@ below).
 
 - **Topic**: `warehouse.inventory.events`
 - **Publisher selection**: `EVENT_PUBLISHER` env var — `log` (default:
-  stdout logging with in-memory adapters, or, with `DATABASE_URL` set, an
-  append-only Postgres `events` table — no relay forwards those rows
-  anywhere) or `kafka`.
+  stdout logging with in-memory adapters, or, with `DATABASE_URL` set, the
+  same stdout logging — the transactional outbox only activates under
+  `kafka`, see below) or `kafka`. With `DATABASE_URL` set AND
+  `EVENT_PUBLISHER=kafka`, publishing goes through a transactional outbox
+  (ADR 0017): each use case's aggregate save(s) and its domain event(s)
+  commit together in one Postgres transaction as `outbox_events` rows, and
+  a background relay (`OUTBOX_RELAY_INTERVAL`, default `1s`) drains them
+  onto Kafka. Without `DATABASE_URL`, `EVENT_PUBLISHER=kafka` publishes
+  directly (no outbox, no transactional guarantee) — the in-memory repos
+  have nothing to commit atomically with.
 - **Broker**: `KAFKA_BROKERS` env var, comma-separated, default
   `localhost:9092`. There is one broker platform-wide: the in-cluster Kafka
   deployed by `warehouse-infra`, whose external listener is reachable from
