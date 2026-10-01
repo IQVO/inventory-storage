@@ -81,7 +81,9 @@ currently cross the service boundary via Kafka — see `integration-events.md`.
    capacity, enforces hazmat/temperature placement rules AND same-bin DOT
    segregation for classified SKUs
 3. `ReserveStock(sku, qty, demandRef)` -> revocable Reservation against
-   usable
+   usable. Replay guard matches (demandRef, sku, qty): one demand holds one
+   ACTIVE reservation per line/SKU, so a different SKU or quantity under the
+   same demandRef is a new reservation, never a retry
 4. `RevokeReservation(reservationId)` -> returns qty to usable
 5. `ConfirmPick(reservationId)` -> consumes reservation, StockPicked
 6. `GetUsable(sku)` -> usable-inventory read model

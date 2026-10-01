@@ -37,7 +37,7 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 		return nil, shared.ErrZeroQuantity
 	}
 
-	res, err := uc.activeReservationFor(ctx, demandRef)
+	res, err := uc.activeReservationFor(ctx, demandRef, sku, qty)
 	if err != nil {
 		return nil, err
 	}
@@ -99,8 +99,11 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 // Reservation was created and stock allocated, but the response never
 // reached the caller) must not create a second Reservation and
 // double-reserve stock for the same demandRef. If an ACTIVE reservation
-// already exists for this demandRef, treat this call as the retry and hand
-// back that same reservation instead of allocating again. A demandRef
+// already exists for this demandRef AND the same (sku, quantity) -- see
+// isReplayOf -- treat this call as the retry and hand back that same
+// reservation instead of allocating again. A different SKU or quantity
+// under the same demandRef is a different line of the same demand, never
+// a retry. A demandRef
 // legitimately has multiple reservations across its lifetime (revoke +
 // retry), so this only short-circuits when an unresolved one is still open —
 // once it's revoked/confirmed/expired, a new demandRef call is a genuine new
@@ -111,7 +114,7 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 // pass it before either has saved. Closing that window would need a DB-level
 // constraint; see REST_AUDIT.md's idempotency notes for the accepted scope
 // here. It returns nil when no ACTIVE reservation remains for demandRef.
-func (uc *ReserveStock) activeReservationFor(ctx context.Context, demandRef string) (*reservation.Reservation, error) {
+func (uc *ReserveStock) activeReservationFor(ctx context.Context, demandRef string, sku shared.SKU, qty shared.Quantity) (*reservation.Reservation, error) {
 	existing, err := uc.Reservations.FindByDemandRef(ctx, demandRef)
 	if err != nil {
 		return nil, err
@@ -127,11 +130,24 @@ func (uc *ReserveStock) activeReservationFor(ctx context.Context, demandRef stri
 		return nil, err
 	}
 	for _, res := range existing {
-		if res.Status() == reservation.StatusActive {
+		if res.Status() == reservation.StatusActive && isReplayOf(res, sku, qty) {
 			return res, nil
 		}
 	}
 	return nil, nil
+}
+
+// isReplayOf reports whether res is what a replay of reserve(sku, qty)
+// would have created. A demandRef names a DEMAND (e.g. an order), and one
+// demand legitimately holds several ACTIVE reservations at once -- one per
+// order line / SKU. Matching on demandRef alone handed line 2's request
+// back line 1's reservation (a different SKU), so every line after the
+// first silently reserved nothing: its stock was never held, a backorder
+// was reported as allocated, and cancelling the order revoked the same
+// reservation twice (observed live in the warehouse-day simulation).
+// Only an identical (sku, quantity) request is treated as the retry.
+func isReplayOf(res *reservation.Reservation, sku shared.SKU, qty shared.Quantity) bool {
+	return res.SKU() == sku && res.Quantity() == qty
 }
 
 // allocate reserves qty across the given stock units, greedily drawing from
