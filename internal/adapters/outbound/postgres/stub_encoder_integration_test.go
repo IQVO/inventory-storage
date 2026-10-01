@@ -34,6 +34,6 @@ func (stubEncoder) Encode(_ context.Context, event shared.DomainEvent) ([]kafka.
 		Topic:     stubEncoderTopic,
 		EventType: event.EventName(),
 		Key:       key,
-		Value:     []byte(`{"event_type":"` + event.EventName() + `"}`),
+		Value:     []byte(`{"stub":"` + event.EventName() + `"}`),
 	}}, nil
 }

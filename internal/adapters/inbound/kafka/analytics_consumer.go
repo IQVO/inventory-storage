@@ -7,7 +7,6 @@ package kafka
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,6 +19,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/analytics/report"
 )
 
@@ -31,21 +31,33 @@ const AnalyticsConsumerGroup = "inventory-analytics"
 // consumerTracerName scopes the consume spans this adapter emits.
 const consumerTracerName = "github.com/claudioed/inventory-storage/internal/adapters/inbound/kafka"
 
-// analyticsEnvelope is the inbound decode shape of the Envelope v1 wrapper on
-// the analytics topic. The data payload is left as a RawMessage and decoded
-// per event_type. It is declared here (rather than imported from the outbound
-// publisher) so this inbound adapter does not depend on an outbound adapter.
-type analyticsEnvelope struct {
-	EventId       string          `json:"event_id"`
-	EventType     string          `json:"event_type"`
-	OccurredAt    time.Time       `json:"occurred_at"`
-	Source        string          `json:"source"`
-	SchemaVersion int             `json:"schema_version"`
-	Data          json.RawMessage `json:"data"`
+// Full CloudEvents `type` strings this projector dispatches on (ADR-0024).
+// The analytics topic carries the SAME type as the integration topic for an
+// occurrence; `dataschema` (urn:warehouse:inventory-storage:analytics:...)
+// is what names the analytics payload shape.
+var (
+	typeStockReceived       = cloudevents.Type("stock", "StockReceived")
+	typeItemStowed          = cloudevents.Type("stock", "ItemStowed")
+	typeItemUnlocated       = cloudevents.Type("stock", "ItemUnlocated")
+	typeStockPicked         = cloudevents.Type("reservation", "StockPicked")
+	typeStockReserved       = cloudevents.Type("reservation", "StockReserved")
+	typeReservationExpired  = cloudevents.Type("reservation", "ReservationExpired")
+	typeReservationRevoked  = cloudevents.Type("reservation", "ReservationRevoked")
+	typeCycleCountCompleted = cloudevents.Type("bin", "CycleCountCompleted")
+	typeDiscrepancyDetected = cloudevents.Type("bin", "DiscrepancyDetected")
+)
+
+// analyticsEvent is the decoded view of one analytics CloudEvent the
+// projection needs: the `id` (dedupe key), the full `type`, the `time`
+// attribute (domain occurred-at) and the payload.
+type analyticsEvent struct {
+	ID         string
+	Type       string
+	OccurredAt time.Time
 }
 
 // analyticsData is the union of fields the projecting event payloads carry.
-// Each event_type populates the subset it needs. SKU is enriched onto
+// Each event type populates the subset it needs. SKU is enriched onto
 // reservation-lifecycle events by the publisher (via a ReservationRepo lookup)
 // since those domain events carry only a reservation id.
 type analyticsData struct {
@@ -56,7 +68,7 @@ type analyticsData struct {
 
 // AnalyticsConsumer reads analytics events off the analytics topic and applies
 // each to the Inventory Flow & Accuracy ProjectionStore, exactly once per
-// event_id despite Kafka's at-least-once delivery.
+// CloudEvents id despite Kafka's at-least-once delivery.
 type AnalyticsConsumer struct {
 	Reader     *kafkago.Reader
 	Projection report.ProjectionStore
@@ -129,6 +141,15 @@ func (c *AnalyticsConsumer) Handle(ctx context.Context, msg kafkago.Message) err
 	defer span.End()
 
 	if err := c.HandleMessage(ctx, msg.Value); err != nil {
+		if errors.Is(err, cloudevents.ErrNotCloudEvent) {
+			// Deterministic poison message (legacy flat envelope, bad JSON,
+			// missing required attribute): this consumer has no DLQ, so it
+			// is logged at WARN and skipped — the group offset still
+			// advances, the partition is never blocked (ADR-0024 §5).
+			c.Logger.WarnContext(ctx, "skipping analytics message that is not a valid CloudEvent",
+				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			return nil
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -136,26 +157,28 @@ func (c *AnalyticsConsumer) Handle(ctx context.Context, msg kafkago.Message) err
 	return nil
 }
 
-// HandleMessage decodes raw as an analyticsEnvelope and applies the matching
-// projection method for its event_type. Event types outside the projection
-// contract are ignored (and not marked processed). For a projecting event it
-// dedupes on event_id via ProcessedEvents before applying, so a redelivery is
-// a no-op. It is exported separately from Run so tests can feed raw envelopes
-// without a live broker.
+// HandleMessage decodes raw as a CloudEvents 1.0 event (cloudevents.Decode)
+// and applies the matching projection method for its full `type`. Types
+// outside the projection contract are ignored (and not marked processed).
+// For a projecting event it dedupes on the CloudEvents `id` via
+// ProcessedEvents before applying, so a redelivery is a no-op. A message
+// that is not a valid CloudEvent returns an error wrapping
+// cloudevents.ErrNotCloudEvent, which Handle logs and skips. It is exported
+// separately from Run so tests can feed raw events without a live broker.
 func (c *AnalyticsConsumer) HandleMessage(ctx context.Context, raw []byte) error {
-	var env analyticsEnvelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return fmt.Errorf("analytics: decode envelope: %w", err)
+	e, err := cloudevents.Decode(raw)
+	if err != nil {
+		return fmt.Errorf("analytics: %w", err)
 	}
 
 	// Only the flow/accuracy-moving events project; everything else (e.g.
-	// LocationRecorded) is acknowledged without touching the read model or the
-	// processed set.
-	if !projects(env.EventType) {
+	// LocationRecorded, or a type added upstream later) is acknowledged
+	// without touching the read model or the processed set.
+	if !projects(e.Type()) {
 		return nil
 	}
 
-	isNew, err := c.Processed.MarkProcessed(ctx, env.EventId)
+	isNew, err := c.Processed.MarkProcessed(ctx, e.ID())
 	if err != nil {
 		return fmt.Errorf("analytics: mark processed: %w", err)
 	}
@@ -164,21 +187,21 @@ func (c *AnalyticsConsumer) HandleMessage(ctx context.Context, raw []byte) error
 	}
 
 	var data analyticsData
-	if err := json.Unmarshal(env.Data, &data); err != nil {
+	if err := e.DataAs(&data); err != nil {
 		return fmt.Errorf("analytics: decode data: %w", err)
 	}
 
-	return c.applyEvent(ctx, env, data)
+	return c.applyEvent(ctx, analyticsEvent{ID: e.ID(), Type: e.Type(), OccurredAt: e.Time().UTC()}, data)
 }
 
-// projects reports whether eventType moves the Inventory Flow & Accuracy
-// projection. Everything else on the analytics topic is acknowledged without
-// touching the read model or the processed set.
+// projects reports whether eventType (a full CloudEvents `type`) moves the
+// Inventory Flow & Accuracy projection. Everything else on the analytics
+// topic is acknowledged without touching the read model or the processed set.
 func projects(eventType string) bool {
 	switch eventType {
-	case "StockReceived", "ItemStowed", "StockPicked", "StockReserved",
-		"ReservationExpired", "ReservationRevoked",
-		"CycleCountCompleted", "DiscrepancyDetected", "ItemUnlocated":
+	case typeStockReceived, typeItemStowed, typeStockPicked, typeStockReserved,
+		typeReservationExpired, typeReservationRevoked,
+		typeCycleCountCompleted, typeDiscrepancyDetected, typeItemUnlocated:
 		return true
 	default:
 		return false
@@ -186,27 +209,27 @@ func projects(eventType string) bool {
 }
 
 // applyEvent routes one already-deduped, already-decoded projecting event to
-// its projection method by event_type.
-func (c *AnalyticsConsumer) applyEvent(ctx context.Context, env analyticsEnvelope, data analyticsData) error {
-	switch env.EventType {
-	case "StockReceived":
-		return c.Projection.ApplyStockReceived(ctx, env.EventId, data.SKU, data.Quantity, env.OccurredAt)
-	case "ItemStowed":
-		return c.Projection.ApplyItemStowed(ctx, env.EventId, data.SKU, data.BinId, env.OccurredAt)
-	case "StockPicked":
-		return c.Projection.ApplyStockPicked(ctx, env.EventId, data.SKU, data.Quantity, env.OccurredAt)
-	case "StockReserved":
-		return c.Projection.ApplyStockReserved(ctx, env.EventId, data.SKU, env.OccurredAt)
-	case "ReservationExpired":
-		return c.Projection.ApplyReservationExpired(ctx, env.EventId, data.SKU, env.OccurredAt)
-	case "ReservationRevoked":
-		return c.Projection.ApplyReservationRevoked(ctx, env.EventId, data.SKU, env.OccurredAt)
-	case "CycleCountCompleted":
-		return c.Projection.ApplyCycleCountCompleted(ctx, env.EventId, data.BinId, env.OccurredAt)
-	case "DiscrepancyDetected":
-		return c.Projection.ApplyDiscrepancyDetected(ctx, env.EventId, data.BinId, env.OccurredAt)
-	case "ItemUnlocated":
-		return c.Projection.ApplyItemUnlocated(ctx, env.EventId, data.SKU, data.BinId, env.OccurredAt)
+// its projection method by its full CloudEvents `type`.
+func (c *AnalyticsConsumer) applyEvent(ctx context.Context, ev analyticsEvent, data analyticsData) error {
+	switch ev.Type {
+	case typeStockReceived:
+		return c.Projection.ApplyStockReceived(ctx, ev.ID, data.SKU, data.Quantity, ev.OccurredAt)
+	case typeItemStowed:
+		return c.Projection.ApplyItemStowed(ctx, ev.ID, data.SKU, data.BinId, ev.OccurredAt)
+	case typeStockPicked:
+		return c.Projection.ApplyStockPicked(ctx, ev.ID, data.SKU, data.Quantity, ev.OccurredAt)
+	case typeStockReserved:
+		return c.Projection.ApplyStockReserved(ctx, ev.ID, data.SKU, ev.OccurredAt)
+	case typeReservationExpired:
+		return c.Projection.ApplyReservationExpired(ctx, ev.ID, data.SKU, ev.OccurredAt)
+	case typeReservationRevoked:
+		return c.Projection.ApplyReservationRevoked(ctx, ev.ID, data.SKU, ev.OccurredAt)
+	case typeCycleCountCompleted:
+		return c.Projection.ApplyCycleCountCompleted(ctx, ev.ID, data.BinId, ev.OccurredAt)
+	case typeDiscrepancyDetected:
+		return c.Projection.ApplyDiscrepancyDetected(ctx, ev.ID, data.BinId, ev.OccurredAt)
+	case typeItemUnlocated:
+		return c.Projection.ApplyItemUnlocated(ctx, ev.ID, data.SKU, data.BinId, ev.OccurredAt)
 	default:
 		return nil
 	}

@@ -158,8 +158,8 @@ every call. Deliberately NOT applied to:
 ## `atomically()`/`UnitOfWork` wiring check (required by this task's scope)
 
 Both `ReceiveStock.Execute` and `ReserveStock.Execute` already wrap their
-`Save`+`Publish` calls in `atomically(ctx, uc.UnitOfWork, func(ctx) error
-{...})` — this was already in place from the transactional-outbox rollout
+`Save`+`Publish` calls in
+`atomically(ctx, uc.UnitOfWork, func(ctx) error {...})` — this was already in place from the transactional-outbox rollout
 (ADR 0017) before this change; **no additional wiring was needed** for
 either use case. This was verified by reading both use cases' current
 source (not assumed), and is what makes the idempotency bookkeeping and

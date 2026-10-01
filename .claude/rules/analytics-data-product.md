@@ -14,7 +14,8 @@ enforces this). `internal/analytics/report/` depends on nothing.
 - Three processes:
   - `cmd/inventory` (OLTP)
   - `cmd/inventory-projector` (the ONLY writer; consumes the analytics topic
-    from FirstOffset, idempotent on `event_id`)
+    from FirstOffset, CloudEvents 1.0 only, dispatches on the full `type`,
+    idempotent on the CloudEvents `id`; non-CloudEvents are WARN-logged and skipped)
   - `cmd/inventory-reports` (read-only reader, `GET /reports/...`). Report
     exposed via the MCP server too (`cmd/mcp`, ADR-0008).
 - Report: **Inventory Flow & Accuracy**, keyed per SKU/bin × hour

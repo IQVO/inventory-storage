@@ -159,7 +159,7 @@ the invariant that makes storage chaotic rather than fixed-slot.
 Time is supplied by the `Clock` port, never read inside the aggregate, so R4 is
 deterministic under test. Note that `Expire()` is modelled and tested but not
 yet driven by a scheduled sweeper — see
-[Domain Events](./domain-events.md#one-honest-gap-nothing-sweeps-expirations-yet).
+[Domain Events](./domain-events.md#lazy-expiry-no-sweeper-resolved-at-the-next-read).
 
 ## Value objects (`internal/domain/shared`)
 

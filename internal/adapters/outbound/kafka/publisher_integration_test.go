@@ -13,6 +13,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	outboundkafka "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
@@ -107,9 +108,9 @@ func uniquePartitionKeyTopic(t *testing.T) string {
 // partition (kafka-go readers are partition-scoped when GroupID is unset)
 // with a short read deadline, since the test topic only ever has a
 // handful of messages.
-func readPartitionsForKey(t *testing.T, brokerList []string, topic string, numPartitions int, key string) []int {
+func readPartitionsForKey(t *testing.T, brokerList []string, topic string, numPartitions int, key string) []kafkago.Message {
 	t.Helper()
-	var landedOn []int
+	var landedOn []kafkago.Message
 
 	for p := 0; p < numPartitions; p++ {
 		reader := kafkago.NewReader(kafkago.ReaderConfig{
@@ -129,7 +130,7 @@ func readPartitionsForKey(t *testing.T, brokerList []string, topic string, numPa
 					return // deadline hit: no more messages on this partition
 				}
 				if string(msg.Key) == key {
-					landedOn = append(landedOn, msg.Partition)
+					landedOn = append(landedOn, msg)
 				}
 			}
 		}()
@@ -204,8 +205,8 @@ func TestPublisher_RealBroker_SameReservationLandsOnSamePartition(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := writer.WriteMessages(ctx,
-		kafkago.Message{Key: encoded1[0].Key, Value: encoded1[0].Value},
-		kafkago.Message{Key: encoded2[0].Key, Value: encoded2[0].Value},
+		kafkago.Message{Key: encoded1[0].Key, Value: encoded1[0].Value, Headers: encoded1[0].Headers},
+		kafkago.Message{Key: encoded2[0].Key, Value: encoded2[0].Value, Headers: encoded2[0].Headers},
 	); err != nil {
 		t.Fatalf("WriteMessages: %v", err)
 	}
@@ -214,7 +215,27 @@ func TestPublisher_RealBroker_SameReservationLandsOnSamePartition(t *testing.T) 
 	if len(landedOn) != 2 {
 		t.Fatalf("expected to find 2 messages keyed res-itest-shared across %d partitions, found %d: %v", numPartitions, len(landedOn), landedOn)
 	}
-	if landedOn[0] != landedOn[1] {
-		t.Errorf("StockReserved landed on partition %d, ReservationRevoked landed on partition %d — must be identical for per-reservation ordering", landedOn[0], landedOn[1])
+	if landedOn[0].Partition != landedOn[1].Partition {
+		t.Errorf("StockReserved landed on partition %d, ReservationRevoked landed on partition %d — must be identical for per-reservation ordering", landedOn[0].Partition, landedOn[1].Partition)
+	}
+
+	// The wire format read back from the real broker is CloudEvents 1.0
+	// structured mode (ADR-0024): content-type header + a valid event whose
+	// full type is the cross-service contract wes-work-planning consumes.
+	wantTypes := []string{
+		"com.warehouse.wms.inventory-storage.reservation.StockReserved",
+		"com.warehouse.wms.inventory-storage.reservation.ReservationRevoked",
+	}
+	for i, msg := range landedOn {
+		if got := headerValue(msg.Headers, "content-type"); got != cloudevents.MediaType {
+			t.Errorf("message %d content-type header = %q, want %q", i, got, cloudevents.MediaType)
+		}
+		e, err := cloudevents.Decode(msg.Value)
+		if err != nil {
+			t.Fatalf("message %d is not a valid CloudEvent: %v", i, err)
+		}
+		if e.Type() != wantTypes[i] || e.Subject() != "res-itest-shared" || e.Source() != "/warehouse/inventory-storage" {
+			t.Errorf("message %d attributes = type %q subject %q source %q", i, e.Type(), e.Subject(), e.Source())
+		}
 	}
 }

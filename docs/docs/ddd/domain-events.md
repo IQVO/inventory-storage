@@ -141,28 +141,31 @@ Entity segments group by the aggregate that raises the event: `stock`,
 emitted by `ConfirmPick` when a reservation is consumed and the reservation id
 is the only identity it carries.
 
-## What the Kafka adapter actually emits today
+## What the Kafka adapters emit
 
-There is a documented gap between the target envelope and the shipped one, and
-it is stated in `apis/asyncapi.yaml` rather than papered over. The adapter
-currently writes the **legacy flat warehouse envelope**:
+Every message is a **CloudEvents 1.0** event in structured mode — the only
+envelope ([ADR-0024](../adr/0024-cloudevents-mandatory-envelope.md)). The
+integration publisher (`warehouse.inventory.events`) and the analytics
+publisher (`warehouse.inventory.analytics`) both build it through
+`internal/adapters/kafka/cloudevents`:
 
 ```json
 {
-  "event_id": "9f1c...-uuid-v4",
-  "event_type": "StockReserved",
-  "occurred_at": "2026-08-21T22:00:00Z",
-  "source": "inventory-storage",
+  "specversion": "1.0",
+  "id": "9f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f",
+  "source": "/warehouse/inventory-storage",
+  "type": "com.warehouse.wms.inventory-storage.reservation.StockReserved",
+  "subject": "res-1",
+  "time": "2026-08-21T22:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:inventory-storage:events:StockReserved:v1",
   "data": { "sku": "SKU-1", "quantity": 6, "demand_ref": "order-42" }
 }
 ```
 
-The `data` payloads for `StockReserved` and `ReservationRevoked` match the
-AsyncAPI document field-for-field; the surrounding CloudEvents context
-attributes (`specversion`, `id`, `source`, `type`, `subject`, `time`,
-`datacontenttype`) describe the target envelope the platform is standardising
-on. See the [Events page](/docs/api-reference/events) for both shapes in full,
-and [ADR 0004](/docs/adr/0004-kafka-integration-events) for the decision.
+The `id` is minted once when the event is encoded and stored inside the
+outbox row, so a relay redelivery carries the same `id`. See the
+[Events page](/docs/api-reference/events) for every type and payload.
 
 ## A detail worth knowing: `ReservationRevoked` enrichment
 

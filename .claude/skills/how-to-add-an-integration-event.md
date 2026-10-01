@@ -22,34 +22,33 @@ new event to the Kafka publisher, confirm a sibling context genuinely needs
 to react to it — check `docs/docs/ecosystem/context-map.md` for who's
 actually downstream.
 
-### 2. Envelope: CloudEvents 1.0, structured mode
+### 2. Envelope: CloudEvents 1.0, structured mode (mandatory, ADR-0024)
 
 Every message is a CloudEvents 1.0 JSON document
-(`application/cloudevents+json`). The context attributes carry routing:
+(`application/cloudevents+json`) — there is no other envelope:
 
 ```json
 {
-  "event_id": "<uuid>",
-  "event_type": "com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>",
-  "occurred_at": "<RFC3339>",
-  "source": "<bounded-context-slug>",
+  "specversion": "1.0",
+  "id": "<uuid, minted once in Encode>",
+  "source": "/warehouse/inventory-storage",
+  "type": "com.warehouse.wms.inventory-storage.<entity>.<EventName>",
+  "subject": "<aggregate id>",
+  "time": "<RFC3339 UTC occurred-at>",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:inventory-storage:<events|analytics>:<EventName>:v1",
   "data": { /* the actual payload, business types only */ }
 }
 ```
 
-The `type`/`event_type` follows the platform-wide reverse-DNS convention:
-`com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>`, all
-lowercase except the final PascalCase event name — e.g.
-`com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`. Get
-the subdomain (`wms`/`wes`/`wcs`/etc.) from this repo's own
-`apis/asyncapi.yaml` intro section; don't guess it.
-
-**What this repo actually ships today** is the legacy flat envelope above
-with a BARE `event_type` (`"StockReserved"`, from `EventName()`), no
-partition key, and no CloudEvents attributes — see
-`.claude/rules/integration-events.md`. Match the shipped shape for a new
-event on the existing topic; moving to full CloudEvents is a contract
-change for `wes-work-planning` and needs its own ADR.
+`type` follows `com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>`,
+all lowercase except the final PascalCase event name. For this repo:
+subdomain `wms`, context `inventory-storage`, entity = the raising
+aggregate as catalogued in `apis/asyncapi.yaml` (`stock`, `reservation`,
+`bin`; `product` for ProductClassified). Never hand-build the envelope —
+call `cloudevents.New(cloudevents.Spec{...})` from
+`internal/adapters/kafka/cloudevents` and add
+`cloudevents.ContentTypeHeader()` to the message headers.
 
 ### 3. Implementation
 
@@ -58,7 +57,8 @@ exist as a domain event the aggregate raises — publishing wires an
 EXISTING domain event onto Kafka, it doesn't invent a new payload shape at
 the adapter layer). In the Kafka publisher adapter:
 
-- Add the event's marshal-to-envelope case
+- Add the event's case (entity, subject, payload) and encode it with
+  `cloudevents.New`
 - Give the message a partition key that keeps ordering where it matters
   (usually the aggregate id)
 - Use `Topic` — this service's own topic constant
@@ -77,8 +77,9 @@ the adapter layer). In the Kafka publisher adapter:
 
 ### 5. Test
 
-Unit test the marshal shape against a fake `Writer` (see
-`publisher_test.go` — never a real broker in a unit test). If this event
+Add a golden exact-JSON case to `internal/adapters/outbound/kafka/golden_test.go`
+(all CloudEvents attributes + `content-type` header) — never a real broker
+in a unit test. If this event
 now needs a `_integration_test.go` asserting real delivery, it MUST use
 testcontainers (see the fitness test `TestKafkaIntegrationTestsUseTestcontainers`
 in `internal/architecture/` — a skip-gated `KAFKA_BROKERS` test or a
@@ -91,8 +92,11 @@ hardcoded `localhost:9092` fails CI).
 This service knows a sibling's topic name and payload shape ONLY — never
 its Go types. See `internal/adapters/outbound/facilitycache/consumer.go`'s
 own doc comment: "This service has no business knowing anything else
-about that context beyond this topic name and the envelope/payload shapes
-below." Hand-mirror the payload struct locally; do not add a Go module
+about that context beyond this topic name and the CloudEvents types/payload
+shapes below." Decode with `cloudevents.Decode`, dispatch on the FULL
+`type` string (exact strings are in ADR-0024's cross-service table),
+read the payload with `DataAs`, dedupe on `id`, and DLQ/skip anything
+Decode rejects — never parse a legacy flat shape. Hand-mirror the payload struct locally; do not add a Go module
 dependency on the sibling repo (an architecture fitness test in most
 repos in this fleet would catch that anyway for the stricter contexts —
 check this repo's own `internal/architecture/` for a

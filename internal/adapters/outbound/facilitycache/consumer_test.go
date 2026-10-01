@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
+	ce "github.com/cloudevents/sdk-go/v2/event"
 	kafkago "github.com/segmentio/kafka-go"
 
 	"github.com/claudioed/inventory-storage/internal/domain/product"
@@ -37,24 +40,32 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// envelopeMsg builds one Kafka message carrying facility-layout's
-// CloudEvents-like envelope, using the FULLY-QUALIFIED event type that
-// service really publishes.
+// facilityEvent builds the CloudEvents 1.0 structured-mode value
+// facility-layout publishes (built with the official SDK, exactly like the
+// publisher), using the FULL `type` that service really emits.
+func facilityEvent(t *testing.T, entity, eventName string, data any) []byte {
+	t.Helper()
+	e := ce.New(ce.CloudEventsVersionV1)
+	e.SetID(fmt.Sprintf("evt-%s-%d", eventName, time.Now().UnixNano()))
+	e.SetSource("/warehouse/facility-layout")
+	e.SetType("com.warehouse.wms.facility-layout." + entity + "." + eventName)
+	e.SetSubject("subject-1")
+	e.SetTime(time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC))
+	e.SetDataSchema("urn:warehouse:facility-layout:events:" + eventName + ":v1")
+	if err := e.SetData("application/json", data); err != nil {
+		t.Fatalf("SetData: %v", err)
+	}
+	value, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal cloudevent: %v", err)
+	}
+	return value
+}
+
+// envelopeMsg wraps facilityEvent in a Kafka message at partition/offset.
 func envelopeMsg(t *testing.T, partition int, offset int64, entity, eventName string, data any) kafkago.Message {
 	t.Helper()
-	raw, err := json.Marshal(data)
-	if err != nil {
-		t.Fatalf("marshal data: %v", err)
-	}
-	env := envelope{
-		EventType: "com.warehouse.wms.facility-layout." + entity + "." + eventName,
-		Data:      raw,
-	}
-	value, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("marshal envelope: %v", err)
-	}
-	return kafkago.Message{Partition: partition, Offset: offset, Value: value}
+	return kafkago.Message{Partition: partition, Offset: offset, Value: facilityEvent(t, entity, eventName, data)}
 }
 
 // newTestConsumer builds a Consumer around a fakeReader with an explicit
@@ -282,19 +293,53 @@ func TestZoneIDFromLocationCode(t *testing.T) {
 	}
 }
 
-// Event types are matched on the trailing name so an upstream namespace
-// change cannot silently stop the cache from updating.
-func TestEventNameStripsTheCloudEventsNamespace(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"com.warehouse.wms.facility-layout.zone.ZoneRegistered", "ZoneRegistered"},
-		{"com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned", "LocationSlotDecommissioned"},
-		{"ZoneRegistered", "ZoneRegistered"},
-		{"", ""},
+// Dispatch is on the FULL CloudEvents type (ADR-0024): another context's
+// event that merely shares the trailing name must NOT touch the cache.
+func TestDispatchIsOnTheFullTypeNotASuffix(t *testing.T) {
+	c := newTestConsumer([]kafkago.Message{
+		envelopeMsg(t, 0, 0, "zone", "ZoneRegistered", zoneData{
+			ZoneID: "WH1-STOR-AMB", TemperatureClass: "Ambient",
+		}),
+		{Partition: 0, Offset: 1, Value: func() []byte {
+			v := facilityEvent(t, "locationslot", "LocationSlotRegistered", slotData{
+				LocationCode: "WH1-STOR-AMB-A07-03-02-B", ZoneID: "WH1-STOR-AMB",
+			})
+			return []byte(strings.Replace(string(v), "com.warehouse.wms.facility-layout.", "com.warehouse.wms.other-context.", 1))
+		}()},
+	}, targetOffsets{0: 2})
+	drain(t, c)
+
+	if c.Slots() != 0 {
+		t.Fatalf("expected a foreign-context type to be ignored, got %d slots", c.Slots())
 	}
-	for _, tc := range cases {
-		if got := eventName(tc.in); got != tc.want {
-			t.Fatalf("eventName(%q) = %q, want %q", tc.in, got, tc.want)
-		}
+	if c.Zones() != 1 {
+		t.Fatalf("expected the real ZoneRegistered to apply, got %d zones", c.Zones())
+	}
+	if !c.Ready() {
+		t.Fatal("ignored events must still advance readiness")
+	}
+}
+
+// The retired flat envelope (event_type/occurred_at/data) must be rejected
+// as not-a-CloudEvent — never parsed as a legacy shape, even when it carries
+// a type and payload this cache would otherwise apply — AND it must not
+// stall readiness: observe() still runs, so the FirstOffset replay gate
+// opens past it.
+func TestLegacyFlatEnvelopeIsRejectedAndDoesNotStallReadiness(t *testing.T) {
+	legacy := []byte(`{"event_id":"e1","event_type":"com.warehouse.wms.facility-layout.zone.ZoneRegistered","occurred_at":"2026-09-30T12:00:00Z","source":"facility-layout","data":{"zoneId":"WH1-STOR-AMB","temperatureClass":"Ambient","hazmat":false}}`)
+
+	c := newTestConsumer(nil, targetOffsets{})
+	if err := c.apply(legacy); err == nil || !strings.Contains(err.Error(), "not a valid CloudEvents") {
+		t.Fatalf("apply(legacy) err = %v, want a not-a-CloudEvent error", err)
+	}
+
+	c = newTestConsumer([]kafkago.Message{{Partition: 0, Offset: 0, Value: legacy}}, targetOffsets{0: 1})
+	drain(t, c)
+	if c.Zones() != 0 {
+		t.Fatalf("legacy message must not be applied, got %d zones", c.Zones())
+	}
+	if !c.Ready() {
+		t.Fatal("expected readiness to advance past a legacy flat message")
 	}
 }
 

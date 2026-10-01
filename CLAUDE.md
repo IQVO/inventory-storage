@@ -20,7 +20,9 @@ Go module: `github.com/claudioed/inventory-storage` (Go 1.26).
   `cmd/mcp` (MCP inbound adapter, Streamable HTTP). Plus `web/` (a standalone
   Vite/React micro-frontend remote — see `.claude/rules/frontend-mfe.md`).
 - Publishes `StockReserved`/`ReservationRevoked` to `warehouse.inventory.events`
-  and consumes ONE sibling topic, facility-layout's `warehouse.facility.events`,
+  (plus the analytics stream `warehouse.inventory.analytics`), all as
+  CloudEvents 1.0 (ADR-0024, see "Events" below), and consumes ONE sibling
+  topic, facility-layout's `warehouse.facility.events`,
   into a local location-classification cache (`LOCATION_LOOKUP_MODE=kafka`,
   ADR-0013). Every REST and MCP endpoint is unauthenticated (ADR-0015).
 - API contracts are the single source of truth for generated docs:
@@ -57,6 +59,7 @@ internal/
     usecases/                one struct per use case
   adapters/
     inbound/http/            chi handlers, DTOs, error mapping
+    kafka/cloudevents/       the ONLY CloudEvents envelope builder/decoder (ADR-0024)
     inbound/kafka/           analytics consumer (projector)
     inbound/mcp/             MCP tools incl. the read-only report tool
     outbound/postgres/       pgxpool repos + migrations
@@ -135,6 +138,32 @@ npm run build                                # full site build; onBrokenLinks: '
   stow-requires-item-and-location, reservation <= usable, revoke returns to
   usable).
 
+## Events: CloudEvents 1.0 is MANDATORY
+
+Every Kafka message this service produces or consumes (integration
+`warehouse.<ctx>.events` AND analytics `warehouse.<ctx>.analytics`) is a
+CloudEvents 1.0 event in structured content mode. This is a hard fleet rule,
+not a preference:
+
+- No flat envelope (`event_id`/`event_type`/`occurred_at`), no dual-write,
+  no dual-read, no envelope toggle env var (`EVENT_ENVELOPE_MODE` is gone).
+- Build/validate/(un)marshal with `github.com/cloudevents/sdk-go/v2/event`
+  via `internal/adapters/kafka/cloudevents/`; transport stays kafka-go.
+- Kafka header `content-type: application/cloudevents+json; charset=UTF-8`.
+- Required attributes: `specversion=1.0`, `id` (UUID, stable across outbox
+  redelivery), `source=/warehouse/inventory-storage`, `type`, `subject` (aggregate id), `time`
+  (occurred-at, UTC), `datacontenttype=application/json`,
+  `dataschema=urn:warehouse:inventory-storage:<events|analytics>:<EventName>:v<N>`.
+- `type` = `com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>`;
+  for this service: `com.warehouse.wms.inventory-storage.<entity>.<EventName>`. Breaking payload
+  change => new `.v2` type + new dataschema version, never mutate.
+- Consumers dispatch on the FULL `type`, ignore unknown types, dedupe on
+  `id`, and DLQ/skip (never crash, never parse a legacy shape) anything that
+  fails CloudEvents validation.
+
+Full standard and the fleet's cross-service type catalogue: ADR-0024
+(`docs/docs/adr/`).
+
 ## Further reading (`.claude/rules/`)
 
 - `domain-model.md` — ubiquitous language, aggregates & invariants, domain
@@ -144,8 +173,8 @@ npm run build                                # full site build; onBrokenLinks: '
   `demandRef`-scoped read side backing the fleet's Order Lifecycle console.
 - `analytics-data-product.md` — ADR-0011: the additive analytics read side,
   its three processes, and the Inventory Flow & Accuracy report.
-- `integration-events.md` — the Kafka integration contract: envelope shape,
-  topic, what's published today vs. catalog-only, and the one consumed
+- `integration-events.md` — the Kafka integration contract: CloudEvents
+  envelope, exact `type` strings, topic, what's published vs. catalog-only, and the one consumed
   topic (`warehouse.facility.events`) (see also
   `apis/asyncapi.yaml` and `docs/docs/api-reference/events.md`, which is the
   generated-adjacent narrative page for the same contract).
@@ -153,8 +182,9 @@ npm run build                                # full site build; onBrokenLinks: '
   remote.
 
 ADRs for every non-obvious architectural decision live in
-`docs/docs/adr/0001..0016` — check there before re-litigating a decision
+`docs/docs/adr/0001..0024` — check there before re-litigating a decision
 (e.g. hexagonal layering ADR-0001, chaotic storage ADR-0002, revocable
 reservations ADR-0003, DOT hazard segregation ADR-0010, facility-layout
 events cache ADR-0013, why the REST identity/bearer-auth layer was added then
-removed — ADR-0014/0015, standard metrics convention ADR-0016).
+removed — ADR-0014/0015, standard metrics convention ADR-0016, CloudEvents
+mandatory envelope ADR-0024).

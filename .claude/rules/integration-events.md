@@ -5,32 +5,40 @@ broker. It CONSUMES exactly one sibling topic, `warehouse.facility.events`
 (facility-layout), into a local location-classification cache — see
 "Consumed" below.
 
-## Envelope shipped today: the legacy flat envelope
+## Envelope: CloudEvents 1.0, mandatory (ADR-0024)
 
-`internal/adapters/outbound/kafka/publisher.go` currently emits the
-**legacy flat warehouse envelope** (identical across all warehouse-systems
-services), not the CloudEvents attributes `apis/asyncapi.yaml` documents as
-the platform target:
+Every message this service produces or consumes — integration
+(`warehouse.inventory.events`), analytics (`warehouse.inventory.analytics`)
+and facility-layout's `warehouse.facility.events` — is a CloudEvents 1.0
+event in structured mode. There is NO flat envelope, NO dual-write/dual-read,
+NO envelope toggle.
 
 ```json
 {
-  "event_id": "uuid-v4",
-  "event_type": "StockReserved",
-  "occurred_at": "2026-08-21T22:00:00Z",
-  "source": "inventory-storage",
-  "data": { }
+  "specversion": "1.0",
+  "id": "uuid-v4 (minted once in Encode, persisted in the outbox row)",
+  "source": "/warehouse/inventory-storage",
+  "type": "com.warehouse.wms.inventory-storage.reservation.StockReserved",
+  "subject": "res-1",
+  "time": "2026-08-21T22:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:inventory-storage:events:StockReserved:v1",
+  "data": { "sku": "SKU-1", "quantity": 5, "demand_ref": "order-42" }
 }
 ```
 
-The `data` payloads for `StockReserved` and `ReservationRevoked` match the
-AsyncAPI document field-for-field; the CloudEvents context attributes
-(`specversion`, `id`, `source`, `type`, `subject`, `time`,
-`datacontenttype`) describe the target the platform is standardising on.
-`apis/asyncapi.yaml`'s own `info.description` states this gap explicitly —
-it is documented, not a surprise. See `docs/docs/api-reference/events.md`
-and `docs/docs/ddd/domain-events.md` for the full narrative (both envelopes
-shown in full, the CloudEvents `type` reverse-DNS convention, and the
-"What ships today" caveat).
+- Build/decode ONLY via `internal/adapters/kafka/cloudevents` (`New`,
+  `Decode`, `ContentTypeHeader`, `Type`, `DataSchema`), which wraps
+  `github.com/cloudevents/sdk-go/v2/event`. Never hand-roll an envelope
+  struct; never use the SDK's protocol/client packages (transport stays
+  kafka-go).
+- Every produced message carries `cloudevents.ContentTypeHeader()` plus the
+  W3C trace headers. Kafka key = aggregate id, `kafkago.Hash{}` balancer.
+- `data` shapes are frozen: a breaking change is a new `.v2` type + new
+  `dataschema` version, never a mutation.
+- Consumers dispatch on the FULL `type` (never a suffix), ignore unknown
+  types, dedupe on `id`, and DLQ (facility cache) or WARN-and-skip
+  (analytics projector) anything `cloudevents.Decode` rejects.
 
 ## Kafka
 
@@ -69,7 +77,12 @@ Both events already exist in the domain event list above — do not invent
 new event names when wiring a publisher; carry them through with this exact
 `data` shape.
 
-Consumers should tolerate unknown `type` values (the catalog will grow),
+Wire `type`s: `com.warehouse.wms.inventory-storage.reservation.StockReserved`
+and `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`
+(wes-work-planning dispatches on these exact strings). The analytics topic
+carries nine types (entity `stock`/`reservation`/`bin`, see ADR-0024).
+
+Consumers should ignore unknown `type` values (the catalog will grow),
 deduplicate on `(source, id)` (Kafka delivery is at-least-once). Every
 message is keyed by the reservation id (`ReservationID`), so per-reservation
 ordering (StockReserved before its later ReservationRevoked) is guaranteed
@@ -85,9 +98,12 @@ not the event stream.
   temperature-class placement rules. Selected by
   `LOCATION_LOOKUP_MODE=kafka` (requires `KAFKA_BROKERS`); `http` is the
   synchronous facility-layout rollback, `permissive` (default) does no lookup.
-- Applies `ZoneRegistered`, `LocationSlotRegistered`,
-  `LocationSlotDecommissioned` (matched on the trailing event name) into an
-  in-memory zone/slot map. Replays from `FirstOffset` on every start under a
+- Applies `com.warehouse.wms.facility-layout.zone.ZoneRegistered`,
+  `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` and
+  `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned`
+  (FULL type match) into an in-memory zone/slot map. A message that is not a
+  valid CloudEvent is dead-lettered to `<topic>.dlq` and readiness still
+  advances past it. Replays from `FirstOffset` on every start under a
   per-process-unique consumer group (`consumerGroupPrefix` +
   `uniqueConsumerGroup()`), and `cmd/inventory` blocks startup until the
   replay completes (`WaitReadyTimeout`, 60s).
@@ -96,9 +112,10 @@ not the event stream.
 
 ## Definition of done for any new/changed publisher
 
-- New/changed adapter compiles and is unit-tested (e.g. against an
-  in-memory kafka-go writer fake, or by asserting the envelope shape
-  produced).
+- New/changed adapter compiles and has a golden exact-JSON test per
+  published type (all CloudEvents attributes + `content-type` header — see
+  `internal/adapters/outbound/kafka/golden_test.go`); every consumer has a
+  legacy-flat-message-rejected test.
 - Existing full suite (`go build ./...`, `go vet ./...`, `go test ./...`,
   `go test ./... -race`) stays green.
 - README's "Integration" section stays current: topic published, exact JSON
