@@ -251,19 +251,28 @@ below).
   `localhost:9092`. There is one broker platform-wide: the in-cluster Kafka
   deployed by `warehouse-infra`, whose external listener is reachable from
   the host at `localhost:9092`.
-- **Envelope** (identical across all warehouse-systems services):
+- **Envelope: CloudEvents 1.0, mandatory** (structured mode, fleet-wide —
+  [ADR-0024](docs/docs/adr/0024-cloudevents-mandatory-envelope.md)). Every
+  message carries the Kafka header
+  `content-type: application/cloudevents+json; charset=UTF-8`; the Kafka key
+  is the reservation id:
   ```json
   {
-    "event_id": "uuid-v4",
-    "event_type": "StockReserved",
-    "occurred_at": "2026-08-21T22:00:00Z",
-    "source": "inventory-storage",
+    "specversion": "1.0",
+    "id": "uuid-v4",
+    "source": "/warehouse/inventory-storage",
+    "type": "com.warehouse.wms.inventory-storage.reservation.StockReserved",
+    "subject": "res-1",
+    "time": "2026-08-21T22:00:00Z",
+    "datacontenttype": "application/json",
+    "dataschema": "urn:warehouse:inventory-storage:events:StockReserved:v1",
     "data": {}
   }
   ```
-- **Events published** — `StockReserved` (on a successful `ReserveStock`) and
-  `ReservationRevoked` (on a successful `RevokeReservation`), both with the
-  same `data` shape:
+- **Events published** — `com.warehouse.wms.inventory-storage.reservation.StockReserved`
+  (on a successful `ReserveStock`) and
+  `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` (on a
+  successful `RevokeReservation`), both with the same `data` shape:
   ```json
   {"sku": "SKU-1", "quantity": 4, "demand_ref": "order-42"}
   ```
@@ -327,8 +336,10 @@ and the [report contract](docs/docs/analytics/inventory-flow-accuracy-report.md)
 
 - **Analytics topic**: `warehouse.inventory.analytics` (separate from the
   integration topic; published by a NEW outbound adapter, fanned out alongside
-  the integration publisher when `EVENT_PUBLISHER=kafka`). Envelope v1:
-  `{event_id, event_type, occurred_at, source, schema_version, data}`.
+  the integration publisher when `EVENT_PUBLISHER=kafka`). Same CloudEvents
+  envelope and `type` strings, with `dataschema`
+  `urn:warehouse:inventory-storage:analytics:<EventName>:v1` (the old
+  `schema_version` field is gone).
 - **Analytical database**: its own `ANALYTICS_DATABASE_URL`, its own migrations
   (`migrations/analytics/`), and a read-only role for the reader.
 - **Three processes, one writer**:

@@ -32,11 +32,20 @@ needs the target bin's zone attributes when the SKU being stowed carries the
 [ADR 0009](/docs/adr/0009-product-classification-as-sku-master-data) for the
 fail-open/fail-closed asymmetry). With `LOCATION_LOOKUP_MODE=kafka` those
 attributes come from `internal/adapters/outbound/facilitycache`, which
-replays `facility-layout`'s `warehouse.facility.events` (`ZoneRegistered`,
-`LocationSlotRegistered`, `LocationSlotDecommissioned`) from the earliest
+replays `facility-layout`'s `warehouse.facility.events` from the earliest
 offset into memory on every start, under a unique per-process consumer group,
 and blocks startup until the replay is complete (up to 60s). See
 [ADR 0013](/docs/adr/0013-location-classification-via-facility-events).
+Messages are CloudEvents 1.0; the consumer dispatches on these exact `type`
+strings ([ADR-0024](../adr/0024-cloudevents-mandatory-envelope.md)):
+
+- `com.warehouse.wms.facility-layout.zone.ZoneRegistered`
+- `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`
+- `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned`
+
+Any other type is ignored; a message that is not a valid CloudEvent (e.g. the
+retired flat envelope) is dead-lettered to `warehouse.facility.events.dlq`
+and the replay — and the readiness gate — moves past it.
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
@@ -63,26 +72,36 @@ EVENT_PUBLISHER=kafka KAFKA_BROKERS=localhost:9092 go run ./cmd/inventory
 
 ## Message shapes
 
-The full envelope discussion — the CloudEvents target, the legacy flat
-envelope actually emitted today, and the mapping between them — is on the
-[Events page](/docs/api-reference/events). What lands on the topic right now:
+Every message is a CloudEvents 1.0 structured-mode event with the Kafka
+header `content-type: application/cloudevents+json; charset=UTF-8`
+([ADR-0024](../adr/0024-cloudevents-mandatory-envelope.md)); the full
+attribute table is on the [Events page](/docs/api-reference/events). What
+lands on the topic:
 
 ```json
 {
-  "event_id": "1f7a4c30-9b2d-4e85-a6c1-7d3f0b5e8a94",
-  "event_type": "StockReserved",
-  "occurred_at": "2026-08-21T22:00:00Z",
-  "source": "inventory-storage",
+  "specversion": "1.0",
+  "id": "1f7a4c30-9b2d-4e85-a6c1-7d3f0b5e8a94",
+  "source": "/warehouse/inventory-storage",
+  "type": "com.warehouse.wms.inventory-storage.reservation.StockReserved",
+  "subject": "res-1",
+  "time": "2026-08-21T22:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:inventory-storage:events:StockReserved:v1",
   "data": { "sku": "SKU-1", "quantity": 5, "demand_ref": "order-42" }
 }
 ```
 
 ```json
 {
-  "event_id": "4b9e2f61-7c3a-4d08-85e2-1a6f9c0d3b72",
-  "event_type": "ReservationRevoked",
-  "occurred_at": "2026-08-21T22:10:00Z",
-  "source": "inventory-storage",
+  "specversion": "1.0",
+  "id": "4b9e2f61-7c3a-4d08-85e2-1a6f9c0d3b72",
+  "source": "/warehouse/inventory-storage",
+  "type": "com.warehouse.wms.inventory-storage.reservation.ReservationRevoked",
+  "subject": "res-1",
+  "time": "2026-08-21T22:10:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:inventory-storage:events:ReservationRevoked:v1",
   "data": { "sku": "SKU-1", "quantity": 5, "demand_ref": "order-42" }
 }
 ```
@@ -109,7 +128,7 @@ sequenceDiagram
     I->>K: StockReserved {sku, quantity, demand_ref}
     I-->>C: 201 Created + Location
     K->>W: consume
-    W->>W: dedupe on event_id (processed_events)
+    W->>W: dedupe on CloudEvents id (processed_events)
     W->>W: UsableInventoryObserved[sku] -= quantity
 
     Note over C,I: the physical pick fails
@@ -127,7 +146,7 @@ Two design notes that a consumer must respect:
   `wes-work-planning`'s own `CLAUDE.md` calls out explicitly that a path
   mapping must not be forced onto them because it does not exist.
 - **Idempotency is mandatory.** Kafka delivery is at-least-once.
-  `wes-work-planning` inserts each `event_id` into a `processed_events` table
+  `wes-work-planning` inserts each CloudEvents `id` into a `processed_events` table
   before applying the effect, and skips on a primary-key violation — without
   that, one redelivery double-decrements observed usable.
 
@@ -138,12 +157,14 @@ If you are building a sixth consumer:
 1. **Read the spec, not this page.**
    [`apis/asyncapi.yaml`](https://github.com/claudioed/inventory-storage/blob/main/apis/asyncapi.yaml)
    is the contract and is Spectral-linted in CI.
-2. **Only two events are on the wire.** The AsyncAPI document is the complete
-   *catalog*; eight of its ten messages are in-process only and each says so in
-   its own description. Do not build against one of those until it is wired.
-3. **Tolerate unknown `type` / `event_type` values.** The catalog grows.
-4. **Deduplicate on the event id.** At-least-once.
-5. **Do not assume ordering.** No partition key is set today.
+2. **Only two events are on the integration topic** (`StockReserved`,
+   `ReservationRevoked`). `warehouse.inventory.analytics` is internal to this
+   service's analytics projector; do not build against it.
+3. **Dispatch on the full `type` string; ignore unknown types.** The catalog
+   grows. Reject (DLQ/skip) anything that is not a valid CloudEvent.
+4. **Deduplicate on the CloudEvents `id`.** At-least-once.
+5. **Ordering is per reservation only** (Kafka key = reservation id,
+   `Hash` balancer — ADR-0021).
 6. **Treat the events as a projection, not as truth.** For an authoritative
    answer, call `GET /inventory/{sku}/usable`. The event stream exists so
    consumers can keep a cheap local view warm, not so they can reimplement the
@@ -172,8 +193,8 @@ kubectl --context kind-warehouse -n warehouse-systems exec -it kafka-controller-
 ```
 
 The unit-level equivalent lives in
-`internal/adapters/outbound/kafka/publisher_test.go`, which asserts the exact
-envelope the adapter produces against an in-memory `Writer` fake — no broker
+`internal/adapters/outbound/kafka/golden_test.go`, which asserts the exact
+CloudEvent JSON and `content-type` header the adapter produces against an in-memory `Writer` fake — no broker
 required, which is why it runs in the default `go test ./...` suite.
 
 ## Deployment
