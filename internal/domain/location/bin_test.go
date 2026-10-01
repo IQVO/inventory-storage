@@ -144,3 +144,47 @@ func TestRehydrateBin_ReconstructsWithoutValidation(t *testing.T) {
 		t.Fatalf("expected rehydrated version to round-trip, got %d", bin.Version())
 	}
 }
+
+func TestBin_Resize(t *testing.T) {
+	tests := []struct {
+		name         string
+		capacity     int
+		occupied     int
+		newCapacity  int
+		wantErr      error
+		wantCapacity int
+	}{
+		{name: "grow an empty bin", capacity: 10, occupied: 0, newCapacity: 20, wantErr: nil, wantCapacity: 20},
+		{name: "shrink an empty bin", capacity: 10, occupied: 0, newCapacity: 1, wantErr: nil, wantCapacity: 1},
+		{name: "same capacity is a no-op", capacity: 10, occupied: 4, newCapacity: 10, wantErr: nil, wantCapacity: 10},
+		{name: "shrink above occupancy", capacity: 10, occupied: 4, newCapacity: 5, wantErr: nil, wantCapacity: 5},
+		{name: "shrink exactly to occupancy fills the bin", capacity: 10, occupied: 4, newCapacity: 4, wantErr: nil, wantCapacity: 4},
+		{name: "shrink below occupancy is rejected", capacity: 10, occupied: 4, newCapacity: 3, wantErr: ErrCapacityBelowOccupancy, wantCapacity: 10},
+		{name: "zero capacity is rejected", capacity: 10, occupied: 0, newCapacity: 0, wantErr: ErrInvalidCapacity, wantCapacity: 10},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			binID, _ := shared.NewBinId("A-1-1")
+			bin, err := NewBin(binID, mustQty(t, tc.capacity))
+			if err != nil {
+				t.Fatalf("unexpected error building bin: %v", err)
+			}
+			if tc.occupied > 0 {
+				if err := bin.Occupy(mustQty(t, tc.occupied)); err != nil {
+					t.Fatalf("unexpected error occupying bin: %v", err)
+				}
+			}
+
+			err = bin.Resize(mustQty(t, tc.newCapacity))
+			if err != tc.wantErr {
+				t.Fatalf("expected error %v, got %v", tc.wantErr, err)
+			}
+			if bin.Capacity().Int() != tc.wantCapacity {
+				t.Fatalf("expected capacity=%d, got %d", tc.wantCapacity, bin.Capacity().Int())
+			}
+			if bin.Occupied().Int() != tc.occupied {
+				t.Fatalf("resize must never change occupancy: expected %d, got %d", tc.occupied, bin.Occupied().Int())
+			}
+		})
+	}
+}

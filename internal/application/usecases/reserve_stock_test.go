@@ -68,6 +68,19 @@ func TestReserveStock_SpansMultipleStockUnits(t *testing.T) {
 	if len(res.Allocations()) != 2 {
 		t.Fatalf("expected allocations across 2 stock units, got %d", len(res.Allocations()))
 	}
+	// Pick location (ADR 0025): each allocation carries the bin of the
+	// StockUnit it drew from, captured at allocation time.
+	bins := map[string]bool{}
+	for _, a := range res.Allocations() {
+		unit, _ := e.Stock.FindByID(context.Background(), a.StockUnitID)
+		if unit == nil || a.BinID != unit.BinID() {
+			t.Fatalf("expected allocation BinID to match its stock unit's bin, got %+v (unit %v)", a, unit)
+		}
+		bins[a.BinID.String()] = true
+	}
+	if !bins["A-1-1"] || !bins["A-1-2"] {
+		t.Fatalf("expected pick locations A-1-1 and A-1-2, got %v", bins)
+	}
 }
 
 func TestReserveStock_RejectsZeroQuantity(t *testing.T) {

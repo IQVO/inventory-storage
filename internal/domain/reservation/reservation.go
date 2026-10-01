@@ -30,8 +30,15 @@ const (
 // Allocation records how much of a reservation's quantity was drawn from a
 // specific StockUnit, so it can be returned to that same unit on revoke, or
 // consumed from it on confirm-pick.
+//
+// BinID is the pick location: the bin the StockUnit sat in when the
+// allocation was made (a StockUnit never changes bin, so this is stable for
+// the allocation's lifetime). It is what lets a picker's RF gun show WHERE
+// to go. It is empty only for allocations persisted before the field
+// existed and that could not be backfilled (see ADR 0025).
 type Allocation struct {
 	StockUnitID string
+	BinID       shared.BinId
 	Quantity    shared.Quantity
 }
 
