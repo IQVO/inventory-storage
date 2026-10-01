@@ -127,6 +127,7 @@ claiming stock it cannot produce.
 | B1 | **`sum(stock qty in bin) <= capacity`; a full bin rejects a stow.** | `Occupy` returns `ErrBinFull` when `occupied + qty > capacity` | `TestBin_Occupy_ExceedsCapacity_Rejected`, `TestStowStock_ExceedsBinCapacity_Rejected` |
 | B2 | **Capacity must be positive.** | `NewBin` returns `ErrInvalidCapacity` for `capacity <= 0` | `TestNewBin_RejectsInvalidCapacity` |
 | B3 | **A bin needs an id.** | `NewBin` returns `ErrEmptyBinID` | `TestNewBin_RejectsEmptyID` |
+| B4 | **A bin can never be resized below what it holds.** | `Resize` returns `ErrCapacityBelowOccupancy` when `occupied > capacity`, `ErrInvalidCapacity` for `capacity <= 0`; resizing exactly to occupancy is allowed (ADR 0025, `PUT /bins/{binId}`) | `TestBin_Resize`, `TestRegisterBin`, `TestRegisterBin_Endpoint` |
 | B4 | **You cannot release more than is occupied.** | `Release` returns `ErrReleaseExceedsOccupancy` | `TestBin_Release_ExceedsOccupancy_Rejected` |
 | B5 | **A stow of zero units is meaningless.** | `Occupy`/`Release` return `ErrZeroQuantity` | `TestBin_Occupy_RejectsZeroQuantity`, `TestBin_Release_RejectsZeroQuantity` |
 

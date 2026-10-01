@@ -46,17 +46,25 @@ wire and what is consumed.
 
 ## Walk the API
 
-:::note Bins are seed data
-There is no "create bin" endpoint — bin provisioning is an
-infrastructure/seed-data concern, not an HTTP operation. `StowStock` returns
-`404 bin-not-found` for an unknown bin, so seed one (via the Postgres adapter
-or a test fixture) before stowing.
+:::note Register a bin first
+`StowStock` returns `404 bin-not-found` for an unknown bin, so register one
+before stowing. `PUT /bins/{binId}` is idempotent and declarative (ADR 0025):
+`201` when it creates the bin, `200` when it already exists (unchanged or
+resized), `409 capacity-below-occupancy` if you ask for less than it holds.
 :::
 
 ```bash
 # Liveness
 curl -s localhost:8080/healthz
 # {"status":"ok"}
+
+# 0. Register the bin (inventory control).
+curl -s -i -X PUT localhost:8080/bins/A-1-1 \
+  -H 'Content-Type: application/json' \
+  -d '{"capacity":20}'
+# HTTP/1.1 201 Created
+# Location: /bins/A-1-1
+# {"binId":"A-1-1","capacity":20,"occupied":0,"available":20}
 
 # 1. Receive: goods are in the building, not yet located.
 curl -s -i -X POST localhost:8080/stock/receive \
@@ -82,7 +90,8 @@ curl -s -i -X POST localhost:8080/reservations \
 # HTTP/1.1 201 Created
 # Location: /reservations/<id>
 # {"id":"...","sku":"SKU-1","quantity":6,"demandRef":"order-42",
-#  "status":"ACTIVE","allocations":[{"stockUnitId":"...","quantity":6}],
+#  "status":"ACTIVE","allocations":[{"stockUnitId":"...","binId":"A-1-1","quantity":6}],
+#  ...   <- binId is the pick location: where the picker goes
 #  "expiresAt":"..."}
 
 curl -s localhost:8080/inventory/SKU-1/usable

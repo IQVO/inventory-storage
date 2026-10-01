@@ -90,6 +90,7 @@ const sidebars: SidebarsConfig = {
         'adr/0020-resilience-circuit-breaker-retry-dlq-shutdown',
         'adr/0021-kafka-producer-partition-key',
         'adr/0024-cloudevents-mandatory-envelope',
+        'adr/0025-bin-registration-endpoint-and-pick-location',
       ],
     },
   ],
