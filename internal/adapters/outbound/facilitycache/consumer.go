@@ -37,7 +37,6 @@ package facilitycache
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -48,13 +47,14 @@ import (
 
 	kafkago "github.com/segmentio/kafka-go"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
 // Topic is facility-layout's integration topic. This service has no
 // business knowing anything else about that context beyond this topic name
-// and the envelope/payload shapes below.
+// and the CloudEvents types/payload shapes below.
 const Topic = "warehouse.facility.events"
 
 // consumerGroupPrefix names this service's dedicated, PER-PROCESS consumer
@@ -73,23 +73,15 @@ const consumerGroupPrefix = "inventory-storage-facility-location-cache"
 // hanging forever on a broker that will never deliver.
 const WaitReadyTimeout = 60 * time.Second
 
-// Event types this consumer acts on. facility-layout's Published Language
-// uses fully-qualified CloudEvents types
-// (com.warehouse.wms.facility-layout.<entity>.<EventName>); matching is
-// done on the trailing event name so a namespace change upstream does not
-// silently stop this cache from updating.
+// CloudEvents `type` strings this consumer acts on: facility-layout's
+// Published Language (ADR-0024 cross-service catalogue). Dispatch is on the
+// FULL, byte-identical type string — never a suffix match — so an
+// unrelated event that merely shares a trailing name can never be applied.
 const (
-	eventZoneRegistered             = "ZoneRegistered"
-	eventLocationSlotRegistered     = "LocationSlotRegistered"
-	eventLocationSlotDecommissioned = "LocationSlotDecommissioned"
+	typeZoneRegistered             = "com.warehouse.wms.facility-layout.zone.ZoneRegistered"
+	typeLocationSlotRegistered     = "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered"
+	typeLocationSlotDecommissioned = "com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned"
 )
-
-// envelope is the CloudEvents-like wrapper shared across every
-// warehouse-systems publisher.
-type envelope struct {
-	EventType string          `json:"event_type"`
-	Data      json.RawMessage `json:"data"`
-}
 
 // zoneData is facility-layout's ZoneRegistered payload. Only the
 // classification attributes matter here; the rest is decoded and ignored.
@@ -410,8 +402,9 @@ func (c *Consumer) GetSlotAttributes(_ context.Context, binID shared.BinId) (pro
 // every recognized event to the local cache. It is intended to run in its
 // own goroutine for the life of the process.
 //
-// A message apply() cannot parse (malformed envelope/data JSON, a
-// required field missing) is dead-lettered to topic+dlqTopicSuffix
+// A message apply() cannot parse (not a valid CloudEvents 1.0 event —
+// including the retired flat envelope — malformed data JSON, or a required
+// field missing) is dead-lettered to topic+dlqTopicSuffix
 // (ADR-0020 §DLQ) — the raw payload plus x-dlq-* headers preserved for
 // operator inspection/replay — then observe() still runs, exactly as
 // before this change, so readiness and the read model keep advancing
@@ -477,63 +470,31 @@ func (c *Consumer) observe(partition int, offset int64) {
 	}
 }
 
-// apply decodes one envelope and updates the cache.
+// apply decodes one CloudEvents 1.0 event and updates the cache. Anything
+// cloudevents.Decode rejects (the retired flat envelope, bad JSON, missing
+// required attributes) is returned as an error so Run dead-letters it —
+// it is never parsed as a legacy shape. Every update is an idempotent
+// upsert/delete keyed by the aggregate, so a redelivered event (same
+// CloudEvents id) re-applies harmlessly and needs no separate id dedupe.
 func (c *Consumer) apply(value []byte) error {
-	var env envelope
-	if err := json.Unmarshal(value, &env); err != nil {
-		return fmt.Errorf("facilitycache: decode envelope: %w", err)
+	e, err := cloudevents.Decode(value)
+	if err != nil {
+		return fmt.Errorf("facilitycache: %w", err)
 	}
 
-	switch eventName(env.EventType) {
-	case eventZoneRegistered:
-		var data zoneData
-		if err := json.Unmarshal(env.Data, &data); err != nil {
-			return fmt.Errorf("facilitycache: decode %s: %w", eventZoneRegistered, err)
-		}
-		if data.ZoneID == "" {
-			return fmt.Errorf("facilitycache: %s with empty zoneId", eventZoneRegistered)
-		}
-		temperatureClass, err := product.ParseTemperatureClass(data.TemperatureClass)
-		if err != nil {
-			temperatureClass = ""
-		}
-		c.mu.Lock()
-		c.zones[data.ZoneID] = product.SlotAttributes{
-			Hazmat:           data.Hazmat,
-			TemperatureClass: temperatureClass,
-			Known:            true,
-		}
-		c.mu.Unlock()
-
-	case eventLocationSlotRegistered:
+	switch e.Type() {
+	case typeZoneRegistered:
+		return c.applyZoneRegistered(e.DataAs)
+	case typeLocationSlotRegistered:
+		return c.applySlotRegistered(e.DataAs)
+	case typeLocationSlotDecommissioned:
 		var data slotData
-		if err := json.Unmarshal(env.Data, &data); err != nil {
-			return fmt.Errorf("facilitycache: decode %s: %w", eventLocationSlotRegistered, err)
-		}
-		if data.LocationCode == "" {
-			return fmt.Errorf("facilitycache: %s with empty locationCode", eventLocationSlotRegistered)
-		}
-		zoneID := data.ZoneID
-		if zoneID == "" {
-			// Derive the zone identity from the code itself, mirroring
-			// facility-layout's own LocationCode.ZoneID() (site-area-zone,
-			// the first three of seven hyphen-separated segments), so a
-			// payload that omits the field still resolves.
-			zoneID = zoneIDFromLocationCode(data.LocationCode)
-		}
-		c.mu.Lock()
-		c.slots[data.LocationCode] = zoneID
-		c.mu.Unlock()
-
-	case eventLocationSlotDecommissioned:
-		var data slotData
-		if err := json.Unmarshal(env.Data, &data); err != nil {
-			return fmt.Errorf("facilitycache: decode %s: %w", eventLocationSlotDecommissioned, err)
+		if err := e.DataAs(&data); err != nil {
+			return fmt.Errorf("facilitycache: decode %s: %w", typeLocationSlotDecommissioned, err)
 		}
 		c.mu.Lock()
 		delete(c.slots, data.LocationCode)
 		c.mu.Unlock()
-
 	default:
 		// Every other event on this topic (SiteRegistered, AisleRegistered,
 		// LocationTypeRegistered, PlacementRuleDefined, FacilityLayoutImported)
@@ -544,14 +505,50 @@ func (c *Consumer) apply(value []byte) error {
 	return nil
 }
 
-// eventName reduces a fully-qualified CloudEvents type to its trailing
-// event name (com.warehouse.wms.facility-layout.zone.ZoneRegistered ->
-// ZoneRegistered), and passes a bare name through unchanged.
-func eventName(eventType string) string {
-	if i := strings.LastIndex(eventType, "."); i >= 0 {
-		return eventType[i+1:]
+// applyZoneRegistered caches a zone's classification attributes.
+func (c *Consumer) applyZoneRegistered(dataAs func(any) error) error {
+	var data zoneData
+	if err := dataAs(&data); err != nil {
+		return fmt.Errorf("facilitycache: decode %s: %w", typeZoneRegistered, err)
 	}
-	return eventType
+	if data.ZoneID == "" {
+		return fmt.Errorf("facilitycache: %s with empty zoneId", typeZoneRegistered)
+	}
+	temperatureClass, err := product.ParseTemperatureClass(data.TemperatureClass)
+	if err != nil {
+		temperatureClass = ""
+	}
+	c.mu.Lock()
+	c.zones[data.ZoneID] = product.SlotAttributes{
+		Hazmat:           data.Hazmat,
+		TemperatureClass: temperatureClass,
+		Known:            true,
+	}
+	c.mu.Unlock()
+	return nil
+}
+
+// applySlotRegistered caches a location slot -> zone binding.
+func (c *Consumer) applySlotRegistered(dataAs func(any) error) error {
+	var data slotData
+	if err := dataAs(&data); err != nil {
+		return fmt.Errorf("facilitycache: decode %s: %w", typeLocationSlotRegistered, err)
+	}
+	if data.LocationCode == "" {
+		return fmt.Errorf("facilitycache: %s with empty locationCode", typeLocationSlotRegistered)
+	}
+	zoneID := data.ZoneID
+	if zoneID == "" {
+		// Derive the zone identity from the code itself, mirroring
+		// facility-layout's own LocationCode.ZoneID() (site-area-zone,
+		// the first three of seven hyphen-separated segments), so a
+		// payload that omits the field still resolves.
+		zoneID = zoneIDFromLocationCode(data.LocationCode)
+	}
+	c.mu.Lock()
+	c.slots[data.LocationCode] = zoneID
+	c.mu.Unlock()
+	return nil
 }
 
 // zoneIDFromLocationCode mirrors facility-layout's LocationCode.ZoneID():

@@ -92,7 +92,7 @@ func (e countingEncoder) Encode(_ context.Context, event shared.DomainEvent) ([]
 	return []outboundkafka.Encoded{{
 		Topic:     e.topic,
 		EventType: event.EventName(),
-		Value:     []byte(`{"event_type":"` + event.EventName() + `"}`),
+		Value:     []byte(`{"stub":"` + event.EventName() + `"}`),
 	}}, nil
 }
 

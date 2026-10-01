@@ -8,6 +8,7 @@ import (
 
 	kafkago "github.com/segmentio/kafka-go"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	outboundkafka "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -71,7 +72,7 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 		{
 			name:          "StockReceived",
 			event:         shared.NewStockReceived(at, mustSKU(t, "SKU-1"), newQty(t, 10)),
-			wantType:      "StockReceived",
+			wantType:      "com.warehouse.wms.inventory-storage.stock.StockReceived",
 			wantKey:       "SKU-1",
 			wantDataField: "quantity",
 			wantDataValue: float64(10),
@@ -79,7 +80,7 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 		{
 			name:          "ItemStowed",
 			event:         shared.NewItemStowed(at, mustSKU(t, "SKU-2"), mustBin(t, "BIN-A"), newQty(t, 3)),
-			wantType:      "ItemStowed",
+			wantType:      "com.warehouse.wms.inventory-storage.stock.ItemStowed",
 			wantKey:       "SKU-2",
 			wantDataField: "bin_id",
 			wantDataValue: "BIN-A",
@@ -87,7 +88,7 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 		{
 			name:          "StockPicked",
 			event:         shared.NewStockPicked(at, "res-1", mustSKU(t, "SKU-3"), newQty(t, 4)),
-			wantType:      "StockPicked",
+			wantType:      "com.warehouse.wms.inventory-storage.reservation.StockPicked",
 			wantKey:       "SKU-3",
 			wantDataField: "quantity",
 			wantDataValue: float64(4),
@@ -95,7 +96,7 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 		{
 			name:          "StockReserved",
 			event:         shared.NewStockReserved(at, "res-2", mustSKU(t, "SKU-4"), newQty(t, 2), "demand-x"),
-			wantType:      "StockReserved",
+			wantType:      "com.warehouse.wms.inventory-storage.reservation.StockReserved",
 			wantKey:       "SKU-4",
 			wantDataField: "reservation_id",
 			wantDataValue: "res-2",
@@ -103,7 +104,7 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 		{
 			name:          "CycleCountCompleted",
 			event:         shared.NewCycleCountCompleted(at, mustBin(t, "BIN-B"), newQty(t, 5), newQty(t, 6), true),
-			wantType:      "CycleCountCompleted",
+			wantType:      "com.warehouse.wms.inventory-storage.bin.CycleCountCompleted",
 			wantKey:       "BIN-B",
 			wantDataField: "discrepancy",
 			wantDataValue: true,
@@ -111,7 +112,7 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 		{
 			name:          "DiscrepancyDetected",
 			event:         shared.NewDiscrepancyDetected(at, mustBin(t, "BIN-C"), newQty(t, 5), newQty(t, 7)),
-			wantType:      "DiscrepancyDetected",
+			wantType:      "com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected",
 			wantKey:       "BIN-C",
 			wantDataField: "counted",
 			wantDataValue: float64(5),
@@ -119,7 +120,7 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 		{
 			name:          "ItemUnlocated",
 			event:         shared.NewItemUnlocated(at, "su-1", mustSKU(t, "SKU-5"), mustBin(t, "BIN-D"), newQty(t, 1)),
-			wantType:      "ItemUnlocated",
+			wantType:      "com.warehouse.wms.inventory-storage.stock.ItemUnlocated",
 			wantKey:       "SKU-5",
 			wantDataField: "bin_id",
 			wantDataValue: "BIN-D",
@@ -134,9 +135,10 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 }
 
 // assertAnalyticsEventPublished publishes one event through a capturing
-// writer and pins the resulting analytics envelope: message key, event
-// type, generated event_id, source, schema version, occurred-at timestamp,
-// and the case's one asserted data field.
+// writer and pins the resulting analytics CloudEvent: message key, full
+// `type`, minted `id`, `source`, analytics `dataschema`, `time`, the
+// content-type header, and the case's one asserted data field. The retired
+// envelope-level schema_version must be gone.
 func assertAnalyticsEventPublished(t *testing.T, event shared.DomainEvent, wantType, wantKey, wantDataField string, wantDataValue any, at time.Time) {
 	t.Helper()
 	w := &fakeAnalyticsWriter{}
@@ -153,33 +155,50 @@ func assertAnalyticsEventPublished(t *testing.T, event shared.DomainEvent, wantT
 	if string(msg.Key) != wantKey {
 		t.Errorf("key = %q, want %q", string(msg.Key), wantKey)
 	}
+	if got := headerValue(msg.Headers, "content-type"); got != cloudevents.MediaType {
+		t.Errorf("content-type header = %q, want %q", got, cloudevents.MediaType)
+	}
 
-	var env outboundkafka.AnalyticsEnvelope
-	if err := json.Unmarshal(msg.Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
+	e, err := cloudevents.Decode(msg.Value)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
 	}
-	if env.EventType != wantType {
-		t.Errorf("event_type = %q, want %q", env.EventType, wantType)
+	if e.Type() != wantType {
+		t.Errorf("type = %q, want %q", e.Type(), wantType)
 	}
-	if env.EventId != "evt-fixed" {
-		t.Errorf("event_id = %q, want evt-fixed", env.EventId)
+	if e.ID() != "evt-fixed" {
+		t.Errorf("id = %q, want evt-fixed", e.ID())
 	}
-	if env.Source != "inventory-storage" {
-		t.Errorf("source = %q, want inventory-storage", env.Source)
+	if e.Source() != "/warehouse/inventory-storage" {
+		t.Errorf("source = %q, want /warehouse/inventory-storage", e.Source())
 	}
-	if env.SchemaVersion != 1 {
-		t.Errorf("schema_version = %d, want 1", env.SchemaVersion)
+	if want := "urn:warehouse:inventory-storage:analytics:" + event.EventName() + ":v1"; e.DataSchema() != want {
+		t.Errorf("dataschema = %q, want %q", e.DataSchema(), want)
 	}
-	if !env.OccurredAt.Equal(at) {
-		t.Errorf("occurred_at = %v, want %v", env.OccurredAt, at)
+	if !e.Time().Equal(at) {
+		t.Errorf("time = %v, want %v", e.Time(), at)
 	}
+	assertNoSchemaVersion(t, msg.Value)
 
 	var data map[string]any
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("unmarshal data: %v", err)
+	if err := e.DataAs(&data); err != nil {
+		t.Fatalf("DataAs: %v", err)
 	}
 	if got := data[wantDataField]; got != wantDataValue {
 		t.Errorf("data[%q] = %v (%T), want %v (%T)", wantDataField, got, got, wantDataValue, wantDataValue)
+	}
+}
+
+// assertNoSchemaVersion pins that the retired Envelope v1 schema_version
+// field is gone (replaced by `dataschema`, ADR-0024).
+func assertNoSchemaVersion(t *testing.T, value []byte) {
+	t.Helper()
+	var raw map[string]any
+	if err := json.Unmarshal(value, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := raw["schema_version"]; ok {
+		t.Error("schema_version must not be present on a CloudEvent")
 	}
 }
 
@@ -213,19 +232,22 @@ func TestAnalyticsPublisher_EnrichesReservationSKU(t *testing.T) {
 		if err := p.Publish(context.Background(), ev); err != nil {
 			t.Fatalf("Publish: %v", err)
 		}
-		var env outboundkafka.AnalyticsEnvelope
-		if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-			t.Fatalf("unmarshal: %v", err)
+		e, err := cloudevents.Decode(w.msgs[0].Value)
+		if err != nil {
+			t.Fatalf("Decode: %v", err)
 		}
 		if string(w.msgs[0].Key) != "res-9" {
 			t.Errorf("key = %q, want res-9 (reservation id)", string(w.msgs[0].Key))
 		}
+		if e.Subject() != "res-9" {
+			t.Errorf("subject = %q, want res-9", e.Subject())
+		}
 		var data map[string]any
-		if err := json.Unmarshal(env.Data, &data); err != nil {
-			t.Fatalf("unmarshal data: %v", err)
+		if err := e.DataAs(&data); err != nil {
+			t.Fatalf("DataAs: %v", err)
 		}
 		if data["sku"] != "SKU-ENRICHED" {
-			t.Errorf("%s sku = %v, want SKU-ENRICHED", env.EventType, data["sku"])
+			t.Errorf("%s sku = %v, want SKU-ENRICHED", e.Type(), data["sku"])
 		}
 	}
 }
@@ -241,13 +263,13 @@ func TestAnalyticsPublisher_ReservationSKUAbsentWhenNotFound(t *testing.T) {
 	if err := p.Publish(context.Background(), shared.NewReservationExpired(time.Now(), "res-x")); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	var env outboundkafka.AnalyticsEnvelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	e, err := cloudevents.Decode(w.msgs[0].Value)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
 	}
 	var data map[string]any
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("unmarshal data: %v", err)
+	if err := e.DataAs(&data); err != nil {
+		t.Fatalf("DataAs: %v", err)
 	}
 	if data["sku"] != "" {
 		t.Errorf("sku = %v, want empty (reservation not found)", data["sku"])

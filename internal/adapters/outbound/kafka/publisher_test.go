@@ -2,7 +2,6 @@ package kafka_test
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
@@ -35,21 +35,13 @@ func (w *fakeWriter) WriteMessages(_ context.Context, msgs ...kafkago.Message) e
 	return nil
 }
 
-type envelope struct {
-	EventID    string          `json:"event_id"`
-	EventType  string          `json:"event_type"`
-	OccurredAt time.Time       `json:"occurred_at"`
-	Source     string          `json:"source"`
-	Data       json.RawMessage `json:"data"`
-}
-
 type reservationData struct {
 	SKU       string `json:"sku"`
 	Quantity  int    `json:"quantity"`
 	DemandRef string `json:"demand_ref"`
 }
 
-func TestPublisher_StockReserved_EnvelopeShape(t *testing.T) {
+func TestPublisher_StockReserved_CloudEventShape(t *testing.T) {
 	writer := &fakeWriter{}
 	pub := kafka.NewPublisher(writer, memory.NewReservationRepo())
 
@@ -66,26 +58,32 @@ func TestPublisher_StockReserved_EnvelopeShape(t *testing.T) {
 		t.Fatalf("expected 1 message, got %d", len(writer.messages))
 	}
 
-	var env envelope
-	if err := json.Unmarshal(writer.messages[0].Value, &env); err != nil {
-		t.Fatalf("failed to unmarshal envelope: %v", err)
+	e, err := cloudevents.Decode(writer.messages[0].Value)
+	if err != nil {
+		t.Fatalf("published value is not a valid CloudEvent: %v", err)
 	}
 
-	if env.EventType != "StockReserved" {
-		t.Errorf("EventType = %q, want StockReserved", env.EventType)
+	if e.Type() != "com.warehouse.wms.inventory-storage.reservation.StockReserved" {
+		t.Errorf("type = %q", e.Type())
 	}
-	if env.Source != kafka.Source {
-		t.Errorf("Source = %q, want %q", env.Source, kafka.Source)
+	if e.Source() != cloudevents.Source {
+		t.Errorf("source = %q, want %q", e.Source(), cloudevents.Source)
 	}
-	if !env.OccurredAt.Equal(occurredAt) {
-		t.Errorf("OccurredAt = %v, want %v", env.OccurredAt, occurredAt)
+	if !e.Time().Equal(occurredAt) {
+		t.Errorf("time = %v, want %v", e.Time(), occurredAt)
 	}
-	if env.EventID == "" {
-		t.Error("EventID must not be empty")
+	if e.ID() == "" {
+		t.Error("id must not be empty")
+	}
+	if e.Subject() != "res-1" {
+		t.Errorf("subject = %q, want res-1", e.Subject())
+	}
+	if got := headerValue(writer.messages[0].Headers, "content-type"); got != cloudevents.MediaType {
+		t.Errorf("content-type header = %q, want %q", got, cloudevents.MediaType)
 	}
 
 	var data reservationData
-	if err := json.Unmarshal(env.Data, &data); err != nil {
+	if err := e.DataAs(&data); err != nil {
 		t.Fatalf("failed to unmarshal data: %v", err)
 	}
 	if data.SKU != "SKU-1" || data.Quantity != 5 || data.DemandRef != "order-42" {
@@ -96,7 +94,7 @@ func TestPublisher_StockReserved_EnvelopeShape(t *testing.T) {
 	}
 }
 
-func TestPublisher_ReservationRevoked_EnvelopeShape(t *testing.T) {
+func TestPublisher_ReservationRevoked_CloudEventShape(t *testing.T) {
 	writer := &fakeWriter{}
 	repo := memory.NewReservationRepo()
 
@@ -128,16 +126,19 @@ func TestPublisher_ReservationRevoked_EnvelopeShape(t *testing.T) {
 		t.Fatalf("expected 1 message, got %d", len(writer.messages))
 	}
 
-	var env envelope
-	if err := json.Unmarshal(writer.messages[0].Value, &env); err != nil {
-		t.Fatalf("failed to unmarshal envelope: %v", err)
+	e, err := cloudevents.Decode(writer.messages[0].Value)
+	if err != nil {
+		t.Fatalf("published value is not a valid CloudEvent: %v", err)
 	}
-	if env.EventType != "ReservationRevoked" {
-		t.Errorf("EventType = %q, want ReservationRevoked", env.EventType)
+	if e.Type() != "com.warehouse.wms.inventory-storage.reservation.ReservationRevoked" {
+		t.Errorf("type = %q", e.Type())
+	}
+	if e.Subject() != "res-2" {
+		t.Errorf("subject = %q, want res-2", e.Subject())
 	}
 
 	var data reservationData
-	if err := json.Unmarshal(env.Data, &data); err != nil {
+	if err := e.DataAs(&data); err != nil {
 		t.Fatalf("failed to unmarshal data: %v", err)
 	}
 	if data.SKU != "SKU-2" || data.Quantity != 3 || data.DemandRef != "order-99" {
@@ -355,8 +356,8 @@ func assertMessagingAttributes(t *testing.T, span sdktrace.ReadOnlySpan) {
 	if attrs["messaging.destination.name"] != kafka.Topic {
 		t.Errorf("messaging.destination.name = %q, want %q", attrs["messaging.destination.name"], kafka.Topic)
 	}
-	if attrs["messaging.message.event_type"] != "StockReserved" {
-		t.Errorf("messaging.message.event_type = %q, want StockReserved", attrs["messaging.message.event_type"])
+	if want := "com.warehouse.wms.inventory-storage.reservation.StockReserved"; attrs["messaging.message.event_type"] != want {
+		t.Errorf("messaging.message.event_type = %q, want %q", attrs["messaging.message.event_type"], want)
 	}
 }
 
