@@ -21,8 +21,9 @@ so they cannot drift from the spec the service ships.
 
 ## Endpoint matrix
 
-All 11 routes registered in `internal/adapters/inbound/http/server.go`'s
-`NewRouter` are documented — **11 / 11**. (The separate `cmd/inventory-reports`
+All 13 API routes registered in `internal/adapters/inbound/http/server.go`'s
+`NewRouter` are documented — **13 / 13** (the `/readyz` readiness probe is
+infrastructure, not part of the spec). (The separate `cmd/inventory-reports`
 binary serves the analytics report routes — see
 [Inventory Flow & Accuracy Report](/docs/analytics/inventory-flow-accuracy-report);
 they are not part of `apis/openapi.yaml`.)
@@ -37,6 +38,8 @@ they are not part of `apis/openapi.yaml`.)
 | `DELETE` | `/reservations/{id}` | `revokeReservation` | Reservations | `204` | `404` `409` `500` |
 | `POST` | `/reservations/{id}/confirm-pick` | `confirmPick` | Reservations | `204` | `404` `409` `500` |
 | `GET` | `/inventory/{sku}/usable` | `getUsableInventory` | Inventory | `200` | `400` `500` |
+| `PUT` | `/bins/{binId}` | `registerBin` | Bins | `200` / `201` | `400` `409` `422` `500` |
+| `GET` | `/bins/{binId}` | `getBin` | Bins | `200` | `404` `500` |
 | `POST` | `/bins/{binId}/cycle-count` | `runCycleCount` | Bins | `200` | `400` `404` `422` `500` |
 | `PUT` | `/products/{sku}/classification` | `classifyProduct` | Products | `200` / `201` | `400` `500` |
 | `GET` | `/products/{sku}/classification` | `getProductClassification` | Products | `200` | `404` `500` |
@@ -108,6 +111,7 @@ Mapping is one-for-one with the typed domain and application errors, in
 | `zero-quantity` | 422 | `shared.ErrZeroQuantity` |
 | `invalid-bin-capacity` | 422 | `location.ErrInvalidCapacity` |
 | `bin-full` | 409 | `location.ErrBinFull` |
+| `capacity-below-occupancy` | 409 | `location.ErrCapacityBelowOccupancy` (`PUT /bins/{binId}`, ADR 0025) |
 | `release-exceeds-occupancy` | 409 | `location.ErrReleaseExceedsOccupancy` |
 | `insufficient-usable` | 409 | `usecases.ErrInsufficientUsable`, `stock.ErrInsufficientUsable` |
 | `insufficient-reserved` | 409 | `stock.ErrInsufficientReserved` |
@@ -119,7 +123,9 @@ Mapping is one-for-one with the typed domain and application errors, in
 | `temperature-class-mismatch` | 409 | `usecases.ErrTemperatureClassMismatch` |
 | `location-classification-unavailable` | 409 | `usecases.ErrLocationClassificationUnavailable` |
 | `hazmat-class-incompatible` | 409 | `usecases.ErrHazmatClassIncompatible` |
-| `missing-demand-ref` | 400 | written directly by the `GET /reservations` handler |
+| `missing-demand-ref` | 400 | written directly by the `GET /reservations` and `POST /reservations` handlers (empty `demandRef`) |
+| `capacity-required` | 400 | written directly by the `PUT /bins/{binId}` handler when `capacity` is omitted |
+| `capacity-out-of-range` | 422 | written directly by the `PUT /bins/{binId}` handler when `capacity` exceeds int32 |
 | `malformed-request-body` | 400 | written directly when a request body is not valid JSON |
 | `internal-error` | 500 | anything unmapped |
 

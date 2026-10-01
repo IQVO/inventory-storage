@@ -40,6 +40,7 @@ func statusFor(err error) int {
 		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, location.ErrBinFull),
+		errors.Is(err, location.ErrCapacityBelowOccupancy),
 		errors.Is(err, location.ErrReleaseExceedsOccupancy),
 		errors.Is(err, usecases.ErrInsufficientUsable),
 		errors.Is(err, stock.ErrInsufficientUsable),
@@ -108,6 +109,7 @@ func problemCatalog() []struct {
 		{location.ErrInvalidCapacity, problemInfo{"invalid-bin-capacity", "Bin capacity must be greater than zero"}},
 
 		{location.ErrBinFull, problemInfo{"bin-full", "Bin is full: capacity exceeded"}},
+		{location.ErrCapacityBelowOccupancy, problemInfo{"capacity-below-occupancy", "Bin capacity cannot be set below current occupancy"}},
 		{location.ErrReleaseExceedsOccupancy, problemInfo{"release-exceeds-occupancy", "Release exceeds bin occupancy"}},
 		{usecases.ErrInsufficientUsable, problemInfo{"insufficient-usable", "Requested quantity exceeds usable inventory"}},
 		{stock.ErrInsufficientUsable, problemInfo{"insufficient-usable", "Requested quantity exceeds usable inventory"}},
