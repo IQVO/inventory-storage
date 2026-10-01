@@ -33,7 +33,7 @@ The WMS-tier authoritative record of what is held where, and what portion of it 
 
 Its aggregates are **StockUnit** (a quantity of a SKU at a specific bin — every physical item has exactly one known bin, or is flagged Unlocated), **Bin/Location** (a coded slot with fixed capacity; any SKU may occupy any free bin, chaotic-storage style), and **Reservation** (a revocable binding of quantity to demand, with a timeout). "Usable" inventory — on-hand minus active reservations minus held/unlocated stock — is what constrains what this service will let you reserve, not raw on-hand quantity.
 
-Out of this service's boundary: it does not pick, pack, ship, route associates, or manage stations/tasks/labor (that is Work Planning / fulfillment-execution); it does not decide *what* to receive or forecast demand; and it does not create bins (bin provisioning is an infrastructure/seed-data concern today, not an HTTP-exposed operation). Error responses across this API use RFC 7807 (`application/problem+json`) Problem Details.
+Out of this service's boundary: it does not pick, pack, ship, route associates, or manage stations/tasks/labor (that is Work Planning / fulfillment-execution); and it does not decide *what* to receive or forecast demand. Bins are registered declaratively by inventory control via `PUT /bins/{binId}` (ADR 0025); every reservation allocation names the bin to pick from (`allocations[].binId`). Error responses across this API use RFC 7807 (`application/problem+json`) Problem Details.
 
 
 <div
