@@ -205,17 +205,14 @@ func NewConsumerForTopic(ctx context.Context, brokers []string, topic string, lo
 	})
 
 	c := &Consumer{
-		Reader:  reader,
-		Logger:  logger,
-		zones:   make(map[string]product.SlotAttributes),
-		slots:   make(map[string]string),
-		readyCh: make(chan struct{}),
-		target:  target,
-		topic:   topic,
-		dlqWriter: &kafkago.Writer{
-			Addr:  kafkago.TCP(brokers...),
-			Topic: topic + dlqTopicSuffix,
-		},
+		Reader:    reader,
+		Logger:    logger,
+		zones:     make(map[string]product.SlotAttributes),
+		slots:     make(map[string]string),
+		readyCh:   make(chan struct{}),
+		target:    target,
+		topic:     topic,
+		dlqWriter: newDLQWriter(brokers, topic),
 	}
 	if len(target) == 0 {
 		// The topic has no partitions carrying any messages yet (brand
@@ -561,4 +558,17 @@ func zoneIDFromLocationCode(code string) string {
 		return ""
 	}
 	return strings.Join(parts[:3], "-")
+}
+
+// newDLQWriter builds the dead-letter writer for topic. The fleet
+// auto-creates every topic on first write (warehouse-infra kafka.tf);
+// without AllowAutoTopicCreation a missing "<topic>.dlq" fails the DLQ
+// publish with "Unknown Topic Or Partition" and stops the consumer,
+// freezing the facility cache.
+func newDLQWriter(brokers []string, topic string) *kafkago.Writer {
+	return &kafkago.Writer{
+		Addr:                   kafkago.TCP(brokers...),
+		Topic:                  topic + dlqTopicSuffix,
+		AllowAutoTopicCreation: true,
+	}
 }
