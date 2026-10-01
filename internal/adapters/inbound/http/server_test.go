@@ -43,6 +43,8 @@ func newTestServer() testServer {
 		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
 		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
 		ClassifyProduct:            &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
+		RegisterBin:                &usecases.RegisterBin{Locations: locationRepo},
+		GetBin:                     &usecases.GetBin{Locations: locationRepo},
 		Classifications:            classificationRepo,
 	}
 
@@ -249,6 +251,7 @@ func TestGetReservationsByDemandRef_Endpoint_Found(t *testing.T) {
 		Status      string `json:"status"`
 		Allocations []struct {
 			StockUnitID string `json:"stockUnitId"`
+			BinID       string `json:"binId"`
 			Quantity    int    `json:"quantity"`
 		} `json:"allocations"`
 		CreatedAt string `json:"createdAt"`
@@ -266,6 +269,45 @@ func TestGetReservationsByDemandRef_Endpoint_Found(t *testing.T) {
 	}
 	if len(got.Allocations) != 1 || got.CreatedAt == "" || got.ExpiresAt == "" {
 		t.Fatalf("expected allocations/createdAt/expiresAt populated, got %+v", got)
+	}
+	if got.Allocations[0].BinID != "A-1-1" {
+		t.Fatalf("expected allocation pick location binId=A-1-1, got %q", got.Allocations[0].BinID)
+	}
+}
+
+// POST /reservations exposes each allocation's pick location (binId), so
+// a picker's RF gun can show where to go — across multiple bins when the
+// reservation spans several StockUnits (ADR 0025).
+func TestReserveStock_Endpoint_AllocationsCarryPickLocation(t *testing.T) {
+	ts := newTestServer()
+	ts.seedBin(t, "A-1-1", 5)
+	ts.seedBin(t, "A-1-2", 5)
+	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-2"})
+
+	rec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 8, "demandRef": "order-pick-1"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Allocations []struct {
+			StockUnitID string `json:"stockUnitId"`
+			BinID       string `json:"binId"`
+			Quantity    int    `json:"quantity"`
+		} `json:"allocations"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unexpected error decoding response: %v", err)
+	}
+	perBin := map[string]int{}
+	for _, a := range body.Allocations {
+		if a.StockUnitID == "" {
+			t.Fatalf("expected stockUnitId on every allocation, got %+v", a)
+		}
+		perBin[a.BinID] += a.Quantity
+	}
+	if len(perBin) != 2 || perBin["A-1-1"]+perBin["A-1-2"] != 8 {
+		t.Fatalf("expected 8 units allocated across bins A-1-1 and A-1-2, got %v", perBin)
 	}
 }
 
@@ -759,4 +801,168 @@ func TestStowStock_Endpoint_SegregationRejected(t *testing.T) {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
 	assertProblemDetails(t, rec, http.StatusConflict, "hazmat-class-incompatible", "/stock/stow")
+}
+
+// ---------------------------------------------------------------------------
+// PUT /bins/{binId} and GET /bins/{binId} (ADR 0025)
+// ---------------------------------------------------------------------------
+
+type binBody struct {
+	BinID     string `json:"binId"`
+	Capacity  int    `json:"capacity"`
+	Occupied  int    `json:"occupied"`
+	Available int    `json:"available"`
+}
+
+func decodeBin(t *testing.T, rec *httptest.ResponseRecorder) binBody {
+	t.Helper()
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("expected Content-Type application/json, got %q", ct)
+	}
+	var b binBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &b); err != nil {
+		t.Fatalf("unexpected error decoding bin response: %v (body: %s)", err, rec.Body.String())
+	}
+	return b
+}
+
+type registerBinEndpointCase struct {
+	name      string
+	seed      int // 0 = no bin seeded
+	stow      int // units stowed into the seeded bin before the call
+	body      any
+	wantCode  int
+	wantSlug  string // problem slug for error responses
+	wantBin   binBody
+	wantLocal bool // expect a Location header
+}
+
+func TestRegisterBin_Endpoint(t *testing.T) {
+	tests := []registerBinEndpointCase{
+		{name: "absent bin is created", body: map[string]any{"capacity": 10}, wantCode: http.StatusCreated,
+			wantBin: binBody{BinID: "A-9-9", Capacity: 10, Occupied: 0, Available: 10}, wantLocal: true},
+		{name: "same capacity is a no-op", seed: 10, stow: 3, body: map[string]any{"capacity": 10}, wantCode: http.StatusOK,
+			wantBin: binBody{BinID: "A-9-9", Capacity: 10, Occupied: 3, Available: 7}},
+		{name: "different capacity above occupancy resizes", seed: 10, stow: 3, body: map[string]any{"capacity": 4}, wantCode: http.StatusOK,
+			wantBin: binBody{BinID: "A-9-9", Capacity: 4, Occupied: 3, Available: 1}},
+		{name: "capacity below occupancy is rejected", seed: 10, stow: 3, body: map[string]any{"capacity": 2}, wantCode: http.StatusConflict,
+			wantSlug: "capacity-below-occupancy"},
+		{name: "zero capacity is rejected", body: map[string]any{"capacity": 0}, wantCode: http.StatusUnprocessableEntity,
+			wantSlug: "invalid-bin-capacity"},
+		{name: "negative capacity is rejected", body: map[string]any{"capacity": -1}, wantCode: http.StatusUnprocessableEntity,
+			wantSlug: "negative-quantity"},
+		{name: "missing capacity is rejected", body: map[string]any{}, wantCode: http.StatusBadRequest,
+			wantSlug: "capacity-required"},
+		{name: "capacity above int32 is rejected", body: map[string]any{"capacity": int64(2147483648)}, wantCode: http.StatusUnprocessableEntity,
+			wantSlug: "capacity-out-of-range"},
+		{name: "capacity at int32 max is accepted", body: map[string]any{"capacity": 2147483647}, wantCode: http.StatusCreated,
+			wantBin: binBody{BinID: "A-9-9", Capacity: 2147483647, Occupied: 0, Available: 2147483647}, wantLocal: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) { runRegisterBinEndpointCase(t, tc) })
+	}
+}
+
+// runRegisterBinEndpointCase seeds the case's starting bin/stock over the
+// real router, issues the PUT, and checks status plus body or problem.
+func runRegisterBinEndpointCase(t *testing.T, tc registerBinEndpointCase) {
+	t.Helper()
+	ts := newTestServer()
+	if tc.seed > 0 {
+		ts.seedBin(t, "A-9-9", tc.seed)
+	}
+	if tc.stow > 0 {
+		stowRec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": tc.stow, "binId": "A-9-9"})
+		if stowRec.Code != http.StatusCreated {
+			t.Fatalf("expected 201 stowing, got %d: %s", stowRec.Code, stowRec.Body.String())
+		}
+	}
+
+	rec := ts.do(t, http.MethodPut, "/bins/A-9-9", tc.body)
+	if rec.Code != tc.wantCode {
+		t.Fatalf("expected %d, got %d: %s", tc.wantCode, rec.Code, rec.Body.String())
+	}
+	if tc.wantSlug != "" {
+		assertProblemDetails(t, rec, tc.wantCode, tc.wantSlug, "/bins/A-9-9")
+		return
+	}
+	if got := decodeBin(t, rec); got != tc.wantBin {
+		t.Fatalf("expected bin %+v, got %+v", tc.wantBin, got)
+	}
+	if loc := rec.Header().Get("Location"); (loc == "/bins/A-9-9") != tc.wantLocal {
+		t.Fatalf("unexpected Location header %q (want present=%v)", loc, tc.wantLocal)
+	}
+}
+
+func TestRegisterBin_Endpoint_MalformedBody_Rejected(t *testing.T) {
+	ts := newTestServer()
+	req := httptest.NewRequest(http.MethodPut, "/bins/A-9-9", strings.NewReader("{not json"))
+	rec := httptest.NewRecorder()
+	ts.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusBadRequest, "malformed-request-body", "/bins/A-9-9")
+}
+
+// A registered bin is immediately usable as a stow target — the gap this
+// endpoint closes (no more seeding bins straight into Postgres).
+func TestRegisterBin_Endpoint_ThenStowSucceeds(t *testing.T) {
+	ts := newTestServer()
+	if rec := ts.do(t, http.MethodPut, "/bins/A-9-9", map[string]any{"capacity": 5}); rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 registering bin, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-9-9"}); rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 stowing into registered bin, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec := ts.do(t, http.MethodGet, "/bins/A-9-9", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got, want := decodeBin(t, rec), (binBody{BinID: "A-9-9", Capacity: 5, Occupied: 5, Available: 0}); got != want {
+		t.Fatalf("expected bin %+v, got %+v", want, got)
+	}
+}
+
+func TestGetBin_Endpoint_Found(t *testing.T) {
+	ts := newTestServer()
+	ts.seedBin(t, "A-1-1", 10)
+	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 4, "binId": "A-1-1"})
+
+	rec := ts.do(t, http.MethodGet, "/bins/A-1-1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got, want := decodeBin(t, rec), (binBody{BinID: "A-1-1", Capacity: 10, Occupied: 4, Available: 6}); got != want {
+		t.Fatalf("expected bin %+v, got %+v", want, got)
+	}
+}
+
+func TestGetBin_Endpoint_NotFound(t *testing.T) {
+	ts := newTestServer()
+	rec := ts.do(t, http.MethodGet, "/bins/NOPE-1", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusNotFound, "bin-not-found", "/bins/NOPE-1")
+}
+
+// demandRef is ReserveStock's idempotency key and the GET lookup key, so an
+// empty one is a 400 (missing-demand-ref), never a 201 for an unreachable
+// reservation.
+func TestReserveStock_Endpoint_EmptyDemandRef_Rejected(t *testing.T) {
+	ts := newTestServer()
+	ts.seedBin(t, "A-1-1", 10)
+	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
+
+	rec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 3, "demandRef": ""})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, http.StatusBadRequest, "missing-demand-ref", "/reservations")
+
+	usable := ts.do(t, http.MethodGet, "/inventory/SKU-1/usable", nil)
+	if !strings.Contains(usable.Body.String(), `"usable":10`) {
+		t.Fatalf("a rejected reservation must not reserve stock, got %s", usable.Body.String())
+	}
 }

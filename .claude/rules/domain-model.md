@@ -44,7 +44,9 @@
   transitions Available -> Reserved -> Picked/Removed, or -> Unlocated. No
   negative usable.
 - **Bin/Location**: sum(stock qty in bin) <= capacity; a full bin rejects
-  stow.
+  stow. `Bin.Resize(capacity)` rejects capacity <= 0 (`ErrInvalidCapacity`)
+  and capacity below current occupancy (`ErrCapacityBelowOccupancy`);
+  resizing exactly to occupancy is allowed (ADR-0025).
 - **Reservation**: reserved qty <= usable qty at reserve time; expires after
   timeout; revoke() returns quantity to usable; cannot double-consume.
 - **ProductClassification**: `TemperatureSensitive` requires a non-empty,
@@ -88,6 +90,11 @@ currently cross the service boundary via Kafka — see `integration-events.md`.
 8. `ClassifyProduct(sku, handlingTags, temperatureClass?, dotHazardClass?)`
    -> registers/replaces a SKU's ProductClassification (this service is the
    source of truth)
+9. `RegisterBin(binId, capacity)` -> idempotent, declarative bin
+   registration: creates an absent bin, no-ops on same capacity, resizes
+   otherwise via `Bin.Resize` (rejects below occupancy). No domain event —
+   local topology master data (ADR-0025)
+10. `GetBin(binId)` -> bin capacity/occupancy read model
 
 ## Design notes (from README)
 
@@ -99,6 +106,9 @@ currently cross the service boundary via Kafka — see `integration-events.md`.
   unit with usable quantity, a subsequent reservation can be satisfied from
   a **different physical holding** — this is what makes a reservation
   revocable without stranding an order when a specific pick fails.
+  Each `Allocation` also records `BinID` — the pick location, i.e. the bin
+  of the StockUnit it drew from (a StockUnit never changes bin) — so a
+  picker knows where to go (ADR-0025).
 - **StockUnit lifecycle**: `AVAILABLE` -> `RESERVED` (any reserved quantity
   present) -> `PICKED` (physically removed, quantity remains) or `REMOVED`
   (quantity reached zero), or -> `UNLOCATED` (cycle count could not account

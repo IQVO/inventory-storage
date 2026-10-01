@@ -168,7 +168,7 @@ func (uc *ReserveStock) allocate(units []*stock.StockUnit, qty shared.Quantity) 
 		if err := unit.Reserve(take); err != nil {
 			return nil, nil, err
 		}
-		allocations = append(allocations, reservation.Allocation{StockUnitID: unit.ID(), Quantity: take})
+		allocations = append(allocations, reservation.Allocation{StockUnitID: unit.ID(), BinID: unit.BinID(), Quantity: take})
 		touched = append(touched, unit)
 		remaining, _ = remaining.Sub(take)
 	}

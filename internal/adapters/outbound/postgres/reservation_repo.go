@@ -59,10 +59,12 @@ func (r *ReservationRepo) Save(ctx context.Context, res *reservation.Reservation
 
 	for _, alloc := range res.Allocations() {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO reservation_allocations (reservation_id, stock_unit_id, quantity)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (reservation_id, stock_unit_id) DO UPDATE SET quantity = EXCLUDED.quantity
-		`, res.ID(), alloc.StockUnitID, alloc.Quantity.Int())
+			INSERT INTO reservation_allocations (reservation_id, stock_unit_id, quantity, bin_id)
+			VALUES ($1, $2, $3, NULLIF($4, ''))
+			ON CONFLICT (reservation_id, stock_unit_id) DO UPDATE SET
+				quantity = EXCLUDED.quantity,
+				bin_id = COALESCE(EXCLUDED.bin_id, reservation_allocations.bin_id)
+		`, res.ID(), alloc.StockUnitID, alloc.Quantity.Int(), alloc.BinID.String())
 		if err != nil {
 			return err
 		}
@@ -87,23 +89,8 @@ func (r *ReservationRepo) FindByID(ctx context.Context, id string) (*reservation
 		return nil, err
 	}
 
-	rows, err := q.Query(ctx, `SELECT stock_unit_id, quantity FROM reservation_allocations WHERE reservation_id = $1`, id)
+	allocations, err := loadAllocations(ctx, q, id)
 	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var allocations []reservation.Allocation
-	for rows.Next() {
-		var stockUnitID string
-		var allocQty int
-		if err := rows.Scan(&stockUnitID, &allocQty); err != nil {
-			return nil, err
-		}
-		q, _ := shared.NewQuantity(allocQty)
-		allocations = append(allocations, reservation.Allocation{StockUnitID: stockUnitID, Quantity: q})
-	}
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -154,26 +141,9 @@ func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string)
 
 	results := make([]*reservation.Reservation, 0, len(bases))
 	for _, b := range bases {
-		allocRows, err := q.Query(ctx, `SELECT stock_unit_id, quantity FROM reservation_allocations WHERE reservation_id = $1`, b.id)
+		allocations, err := loadAllocations(ctx, q, b.id)
 		if err != nil {
 			return nil, err
-		}
-
-		var allocations []reservation.Allocation
-		for allocRows.Next() {
-			var stockUnitID string
-			var allocQty int
-			if err := allocRows.Scan(&stockUnitID, &allocQty); err != nil {
-				allocRows.Close()
-				return nil, err
-			}
-			q, _ := shared.NewQuantity(allocQty)
-			allocations = append(allocations, reservation.Allocation{StockUnitID: stockUnitID, Quantity: q})
-		}
-		allocErr := allocRows.Err()
-		allocRows.Close()
-		if allocErr != nil {
-			return nil, allocErr
 		}
 
 		skuVO, _ := shared.NewSKU(b.sku)
@@ -182,4 +152,35 @@ func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string)
 	}
 
 	return results, nil
+}
+
+// loadAllocations reads a reservation's allocations, including each one's
+// pick location (bin_id, ADR 0025). bin_id is nullable for legacy rows the
+// 0008 backfill could not resolve; those hydrate with an empty BinID.
+// Ordered by stock_unit_id so callers see a stable order.
+func loadAllocations(ctx context.Context, q querier, reservationID string) ([]reservation.Allocation, error) {
+	rows, err := q.Query(ctx, `
+		SELECT stock_unit_id, quantity, COALESCE(bin_id, '')
+		FROM reservation_allocations WHERE reservation_id = $1
+		ORDER BY stock_unit_id
+	`, reservationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var allocations []reservation.Allocation
+	for rows.Next() {
+		var stockUnitID, binID string
+		var allocQty int
+		if err := rows.Scan(&stockUnitID, &allocQty, &binID); err != nil {
+			return nil, err
+		}
+		qty, _ := shared.NewQuantity(allocQty)
+		allocations = append(allocations, reservation.Allocation{StockUnitID: stockUnitID, BinID: shared.BinId(binID), Quantity: qty})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return allocations, nil
 }

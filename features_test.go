@@ -81,6 +81,8 @@ func (w *world) start() {
 		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
 		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
 		ClassifyProduct:            &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
+		RegisterBin:                &usecases.RegisterBin{Locations: locationRepo},
+		GetBin:                     &usecases.GetBin{Locations: locationRepo},
 		Classifications:            classificationRepo,
 	}
 
@@ -163,9 +165,9 @@ func (w *world) anEmptyWarehouse() error {
 	return nil
 }
 
-// aBinWithCapacity seeds a Bin directly through the LocationRepo: bins are
-// warehouse topology, and the REST API deliberately exposes no endpoint that
-// creates them.
+// aBinWithCapacity seeds a Bin directly through the LocationRepo, as
+// fixture setup. Scenarios ABOUT bin registration use the PUT /bins/{binId}
+// endpoint instead (iRegisterBinWithCapacity, ADR 0025).
 func (w *world) aBinWithCapacity(ctx context.Context, id string, capacity int) error {
 	binID, err := shared.NewBinId(id)
 	if err != nil {
@@ -558,6 +560,77 @@ func (w *world) theUsableInventoryForSKUIs(ctx context.Context, sku string, expe
 	return nil
 }
 
+// ------------------------------------------------------- bin registration --
+
+func (w *world) iRegisterBinWithCapacity(ctx context.Context, binID string, capacity int) error {
+	return w.record(ctx, http.MethodPut, "/bins/"+url.PathEscape(binID), map[string]any{"capacity": capacity})
+}
+
+func (w *world) iLookUpBin(ctx context.Context, binID string) error {
+	return w.record(ctx, http.MethodGet, "/bins/"+url.PathEscape(binID), nil)
+}
+
+func (w *world) theBinResponseReports(capacity, occupied, available int) error {
+	var bin struct {
+		Capacity  int `json:"capacity"`
+		Occupied  int `json:"occupied"`
+		Available int `json:"available"`
+	}
+	if err := w.decode(&bin); err != nil {
+		return err
+	}
+	if bin.Capacity != capacity || bin.Occupied != occupied || bin.Available != available {
+		return fmt.Errorf("expected Bin capacity=%d occupied=%d available=%d, got %+v", capacity, occupied, available, bin)
+	}
+	return nil
+}
+
+type allocationBody struct {
+	StockUnitID string `json:"stockUnitId"`
+	BinID       string `json:"binId"`
+	Quantity    int    `json:"quantity"`
+}
+
+func allAllocationsFrom(allocations []allocationBody, binID string) error {
+	if len(allocations) == 0 {
+		return fmt.Errorf("expected at least one allocation, got none")
+	}
+	for _, a := range allocations {
+		if a.BinID != binID {
+			return fmt.Errorf("expected allocation %q to be picked from Bin %q, got %q", a.StockUnitID, binID, a.BinID)
+		}
+	}
+	return nil
+}
+
+func (w *world) everyReservationAllocationIsPickedFromBin(binID string) error {
+	var res struct {
+		Allocations []allocationBody `json:"allocations"`
+	}
+	if err := w.decode(&res); err != nil {
+		return err
+	}
+	return allAllocationsFrom(res.Allocations, binID)
+}
+
+func (w *world) everyAllocationInTheReservationsListIsPickedFromBin(binID string) error {
+	var list []struct {
+		Allocations []allocationBody `json:"allocations"`
+	}
+	if err := w.decode(&list); err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("expected at least one Reservation in the list, got none")
+	}
+	for _, res := range list {
+		if err := allAllocationsFrom(res.Allocations, binID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ------------------------------------------------------------- wiring ------
 
 // InitializeScenario registers the step definitions and gives every scenario
@@ -594,7 +667,13 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^I Classify SKU "([^"]*)" as TemperatureSensitive without a temperature class$`, w.iClassifySKUAsTemperatureSensitiveWithoutATemperatureClass)
 	sc.Step(`^I request the classification for SKU "([^"]*)"$`, w.iRequestTheClassificationForSKU)
 
+	sc.Step(`^I register Bin "([^"]*)" with capacity (\d+)$`, w.iRegisterBinWithCapacity)
+	sc.Step(`^I look up Bin "([^"]*)"$`, w.iLookUpBin)
+
 	sc.Step(`^the response status is (\d+)$`, w.theResponseStatusIs)
+	sc.Step(`^the Bin response reports capacity (\d+), occupied (\d+) and available (\d+)$`, w.theBinResponseReports)
+	sc.Step(`^every Reservation allocation is picked from Bin "([^"]*)"$`, w.everyReservationAllocationIsPickedFromBin)
+	sc.Step(`^every allocation in the Reservations list is picked from Bin "([^"]*)"$`, w.everyAllocationInTheReservationsListIsPickedFromBin)
 	sc.Step(`^the StockUnit response reports SKU "([^"]*)" in Bin "([^"]*)" with quantity (\d+)$`, w.theStockUnitResponseReports)
 	sc.Step(`^the Reservation response reports quantity (\d+) for demand "([^"]*)"$`, w.theReservationResponseReports)
 	sc.Step(`^the Usable inventory response reports SKU "([^"]*)" with (\d+) usable$`, w.theUsableInventoryResponseReports)
