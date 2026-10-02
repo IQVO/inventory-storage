@@ -71,6 +71,7 @@ func NewAnalyticsPublisher(brokers []string, reservations ports.ReservationRepo,
 	return &AnalyticsPublisher{
 		Writer: &kafkago.Writer{
 			BatchTimeout:           syncWriterBatchTimeout,
+			RequiredAcks:           syncWriterRequiredAcks,
 			Addr:                   kafkago.TCP(brokers...),
 			Topic:                  AnalyticsTopic,
 			Balancer:               &kafkago.Hash{},

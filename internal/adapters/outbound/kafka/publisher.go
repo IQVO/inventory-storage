@@ -91,6 +91,7 @@ func NewPublisher(writer Writer, reservations ports.ReservationRepo) *Publisher 
 func NewWriter(brokers ...string) *kafkago.Writer {
 	return &kafkago.Writer{
 		BatchTimeout:           syncWriterBatchTimeout,
+		RequiredAcks:           syncWriterRequiredAcks,
 		Addr:                   kafkago.TCP(brokers...),
 		Topic:                  Topic,
 		Balancer:               &kafkago.Hash{},
