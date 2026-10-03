@@ -47,6 +47,22 @@ NO envelope toggle.
   types, dedupe on `id`, and DLQ (facility cache) or WARN-and-skip
   (analytics projector) anything `cloudevents.Decode` rejects.
 
+### Required attributes (moved from CLAUDE.md)
+
+- Kafka header `content-type: application/cloudevents+json; charset=UTF-8`.
+- `specversion=1.0`, `id` (UUID, stable across outbox redelivery),
+  `source=/warehouse/inventory-storage`, `type`, `subject` (aggregate id),
+  `time` (occurred-at, UTC), `datacontenttype=application/json`,
+  `dataschema=urn:warehouse:inventory-storage:<events|analytics>:<EventName>:v<N>`.
+- `type` = `com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>`;
+  for this service: `com.warehouse.wms.inventory-storage.<entity>.<EventName>`.
+- No flat envelope (`event_id`/`event_type`/`occurred_at`), no dual-write, no
+  dual-read, no envelope toggle env var (`EVENT_ENVELOPE_MODE` is gone).
+- Consumers DLQ/skip (never crash, never parse a legacy shape) anything that
+  fails CloudEvents validation.
+- Full standard and the fleet's cross-service type catalogue: ADR-0024
+  (`docs/docs/adr/`).
+
 ## Kafka
 
 - Client library: `github.com/segmentio/kafka-go`.

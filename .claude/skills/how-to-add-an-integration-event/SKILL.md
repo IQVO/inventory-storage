@@ -19,10 +19,11 @@ Not every domain event this service raises belongs on the wire. Check
 forwards only `StockReserved`/`ReservationRevoked`; everything else is a
 local concern (with `EVENT_PUBLISHER=kafka` most of them also go to the
 separate `warehouse.inventory.analytics` topic, ADR-0011 — that is not the
-integration contract). Note that the Postgres `events` table
-(`internal/adapters/outbound/postgres/event_publisher.go`) is only the
-default `log`-mode sink when `DATABASE_URL` is set: it is append-only and
-no relay forwards it, so it is not a transactional outbox. Before adding a
+integration contract). Note that publishing goes through the transactional
+outbox (ADR-0017): `internal/adapters/outbound/postgres/outbox_publisher.go`
+writes the already-encoded Kafka messages to `outbox_events` in the same
+transaction as the aggregate save, and `outbox_relay.go` drains them onto
+Kafka. Before adding a
 new event to the Kafka publisher, confirm a sibling context genuinely needs
 to react to it — check `docs/docs/ecosystem/context-map.md` for who's
 actually downstream.

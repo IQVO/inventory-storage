@@ -20,7 +20,7 @@ assert nothing.
    `./internal/domain/...,./internal/application/...`) — proves lines
    executed. Proves nothing about whether the test asserted the right
    thing.
-3. **Mutation testing** (`make mutation-fast`, gremlins) — proves the
+3. **Mutation testing** (`make mutation`, gremlins; the CI job is named `mutation-fast`) — proves the
    tests actually ASSERT, not merely execute. A mutant is a deliberately
    broken version of the code (`<` -> `<=`, `+` -> `-`, etc.); if the test
    suite still passes against the mutant, it "survived" (LIVED) — meaning
@@ -107,6 +107,6 @@ the first read/write).
 make check-all   # check + coverage + arch-test + bdd (the full local gate)
 ```
 
-If `check-all` doesn't include `mutation-fast`/`vuln` locally, run them
+If `check-all` doesn't include `make mutation`/`make vuln` locally, run them
 explicitly too — CI runs them even when the local gate doesn't, so a PR
 can pass your local check and still go red in CI otherwise.
