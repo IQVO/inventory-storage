@@ -152,8 +152,11 @@ request:
 | Job | What it enforces |
 | --- | --- |
 | `lint` | `golangci-lint` against the committed `.golangci.yml` |
+| `complexity` | `golangci-lint` with `gocyclo,gocognit,cyclop,funlen,nestif` only; informational `gocyclo` report in the job summary |
 | `test` | Unit tests with `-race`; coverage gate on domain + application |
 | `bdd` | godog acceptance suite over the Gherkin specs in `features/` |
+| `contract` | Schemathesis property-based contract tests driven from `apis/openapi.yaml` |
+| `evals-tests` | The MCP eval gate (E1 schema, E2 wire conformance, E3 behavioral) as its own named check — the same suites also run inside `test` |
 | `integration` | Real Postgres 16 service container for the Postgres adapters; testcontainers-started Kafka for the facility-layout cache consumer |
 | `mutation-fast` | `gremlins` on `internal/domain/stock` — blocking |
 | `mutation` | `gremlins` on all of `internal/domain` (scheduled/dispatch only) |
@@ -166,6 +169,7 @@ request:
 | `web` | Lint, typecheck, test and build of the `web/` remote |
 | `trivy-scan` | Container image scan, blocking on fixable CRITICAL/HIGH (pull requests) |
 | `docker-publish` | Gated on `lint`, `test`, `bdd`, `integration`, `mutation-fast`, `vuln`, `api-lint`, `arch-test`; pushes to GHCR on `main` only |
+| `release` | `main`-only, gated on `docker-publish`: computes the next `vMAJOR.MINOR.PATCH` tag and cuts the GitHub release |
 
 This documentation site is built and deployed by a separate workflow,
 `.github/workflows/docs.yml`, which never touches `ci.yml`.

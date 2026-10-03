@@ -76,7 +76,11 @@ Typos, broken links and formatting are of course fair game.
 | [0016](./0016-standard-metrics-convention.md) | Standard metrics convention across the fleet | Accepted |
 | [0017](./0017-transactional-outbox.md) | Transactional outbox + relay for Kafka publishing | Accepted |
 | [0018](./0018-idempotency-key-middleware.md) | Transactional Idempotency-Key middleware for POST /stock/receive and POST /reservations | Accepted |
+| [0019](./0019-optimistic-concurrency-version-column.md) | Optimistic concurrency (version column) for StockUnit, Bin, Reservation | Accepted |
+| [0020](./0020-resilience-circuit-breaker-retry-dlq-shutdown.md) | Circuit breaker, read-only retry, Kafka DLQ, and graceful shutdown hardening | Accepted |
 | [0021](./0021-kafka-producer-partition-key.md) | Key every integration/analytics Kafka message by its aggregate id, and route by Hash not LeastBytes | Accepted |
+| [0022](./0022-horizontal-autoscaling-and-pgxpool-tuning.md) | Per-workload HorizontalPodAutoscaler and pgxpool MaxConns/statement_timeout tuning | Accepted |
+| [0023](./0023-migrations-direct-postgres-connection.md) | Run golang-migrate against a direct Postgres connection, not PgBouncer | Accepted |
 | [0024](./0024-cloudevents-mandatory-envelope.md) | CloudEvents 1.0 as the mandatory event envelope | Accepted |
 | [0025](./0025-bin-registration-endpoint-and-pick-location.md) | Declarative bin registration over REST (`PUT /bins/{binId}`), and the pick location (`binId`) on every reservation allocation | Accepted |
 

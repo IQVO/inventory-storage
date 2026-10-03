@@ -16,7 +16,7 @@ order.
 
 ## Documentation
 
-Full documentation site: **https://claudioed.github.io/inventory-storage/**
+Full documentation site: **https://iqvo.github.io/inventory-storage/**
 
 Business context and domain vision, the DDD model (subdomain classification,
 aggregates and invariants, domain events, use cases), an API reference

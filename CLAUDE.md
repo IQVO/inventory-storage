@@ -90,7 +90,7 @@ go run ./cmd/inventory                       # listens on :8080 (HTTP_ADDR)
 
 # Local dev — Postgres
 docker compose up -d postgres
-export DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable'
+export DATABASE_URL='postgres://inventory:***@localhost:5432/inventory?sslmode=disable'
 go run ./cmd/inventory                       # migrations run automatically
 
 # Quality gate (mirrors .github/workflows/ci.yml — see Testing below)
@@ -111,9 +111,10 @@ npm run build                                # full site build; onBrokenLinks: '
 
 - Go 1.26, modules. chi (`go-chi/chi/v5`), pgx/v5 + pgxpool, golang-migrate.
 - Config via env (`DATABASE_URL`, `HTTP_ADDR`, `ANALYTICS_DATABASE_URL`,
-  `EVENT_PUBLISHER`, `KAFKA_BROKERS`, `CORS_ALLOWED_ORIGINS`,
-  `LOCATION_LOOKUP_MODE`, `FACILITY_LAYOUT_BASE_URL`, `REPORTS_BASE_URL`,
-  `MCP_ADDR`). No hardcoded config.
+  `MIGRATIONS_DATABASE_URL`, `EVENT_PUBLISHER`, `OUTBOX_RELAY_INTERVAL`,
+  `KAFKA_BROKERS`, `CORS_ALLOWED_ORIGINS`, `LOCATION_LOOKUP_MODE`,
+  `FACILITY_LAYOUT_BASE_URL`, `REPORTS_BASE_URL`, `MCP_ADDR`). No hardcoded
+  config.
 - Typed domain errors mapped to HTTP status (RFC 7807 problem details) in the
   adapter. gofmt/go vet clean; every package has a doc comment.
 - Table-driven tests: domain + application (in-memory adapter); one httptest
@@ -182,9 +183,10 @@ Full standard and the fleet's cross-service type catalogue: ADR-0024
   remote.
 
 ADRs for every non-obvious architectural decision live in
-`docs/docs/adr/0001..0024` — check there before re-litigating a decision
+`docs/docs/adr/0001..0025` — check there before re-litigating a decision
 (e.g. hexagonal layering ADR-0001, chaotic storage ADR-0002, revocable
 reservations ADR-0003, DOT hazard segregation ADR-0010, facility-layout
 events cache ADR-0013, why the REST identity/bearer-auth layer was added then
 removed — ADR-0014/0015, standard metrics convention ADR-0016, CloudEvents
-mandatory envelope ADR-0024).
+mandatory envelope ADR-0024, declarative bin registration & pick location
+ADR-0025).
