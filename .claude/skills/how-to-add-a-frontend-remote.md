@@ -107,6 +107,6 @@ npm run build         # tsc -b && vite build -> dist/
 ```
 
 CI's `web:` job runs this exact sequence against a dual checkout (this
-repo + `claudioed/warehouse-ui-kit@develop`) — reproduce that locally by
+repo + `IQVO/warehouse-ui-kit@develop`) — reproduce that locally by
 symlinking or checking out `warehouse-ui-kit` as a real sibling if `npm
 ci` behaves differently than CI.

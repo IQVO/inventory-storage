@@ -52,15 +52,17 @@ NO envelope toggle.
   `log`).
 - Topic: `warehouse.inventory.events`.
 
-## Published today: 2 of 11 catalog events
+## Published today: 2 of 10 catalog events
 
 **Only `StockReserved` and `ReservationRevoked` cross the service boundary.**
 The Kafka adapter's `switch` has a `default: return nil` branch that
 silently drops every other domain event — deliberate, not an oversight.
-`apis/asyncapi.yaml` documents the full 11-event catalog (all four
-aggregates: StockUnit, Reservation, Bin/Location, ProductClassification) and
-marks every catalog-only message as such in its own `description`, so a
-downstream team cannot mistake a documented event for a wired one.
+`apis/asyncapi.yaml` documents the full 10-event catalog (three of the four
+aggregates: StockUnit, Reservation, Bin/Location — `ProductClassified` is
+domain-only and is NOT in the AsyncAPI catalog, see
+`docs/docs/api-reference/events.md`) and marks every catalog-only message as
+such in its own `description`, so a downstream team cannot mistake a
+documented event for a wired one.
 
 - **StockReserved** — `data`: `{"sku": "...", "quantity": N, "demand_ref": "..."}`.
   Raised by `ReserveStock` when a reservation is successfully created
