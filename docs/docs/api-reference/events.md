@@ -7,7 +7,7 @@ description: The asynchronous contract — CloudEvents envelope, type convention
 # Events
 
 The asynchronous half of this service's Published Language. The authoritative
-source is [`apis/asyncapi.yaml`](https://github.com/claudioed/inventory-storage/blob/main/apis/asyncapi.yaml)
+source is [`apis/asyncapi.yaml`](https://github.com/IQVO/inventory-storage/blob/main/apis/asyncapi.yaml)
 (AsyncAPI 2.6.0), Spectral-linted in CI by the `api-lint` job. Everything on
 this page is drawn from that document.
 

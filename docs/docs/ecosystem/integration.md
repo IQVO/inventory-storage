@@ -155,7 +155,7 @@ Two design notes that a consumer must respect:
 If you are building a sixth consumer:
 
 1. **Read the spec, not this page.**
-   [`apis/asyncapi.yaml`](https://github.com/claudioed/inventory-storage/blob/main/apis/asyncapi.yaml)
+   [`apis/asyncapi.yaml`](https://github.com/IQVO/inventory-storage/blob/main/apis/asyncapi.yaml)
    is the contract and is Spectral-linted in CI.
 2. **Only two events are on the integration topic** (`StockReserved`,
    `ReservationRevoked`). `warehouse.inventory.analytics` is internal to this
