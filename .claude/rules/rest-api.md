@@ -7,12 +7,24 @@
 - `DELETE /reservations/{id}`                  -> RevokeReservation
 - `POST /reservations/{id}/confirm-pick`       -> ConfirmPick
 - `GET  /inventory/{sku}/usable`               -> GetUsable
+- `PUT  /bins/{binId}`                         -> RegisterBin (idempotent; 201 created,
+                                                  200 unchanged/resized, 409
+                                                  capacity-below-occupancy — ADR-0025)
+- `GET  /bins/{binId}`                         -> GetBin ({binId, capacity, occupied, available})
 - `POST /bins/{binId}/cycle-count`             -> RunCycleCount
 - `PUT  /products/{sku}/classification`        -> ClassifyProduct
 - `GET  /products/{sku}/classification`        -> current ProductClassification
 - `GET  /healthz`
 
 JSON DTOs live in the http adapter; never leak domain structs.
+
+Every reservation allocation (`POST /reservations`, `GET /reservations`)
+carries its pick location as `allocations[].binId` — the bin of the
+StockUnit it drew from, captured at reserve time and persisted in
+`reservation_allocations.bin_id` (migration 0008, ADR-0025). It is
+`omitempty` only for legacy rows the backfill could not resolve.
+`POST /reservations` rejects an empty `demandRef` with 400
+`missing-demand-ref` (it is the idempotency/lookup key).
 
 `GET /reservations?demandRef=` is the read side backing the fleet's
 cross-service Order Lifecycle console screen — see ADR-0002 in

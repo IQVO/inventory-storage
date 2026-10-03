@@ -1,0 +1,1 @@
+{"parameters":[{"name":"binId","in":"path","required":true,"description":"The bin's coded slot identifier.","schema":{"type":"string","example":"A-1-1"}}]}

@@ -10,7 +10,11 @@ description: ADR 0004 — publish integration events over Kafka with a platform-
 
 ## Status
 
-Accepted. Introduced as a strictly additive change (`Task 7`, commit *"Task 7:
+**Superseded by [ADR-0024](./0024-cloudevents-mandatory-envelope.md)** for
+the envelope: the flat `event_id` / `event_type` / `occurred_at` / `source` /
+`data` wrapper described below is retired, and every message is now a
+CloudEvents 1.0 structured-mode event. Kafka as the transport and the
+additive-adapter decision still stand. Originally accepted. Introduced as a strictly additive change (`Task 7`, commit *"Task 7:
 cross-service Kafka integration (additive)"*). The CloudEvents `type`
 convention was formalised later, alongside `apis/asyncapi.yaml`.
 

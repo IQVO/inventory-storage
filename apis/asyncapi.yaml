@@ -46,28 +46,28 @@ info:
     `CycleCountCompleted` and `DiscrepancyDetected`.
 
 
-    **Full catalog vs. actually published — read this before integrating.**
-    This document is the complete domain-event catalog for the bounded
-    context, but the outbound Kafka adapter
-    (`internal/adapters/outbound/kafka/publisher.go`) currently forwards only
-    a *subset* of it to the broker: **`StockReserved` and
-    `ReservationRevoked`**, published to the topic
-    `warehouse.inventory.events` (the `Topic` constant in that file). Every
-    other message below is raised in-process only, delivered to the
-    configured `ports.EventPublisher` (the log publisher by default) and
-    dropped by the Kafka adapter's `default` branch; each such message says so
-    explicitly in its own `description`. Do not build a consumer against a
-    catalog-only message until it has been wired.
+    **What reaches Kafka.** This document is the complete domain-event
+    catalog for the bounded context. Two topics carry a subset of it:
+    `warehouse.inventory.events` (the integration contract — exactly
+    **`StockReserved` and `ReservationRevoked`**, from
+    `internal/adapters/outbound/kafka/publisher.go`) and
+    `warehouse.inventory.analytics` (the analytics data product — every
+    message below except `LocationRecorded`, from
+    `internal/adapters/outbound/kafka/analytics_publisher.go`). Each message
+    says which topics it reaches. `LocationRecorded` (and `ProductClassified`,
+    entity `product`, not listed) is in-process only.
 
 
-    One further caveat on the wire format: the Kafka adapter as it stands
-    today emits the legacy flat warehouse envelope
-    (`event_id` / `event_type` / `occurred_at` / `source` / `data`) rather
-    than the CloudEvents attributes documented here. The `data` payloads
-    documented for `StockReserved` and `ReservationRevoked` match that
-    adapter's real output field-for-field; the surrounding CloudEvents
-    context attributes describe the target envelope this platform is
-    standardising on.
+    **CloudEvents is mandatory (ADR-0024).** Every message on both topics is
+    exactly the CloudEvents 1.0 structured-mode event documented here — all
+    of `specversion`, `id`, `source`, `type`, `subject`, `time`,
+    `datacontenttype` and `dataschema` are required — and every Kafka message
+    carries the header `content-type: application/cloudevents+json;
+    charset=UTF-8`. The same `type` names an occurrence on both topics;
+    `dataschema` (`urn:warehouse:inventory-storage:<events|analytics>:<EventName>:v1`)
+    names the payload shape. Each schema's `data` is the exact wire payload;
+    `StockReserved` and `ReservationRevoked`, which reach both topics, give
+    one `data` shape per `dataschema`. There is no other envelope.
   contact:
     name: Warehouse Systems Platform Team
     url: https://github.com/claudioed/inventory-storage
@@ -110,25 +110,49 @@ defaultContentType: application/cloudevents+json
 channels:
   warehouse.inventory.events:
     description: >
-      The single outbound integration topic for this bounded context, named
-      after the `Topic` constant in
-      `internal/adapters/outbound/kafka/publisher.go`
-      (`warehouse.inventory.events`). Today only `StockReserved` and
-      `ReservationRevoked` actually reach this topic; the remaining messages
-      listed on the operation below are documented here as the complete
-      domain-event catalog and are in-process only. The primary downstream
-      consumer is wes-work-planning, which projects the reservation events
-      into its `UsableInventoryObserved` read model, keyed by SKU.
+      The outbound integration topic for this bounded context (the `Topic`
+      constant in `internal/adapters/outbound/kafka/publisher.go`). Exactly
+      two messages reach it: `StockReserved` and `ReservationRevoked`, keyed
+      by reservation id. The primary downstream consumer is
+      wes-work-planning, which dispatches on their full `type` strings and
+      projects them into its `UsableInventoryObserved` read model, keyed by
+      SKU.
     subscribe:
       operationId: consumeInventoryStorageEvents
       summary: Consume inventory-storage domain events.
       description: >
         Subscribe to the domain events raised by the inventory-storage
         bounded context. Messages are CloudEvents 1.0 structured-mode JSON;
-        discriminate on the `type` context attribute, which is fixed per
-        message via an enum in the schemas below. Consumers must tolerate
-        unknown `type` values, because this catalog grows as more of it is
-        wired to the outbound adapter.
+        discriminate on the FULL `type` context attribute, which is fixed
+        per message via a const in the schemas below, and dedupe on `id`.
+        Consumers must ignore unknown `type` values (forward compatibility).
+      tags:
+        - name: inventory-storage
+          description: Events emitted by the inventory-storage bounded context.
+      message:
+        oneOf:
+          - $ref: "#/components/messages/StockReserved"
+          - $ref: "#/components/messages/ReservationRevoked"
+
+  warehouse.inventory.analytics:
+    description: >
+      The internal analytics topic feeding this service's Inventory Flow &
+      Accuracy data product (ADR-0011), the `AnalyticsTopic` constant in
+      `internal/adapters/outbound/kafka/analytics_publisher.go`. Same
+      CloudEvents envelope and `type` strings as the integration topic, but
+      `dataschema` is `urn:warehouse:inventory-storage:analytics:<EventName>:v1`
+      and `data` is the analytics payload (snake_case, enriched with `sku`
+      for reservation-lifecycle events). Consumed only by this service's own
+      projector (`cmd/inventory-projector`), which dispatches on the full
+      `type`, dedupes on `id`, and skips (WARN) anything that is not a valid
+      CloudEvent.
+    subscribe:
+      operationId: consumeInventoryStorageAnalytics
+      summary: Consume inventory-storage analytics events (internal).
+      description: >
+        Internal stream for the analytics projector. CloudEvents 1.0
+        structured mode with the analytics `dataschema`; dispatch on the full
+        `type`, dedupe on `id`, ignore unknown types.
       tags:
         - name: inventory-storage
           description: Events emitted by the inventory-storage bounded context.
@@ -136,12 +160,11 @@ channels:
         oneOf:
           - $ref: "#/components/messages/StockReceived"
           - $ref: "#/components/messages/ItemStowed"
-          - $ref: "#/components/messages/LocationRecorded"
+          - $ref: "#/components/messages/ItemUnlocated"
           - $ref: "#/components/messages/StockReserved"
+          - $ref: "#/components/messages/StockPicked"
           - $ref: "#/components/messages/ReservationExpired"
           - $ref: "#/components/messages/ReservationRevoked"
-          - $ref: "#/components/messages/StockPicked"
-          - $ref: "#/components/messages/ItemUnlocated"
           - $ref: "#/components/messages/CycleCountCompleted"
           - $ref: "#/components/messages/DiscrepancyDetected"
 
@@ -158,8 +181,7 @@ components:
         records the bin it landed in.
 
 
-        Not yet wired to the outbound Kafka adapter — documented here as part
-        of the domain-event catalog, in-process only today.
+        Published to `warehouse.inventory.analytics` only (subject = SKU, Kafka key = SKU). Analytics `data`: `{sku, quantity}`.
       contentType: application/cloudevents+json
       tags:
         - name: stock
@@ -177,6 +199,7 @@ components:
             subject: SKU-1001
             time: "2026-08-21T22:00:00Z"
             datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:analytics:StockReceived:v1
             data:
               sku: SKU-1001
               quantity: 50
@@ -193,8 +216,7 @@ components:
         exceeded. This is the point at which the quantity becomes usable.
 
 
-        Not yet wired to the outbound Kafka adapter — documented here as part
-        of the domain-event catalog, in-process only today.
+        Published to `warehouse.inventory.analytics` only (subject = SKU, Kafka key = SKU). Analytics `data`: `{sku, bin_id, quantity}`.
       contentType: application/cloudevents+json
       tags:
         - name: stock
@@ -209,9 +231,10 @@ components:
             id: 2c5d9a71-3b6f-4a18-8e2c-91d0f7b4c6a2
             source: /warehouse/inventory-storage
             type: com.warehouse.wms.inventory-storage.stock.ItemStowed
-            subject: A-12-3
+            subject: SKU-1001
             time: "2026-08-21T22:05:00Z"
             datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:analytics:ItemStowed:v1
             data:
               sku: SKU-1001
               bin_id: A-12-3
@@ -228,8 +251,7 @@ components:
         known bin, or is explicitly flagged Unlocated.
 
 
-        Not yet wired to the outbound Kafka adapter — documented here as part
-        of the domain-event catalog, in-process only today.
+        In-process only — not published to any Kafka topic. Documented as part of the domain-event catalog.
       contentType: application/cloudevents+json
       tags:
         - name: stock
@@ -247,6 +269,7 @@ components:
             subject: su-7781
             time: "2026-08-21T22:05:01Z"
             datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:LocationRecorded:v1
             data:
               stock_unit_id: su-7781
               bin_id: A-12-3
@@ -262,14 +285,15 @@ components:
         timeout, so a physical failure downstream never strands the demand.
 
 
-        **Published.** This is one of the two events the outbound Kafka
-        adapter actually forwards, to the topic
-        `warehouse.inventory.events`. The `data` payload is exactly the
-        adapter's `reservationData` shape — `sku`, `quantity`, `demand_ref` —
-        taken straight from the domain event. The reservation id, which the
-        domain event also carries, is surfaced as the CloudEvents `subject`
-        rather than inside `data`. wes-work-planning consumes this to update
-        its `UsableInventoryObserved` read model by SKU.
+        **Published to both topics.** On `warehouse.inventory.events`
+        (dataschema `urn:warehouse:inventory-storage:events:StockReserved:v1`)
+        the `data` payload is the adapter's `reservationData` shape — `sku`,
+        `quantity`, `demand_ref` — and the reservation id is the CloudEvents
+        `subject` and the Kafka key. wes-work-planning consumes this exact
+        `type` to update its `UsableInventoryObserved` read model by SKU. On
+        `warehouse.inventory.analytics` (dataschema
+        `...:analytics:StockReserved:v1`, Kafka key = SKU) `data` is
+        `{sku, reservation_id, quantity}`.
       contentType: application/cloudevents+json
       tags:
         - name: reservation
@@ -287,6 +311,7 @@ components:
             subject: res-1
             time: "2026-08-21T22:00:00Z"
             datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:StockReserved:v1
             data:
               sku: SKU-1
               quantity: 5
@@ -306,13 +331,10 @@ components:
         section for the full rationale.
 
 
-        Delivered in-process to every consumer of `ports.EventPublisher`,
-        and reaches the analytics Kafka topic
-        (`warehouse.inventory.analytics`) via
-        `kafka/analytics_publisher.go`, the same way `ReservationRevoked`
-        does. It does not cross to the integration topic
-        (`warehouse.inventory.events`) — that topic still forwards only
-        `StockReserved` and `ReservationRevoked`; see the catalog note above.
+        Published to `warehouse.inventory.analytics` only (subject = Kafka
+        key = reservation id), with the reservation's SKU enriched in:
+        analytics `data` is `{reservation_id, sku}`. It does not cross to the
+        integration topic.
       contentType: application/cloudevents+json
       tags:
         - name: reservation
@@ -330,8 +352,10 @@ components:
             subject: res-9
             time: "2026-08-21T22:30:00Z"
             datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:analytics:ReservationExpired:v1
             data:
               reservation_id: res-9
+              sku: SKU-1
 
     ReservationRevoked:
       name: ReservationRevoked
@@ -344,14 +368,15 @@ components:
         usable and the demand can be re-allocated against a different holding.
 
 
-        **Published.** This is the second of the two events the outbound Kafka
-        adapter actually forwards, to the topic
-        `warehouse.inventory.events`. The domain event itself carries only the
-        reservation id, so the adapter enriches it by looking the reservation
-        up through `ports.ReservationRepo` and emitting the same
+        **Published to both topics.** On `warehouse.inventory.events`
+        (dataschema `urn:warehouse:inventory-storage:events:ReservationRevoked:v1`)
+        the domain event carries only the reservation id, so the adapter
+        enriches it through `ports.ReservationRepo` and emits the same
         `sku` / `quantity` / `demand_ref` shape as StockReserved; if the
         lookup finds nothing the publish fails rather than emitting a partial
-        payload. The reservation id is surfaced as the CloudEvents `subject`.
+        payload. The reservation id is the `subject` and the Kafka key.
+        wes-work-planning consumes this exact `type`. On
+        `warehouse.inventory.analytics` `data` is `{reservation_id, sku}`.
       contentType: application/cloudevents+json
       tags:
         - name: reservation
@@ -369,6 +394,7 @@ components:
             subject: res-1
             time: "2026-08-21T22:10:00Z"
             datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:ReservationRevoked:v1
             data:
               sku: SKU-1
               quantity: 5
@@ -385,8 +411,7 @@ components:
         because the reservation id is the only identity the event carries.
 
 
-        Not yet wired to the outbound Kafka adapter — documented here as part
-        of the domain-event catalog, in-process only today.
+        Published to `warehouse.inventory.analytics` only (subject = reservation id, Kafka key = SKU). Analytics `data`: `{sku, reservation_id, quantity}`.
       contentType: application/cloudevents+json
       tags:
         - name: reservation
@@ -404,6 +429,7 @@ components:
             subject: res-1
             time: "2026-08-21T22:12:00Z"
             datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:analytics:StockPicked:v1
             data:
               reservation_id: res-1
               sku: SKU-1
@@ -421,8 +447,7 @@ components:
         exactly one known bin" rule.
 
 
-        Not yet wired to the outbound Kafka adapter — documented here as part
-        of the domain-event catalog, in-process only today.
+        Published to `warehouse.inventory.analytics` only (subject = stock unit id, Kafka key = SKU). Analytics `data`: `{sku, bin_id, stock_unit_id, quantity}`.
       contentType: application/cloudevents+json
       tags:
         - name: stock
@@ -440,6 +465,7 @@ components:
             subject: su-7781
             time: "2026-08-21T23:00:02Z"
             datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:analytics:ItemUnlocated:v1
             data:
               stock_unit_id: su-7781
               sku: SKU-1001
@@ -458,8 +484,7 @@ components:
         one.
 
 
-        Not yet wired to the outbound Kafka adapter — documented here as part
-        of the domain-event catalog, in-process only today.
+        Published to `warehouse.inventory.analytics` only (subject = bin id, Kafka key = bin id). Analytics `data`: `{bin_id, counted, system, discrepancy}`.
       contentType: application/cloudevents+json
       tags:
         - name: bin
@@ -477,10 +502,11 @@ components:
             subject: A-12-3
             time: "2026-08-21T23:00:00Z"
             datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:analytics:CycleCountCompleted:v1
             data:
               bin_id: A-12-3
-              counted_qty: 50
-              system_qty: 50
+              counted: 50
+              system: 50
               discrepancy: false
 
     DiscrepancyDetected:
@@ -494,8 +520,7 @@ components:
         quantity that could not be found.
 
 
-        Not yet wired to the outbound Kafka adapter — documented here as part
-        of the domain-event catalog, in-process only today.
+        Published to `warehouse.inventory.analytics` only (subject = bin id, Kafka key = bin id). Analytics `data`: `{bin_id, counted, system}`.
       contentType: application/cloudevents+json
       tags:
         - name: bin
@@ -513,10 +538,11 @@ components:
             subject: A-12-3
             time: "2026-08-21T23:00:01Z"
             datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:analytics:DiscrepancyDetected:v1
             data:
               bin_id: A-12-3
-              counted_qty: 47
-              system_qty: 50
+              counted: 47
+              system: 50
 
   schemas:
     CloudEventBase:
@@ -530,6 +556,11 @@ components:
         - id
         - source
         - type
+        - subject
+        - time
+        - datacontenttype
+        - dataschema
+        - data
       properties:
         specversion:
           type: string
@@ -559,7 +590,7 @@ components:
           description: >
             The id of the aggregate instance this event is about — a
             reservation id, a StockUnit id, a bin id, or a SKU, depending on
-            the event.
+            the event. Never empty.
         time:
           type: string
           format: date-time
@@ -571,6 +602,20 @@ components:
           type: string
           description: Media type of the `data` member. Always application/json.
           enum: ["application/json"]
+        dataschema:
+          type: string
+          format: uri
+          description: >
+            Absolute URI naming the payload shape and version:
+            `urn:warehouse:inventory-storage:<events|analytics>:<EventName>:v<N>`.
+            Pinned per message by each concrete event schema (the `events`
+            variant for StockReserved/ReservationRevoked, `analytics` for the
+            rest; StockReserved and ReservationRevoked also appear on the
+            analytics topic with the `analytics` variant).
+          pattern: "^urn:warehouse:inventory-storage:(events|analytics):[A-Za-z]+:v[0-9]+$"
+        data:
+          type: object
+          description: The event payload. Shape is fixed by `dataschema`.
 
     StockReceivedEvent:
       description: CloudEvents envelope for a StockReceived domain event.
@@ -584,7 +629,11 @@ components:
             type:
               type: string
               description: Fixed event type for StockReceived.
-              enum: ["com.warehouse.wms.inventory-storage.stock.StockReceived"]
+              const: "com.warehouse.wms.inventory-storage.stock.StockReceived"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:analytics:StockReceived:v1
+              pattern: "^urn:warehouse:inventory-storage:analytics:StockReceived:v1$"
             data:
               type: object
               description: Business payload for StockReceived.
@@ -614,7 +663,11 @@ components:
             type:
               type: string
               description: Fixed event type for ItemStowed.
-              enum: ["com.warehouse.wms.inventory-storage.stock.ItemStowed"]
+              const: "com.warehouse.wms.inventory-storage.stock.ItemStowed"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:analytics:ItemStowed:v1
+              pattern: "^urn:warehouse:inventory-storage:analytics:ItemStowed:v1$"
             data:
               type: object
               description: Business payload for ItemStowed.
@@ -648,7 +701,11 @@ components:
             type:
               type: string
               description: Fixed event type for LocationRecorded.
-              enum: ["com.warehouse.wms.inventory-storage.stock.LocationRecorded"]
+              const: "com.warehouse.wms.inventory-storage.stock.LocationRecorded"
+            dataschema:
+              type: string
+              description: Reserved for if LocationRecorded is ever published; it is in-process only today.
+              pattern: "^urn:warehouse:inventory-storage:events:LocationRecorded:v1$"
             data:
               type: object
               description: Business payload for LocationRecorded.
@@ -665,8 +722,8 @@ components:
 
     StockReservedEvent:
       description: >
-        CloudEvents envelope for a StockReserved domain event. The `data`
-        member is exactly what the outbound Kafka adapter emits today.
+        CloudEvents envelope for a StockReserved domain event, on both
+        topics; `dataschema` selects the `data` shape.
       allOf:
         - $ref: "#/components/schemas/CloudEventBase"
         - type: object
@@ -677,31 +734,55 @@ components:
             type:
               type: string
               description: Fixed event type for StockReserved.
-              enum: ["com.warehouse.wms.inventory-storage.reservation.StockReserved"]
+              const: "com.warehouse.wms.inventory-storage.reservation.StockReserved"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:StockReserved:v1 on the integration topic, ...:analytics:StockReserved:v1 on the analytics topic.
+              pattern: "^urn:warehouse:inventory-storage:(events|analytics):StockReserved:v1$"
             data:
-              type: object
               description: >
-                Business payload for StockReserved, matching the adapter's
-                `reservationData` struct field-for-field.
-              required:
-                - sku
-                - quantity
-                - demand_ref
-              properties:
-                sku:
-                  type: string
-                  description: The stock keeping unit the quantity was reserved against.
-                quantity:
-                  type: integer
-                  minimum: 1
-                  description: >
-                    Quantity bound to the demand. Never exceeds usable
-                    inventory for the SKU at reserve time.
-                demand_ref:
-                  type: string
-                  description: >
-                    Opaque reference to the demand this reservation serves,
-                    supplied by the caller — typically an order or shipment id.
+                One shape per dataschema: the integration payload on
+                warehouse.inventory.events, the analytics payload on
+                warehouse.inventory.analytics.
+              oneOf:
+              - type: object
+                description: >
+                  Business payload for StockReserved, matching the adapter's
+                  `reservationData` struct field-for-field.
+                required:
+                  - sku
+                  - quantity
+                  - demand_ref
+                properties:
+                  sku:
+                    type: string
+                    description: The stock keeping unit the quantity was reserved against.
+                  quantity:
+                    type: integer
+                    minimum: 1
+                    description: >
+                      Quantity bound to the demand. Never exceeds usable
+                      inventory for the SKU at reserve time.
+                  demand_ref:
+                    type: string
+                    description: >
+                      Opaque reference to the demand this reservation serves,
+                      supplied by the caller — typically an order or shipment id.
+              - type: object
+                title: analytics
+                description: Analytics payload (dataschema ...:analytics:StockReserved:v1).
+                required:
+                  - sku
+                  - reservation_id
+                  - quantity
+                properties:
+                  sku:
+                    type: string
+                  reservation_id:
+                    type: string
+                  quantity:
+                    type: integer
+                    minimum: 1
 
     ReservationExpiredEvent:
       description: CloudEvents envelope for a ReservationExpired domain event.
@@ -715,18 +796,29 @@ components:
             type:
               type: string
               description: Fixed event type for ReservationExpired.
-              enum: ["com.warehouse.wms.inventory-storage.reservation.ReservationExpired"]
+              const: "com.warehouse.wms.inventory-storage.reservation.ReservationExpired"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:analytics:ReservationExpired:v1
+              pattern: "^urn:warehouse:inventory-storage:analytics:ReservationExpired:v1$"
             data:
               type: object
               description: Business payload for ReservationExpired.
               required:
                 - reservation_id
+                - sku
               properties:
                 reservation_id:
                   type: string
                   description: >
                     Identifier of the reservation whose timeout elapsed. Its
                     quantity returns to usable inventory.
+                sku:
+                  type: string
+                  description: >
+                    The reservation's SKU, enriched by the publisher through
+                    ports.ReservationRepo. Empty if the reservation could not
+                    be found (best-effort enrichment).
 
     ReservationRevokedEvent:
       description: >
@@ -744,30 +836,51 @@ components:
             type:
               type: string
               description: Fixed event type for ReservationRevoked.
-              enum: ["com.warehouse.wms.inventory-storage.reservation.ReservationRevoked"]
+              const: "com.warehouse.wms.inventory-storage.reservation.ReservationRevoked"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:ReservationRevoked:v1 on the integration topic, ...:analytics:ReservationRevoked:v1 on the analytics topic.
+              pattern: "^urn:warehouse:inventory-storage:(events|analytics):ReservationRevoked:v1$"
             data:
-              type: object
               description: >
-                Business payload for ReservationRevoked, identical in shape to
-                StockReserved so downstream projections can apply both with
-                one handler.
-              required:
-                - sku
-                - quantity
-                - demand_ref
-              properties:
-                sku:
-                  type: string
-                  description: The stock keeping unit whose quantity returns to usable.
-                quantity:
-                  type: integer
-                  minimum: 1
-                  description: Quantity released back into usable inventory.
-                demand_ref:
-                  type: string
-                  description: >
-                    The demand reference the revoked reservation was serving,
-                    so the consumer can re-allocate it elsewhere.
+                One shape per dataschema: the integration payload on
+                warehouse.inventory.events, the analytics payload on
+                warehouse.inventory.analytics.
+              oneOf:
+              - type: object
+                description: >
+                  Business payload for ReservationRevoked, identical in shape to
+                  StockReserved so downstream projections can apply both with
+                  one handler.
+                required:
+                  - sku
+                  - quantity
+                  - demand_ref
+                properties:
+                  sku:
+                    type: string
+                    description: The stock keeping unit whose quantity returns to usable.
+                  quantity:
+                    type: integer
+                    minimum: 1
+                    description: Quantity released back into usable inventory.
+                  demand_ref:
+                    type: string
+                    description: >
+                      The demand reference the revoked reservation was serving,
+                      so the consumer can re-allocate it elsewhere.
+              - type: object
+                title: analytics
+                description: Analytics payload (dataschema ...:analytics:ReservationRevoked:v1).
+                required:
+                  - reservation_id
+                  - sku
+                properties:
+                  reservation_id:
+                    type: string
+                  sku:
+                    type: string
+                    description: Enriched via ports.ReservationRepo; empty if not found.
 
     StockPickedEvent:
       description: CloudEvents envelope for a StockPicked domain event.
@@ -781,7 +894,11 @@ components:
             type:
               type: string
               description: Fixed event type for StockPicked.
-              enum: ["com.warehouse.wms.inventory-storage.reservation.StockPicked"]
+              const: "com.warehouse.wms.inventory-storage.reservation.StockPicked"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:analytics:StockPicked:v1
+              pattern: "^urn:warehouse:inventory-storage:analytics:StockPicked:v1$"
             data:
               type: object
               description: Business payload for StockPicked.
@@ -817,7 +934,11 @@ components:
             type:
               type: string
               description: Fixed event type for ItemUnlocated.
-              enum: ["com.warehouse.wms.inventory-storage.stock.ItemUnlocated"]
+              const: "com.warehouse.wms.inventory-storage.stock.ItemUnlocated"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:analytics:ItemUnlocated:v1
+              pattern: "^urn:warehouse:inventory-storage:analytics:ItemUnlocated:v1$"
             data:
               type: object
               description: Business payload for ItemUnlocated.
@@ -855,24 +976,28 @@ components:
             type:
               type: string
               description: Fixed event type for CycleCountCompleted.
-              enum: ["com.warehouse.wms.inventory-storage.bin.CycleCountCompleted"]
+              const: "com.warehouse.wms.inventory-storage.bin.CycleCountCompleted"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:analytics:CycleCountCompleted:v1
+              pattern: "^urn:warehouse:inventory-storage:analytics:CycleCountCompleted:v1$"
             data:
               type: object
               description: Business payload for CycleCountCompleted.
               required:
                 - bin_id
-                - counted_qty
-                - system_qty
+                - counted
+                - system
                 - discrepancy
               properties:
                 bin_id:
                   type: string
                   description: The bin whose contents were verified.
-                counted_qty:
+                counted:
                   type: integer
                   minimum: 0
                   description: Quantity physically counted in the bin.
-                system_qty:
+                system:
                   type: integer
                   minimum: 0
                   description: Quantity the system believed was in the bin.
@@ -894,23 +1019,27 @@ components:
             type:
               type: string
               description: Fixed event type for DiscrepancyDetected.
-              enum: ["com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected"]
+              const: "com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:analytics:DiscrepancyDetected:v1
+              pattern: "^urn:warehouse:inventory-storage:analytics:DiscrepancyDetected:v1$"
             data:
               type: object
               description: Business payload for DiscrepancyDetected.
               required:
                 - bin_id
-                - counted_qty
-                - system_qty
+                - counted
+                - system
               properties:
                 bin_id:
                   type: string
                   description: The bin whose count did not match system records.
-                counted_qty:
+                counted:
                   type: integer
                   minimum: 0
                   description: Quantity physically counted in the bin.
-                system_qty:
+                system:
                   type: integer
                   minimum: 0
                   description: Quantity the system believed was in the bin.

@@ -2,17 +2,15 @@ package kafka
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"time"
 
-	"github.com/google/uuid"
 	kafkago "github.com/segmentio/kafka-go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
@@ -23,28 +21,26 @@ import (
 // independently (ADR-0011).
 const AnalyticsTopic = "warehouse.inventory.analytics"
 
-// analyticsSchemaVersion is the schema version stamped onto every analytics
-// envelope this publisher emits.
+// analyticsSchemaVersion is the `v<N>` of every analytics `dataschema`
+// (urn:warehouse:inventory-storage:analytics:<EventName>:v1). It replaces the
+// retired envelope-level schema_version field (ADR-0024).
 const analyticsSchemaVersion = 1
 
 // analyticsTracerName scopes the analytics publish spans this adapter emits.
 const analyticsTracerName = "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 
-// AnalyticsEnvelope is the shared Envelope v1 wrapper for the analytics
-// stream. Unlike the integration envelope it carries the payload as a
-// json.RawMessage so a single publisher can emit the event_type-specific data
-// object for every projecting domain event without a bespoke struct per type.
-type AnalyticsEnvelope struct {
-	EventId       string          `json:"event_id"`
-	EventType     string          `json:"event_type"`
-	OccurredAt    time.Time       `json:"occurred_at"`
-	Source        string          `json:"source"`
-	SchemaVersion int             `json:"schema_version"`
-	Data          json.RawMessage `json:"data"`
+// analyticsEvent is one analytics occurrence ready to wrap in a CloudEvent:
+// the CloudEvents `type` entity segment, the aggregate-id `subject`, the
+// unchanged Kafka partition key, and the payload object.
+type analyticsEvent struct {
+	entity  string
+	subject string
+	key     string
+	data    map[string]any
 }
 
 // AnalyticsPublisher publishes every inventory-storage domain event onto
-// AnalyticsTopic as an AnalyticsEnvelope. It satisfies ports.EventPublisher
+// AnalyticsTopic as a CloudEvents 1.0 event (ADR-0024). It satisfies ports.EventPublisher
 // (direct publish) and kafka.Encoder (used by postgres.OutboxPublisher to
 // enqueue the wire-ready message inside a transaction — ADR 0017), and is a
 // SEPARATE adapter from Publisher: the integration publisher (publisher.go)
@@ -63,7 +59,7 @@ type AnalyticsPublisher struct {
 }
 
 // NewAnalyticsPublisher constructs an AnalyticsPublisher writing to
-// AnalyticsTopic on brokers. newId mints the envelope event_id; reservations
+// AnalyticsTopic on brokers. newId mints the CloudEvents `id`; reservations
 // is used to enrich reservation-lifecycle events with their SKU. Balancer
 // is kafkago.Hash, not LeastBytes: LeastBytes ignores Message.Key entirely
 // when routing (it only tracks per-partition byte counts), so it cannot
@@ -74,6 +70,8 @@ type AnalyticsPublisher struct {
 func NewAnalyticsPublisher(brokers []string, reservations ports.ReservationRepo, newId func() string) *AnalyticsPublisher {
 	return &AnalyticsPublisher{
 		Writer: &kafkago.Writer{
+			BatchTimeout:           syncWriterBatchTimeout,
+			RequiredAcks:           syncWriterRequiredAcks,
 			Addr:                   kafkago.TCP(brokers...),
 			Topic:                  AnalyticsTopic,
 			Balancer:               &kafkago.Hash{},
@@ -91,30 +89,35 @@ func NewAnalyticsPublisher(brokers []string, reservations ports.ReservationRepo,
 // injected from whatever span is active on ctx, same convention as the
 // integration Publisher's Encode.
 func (p *AnalyticsPublisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Encoded, error) {
-	eventType, key, data, ok := p.marshalData(ctx, event)
+	ae, ok := p.analyticsEventFor(ctx, event)
 	if !ok {
 		return nil, nil
 	}
-	env := AnalyticsEnvelope{
-		EventId:       p.newID(),
-		EventType:     eventType,
-		OccurredAt:    event.OccurredAt().UTC(),
-		Source:        Source,
-		SchemaVersion: analyticsSchemaVersion,
-		Data:          data,
+	subject := ae.subject
+	if subject == "" {
+		subject = ae.key
 	}
-	payload, err := json.Marshal(env)
+	payload, err := cloudevents.New(cloudevents.Spec{
+		ID:        newEventID(p.NewId),
+		Entity:    ae.entity,
+		EventName: event.EventName(),
+		Subject:   subject,
+		Time:      event.OccurredAt(),
+		Stream:    cloudevents.StreamAnalytics,
+		Version:   analyticsSchemaVersion,
+		Data:      ae.data,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("kafka: marshal analytics envelope: %w", err)
+		return nil, fmt.Errorf("kafka: encode analytics cloudevent: %w", err)
 	}
 
-	headers := []kafkago.Header{}
+	headers := []kafkago.Header{cloudevents.ContentTypeHeader()}
 	otel.GetTextMapPropagator().Inject(ctx, headerCarrier{headers: &headers})
 
 	return []Encoded{{
 		Topic:     AnalyticsTopic,
-		EventType: eventType,
-		Key:       []byte(key),
+		EventType: cloudevents.Type(ae.entity, event.EventName()),
+		Key:       []byte(ae.key),
 		Value:     payload,
 		Headers:   headers,
 	}}, nil
@@ -159,15 +162,6 @@ func (p *AnalyticsPublisher) Publish(ctx context.Context, event shared.DomainEve
 	return nil
 }
 
-// newID mints an envelope event id, defaulting to a random UUID when NewId is
-// not injected.
-func (p *AnalyticsPublisher) newID() string {
-	if p.NewId != nil {
-		return p.NewId()
-	}
-	return uuid.NewString()
-}
-
 // reservationSKU looks up the SKU of the reservation with id, returning "" when
 // the reservation cannot be found (a best-effort enrichment: a missing SKU
 // leaves the report's SKU dimension unspecified rather than failing the
@@ -183,79 +177,81 @@ func (p *AnalyticsPublisher) reservationSKU(ctx context.Context, reservationID s
 	return r.SKU().String()
 }
 
-// marshalData maps a domain event to its analytics event_type, aggregate-id
-// message key, and snake_case JSON payload. The bool return is false for an
-// event type outside the analytics contract, so callers can skip it.
-func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEvent) (eventType, key string, data json.RawMessage, ok bool) {
+// analyticsEventFor maps a domain event to its analytics CloudEvent parts:
+// the `type` entity segment (stock | reservation | bin, per
+// apis/asyncapi.yaml), the aggregate-id `subject`, the Kafka partition key
+// (unchanged from the pre-CloudEvents publisher), and the snake_case payload.
+// The bool return is false for an event outside the analytics contract, so
+// callers can skip it.
+func (p *AnalyticsPublisher) analyticsEventFor(ctx context.Context, e shared.DomainEvent) (analyticsEvent, bool) {
 	switch ev := e.(type) {
 	case shared.StockReceived:
-		return "StockReceived", ev.SKU.String(), mustMarshal(map[string]any{
+		return analyticsEvent{entity: "stock", subject: ev.SKU.String(), key: ev.SKU.String(), data: map[string]any{
 			"sku":      ev.SKU.String(),
 			"quantity": ev.Quantity.Int(),
-		}), true
+		}}, true
 	case shared.ItemStowed:
-		return "ItemStowed", ev.SKU.String(), mustMarshal(map[string]any{
+		return analyticsEvent{entity: "stock", subject: ev.SKU.String(), key: ev.SKU.String(), data: map[string]any{
 			"sku":      ev.SKU.String(),
 			"bin_id":   ev.BinID.String(),
 			"quantity": ev.Quantity.Int(),
-		}), true
+		}}, true
 	case shared.StockPicked:
-		return "StockPicked", ev.SKU.String(), mustMarshal(map[string]any{
+		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.SKU.String(), data: map[string]any{
 			"sku":            ev.SKU.String(),
 			"reservation_id": ev.ReservationID,
 			"quantity":       ev.Quantity.Int(),
-		}), true
+		}}, true
 	case shared.StockReserved:
-		return "StockReserved", ev.SKU.String(), mustMarshal(map[string]any{
+		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.SKU.String(), data: map[string]any{
 			"sku":            ev.SKU.String(),
 			"reservation_id": ev.ReservationID,
 			"quantity":       ev.Quantity.Int(),
-		}), true
+		}}, true
 	case shared.ReservationExpired:
-		return "ReservationExpired", ev.ReservationID, mustMarshal(map[string]any{
+		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
 			"reservation_id": ev.ReservationID,
 			"sku":            p.reservationSKU(ctx, ev.ReservationID),
-		}), true
+		}}, true
 	case shared.ReservationRevoked:
-		return "ReservationRevoked", ev.ReservationID, mustMarshal(map[string]any{
+		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
 			"reservation_id": ev.ReservationID,
 			"sku":            p.reservationSKU(ctx, ev.ReservationID),
-		}), true
+		}}, true
+	default:
+		return p.binOrUnlocatedEvent(e)
+	}
+}
+
+// binOrUnlocatedEvent covers the cycle-count events (Bin aggregate) and
+// ItemUnlocated, split out of analyticsEventFor to keep each switch small.
+func (p *AnalyticsPublisher) binOrUnlocatedEvent(e shared.DomainEvent) (analyticsEvent, bool) {
+	switch ev := e.(type) {
 	case shared.CycleCountCompleted:
-		return "CycleCountCompleted", ev.BinID.String(), mustMarshal(map[string]any{
+		return analyticsEvent{entity: "bin", subject: ev.BinID.String(), key: ev.BinID.String(), data: map[string]any{
 			"bin_id":      ev.BinID.String(),
 			"counted":     ev.CountedQty.Int(),
 			"system":      ev.SystemQty.Int(),
 			"discrepancy": ev.Discrepancy,
-		}), true
+		}}, true
 	case shared.DiscrepancyDetected:
-		return "DiscrepancyDetected", ev.BinID.String(), mustMarshal(map[string]any{
+		return analyticsEvent{entity: "bin", subject: ev.BinID.String(), key: ev.BinID.String(), data: map[string]any{
 			"bin_id":  ev.BinID.String(),
 			"counted": ev.CountedQty.Int(),
 			"system":  ev.SystemQty.Int(),
-		}), true
+		}}, true
 	case shared.ItemUnlocated:
-		return "ItemUnlocated", ev.SKU.String(), mustMarshal(map[string]any{
+		return analyticsEvent{entity: "stock", subject: ev.StockUnitID, key: ev.SKU.String(), data: map[string]any{
 			"sku":           ev.SKU.String(),
 			"bin_id":        ev.BinID.String(),
 			"stock_unit_id": ev.StockUnitID,
 			"quantity":      ev.Quantity.Int(),
-		}), true
+		}}, true
 	default:
 		// LocationRecorded and any future event outside the analytics
 		// contract are acknowledged by the caller but not published.
-		return "", "", nil, false
+		return analyticsEvent{}, false
 	}
-}
-
-// mustMarshal marshals a map whose shape is fully controlled by marshalData,
-// so an error here is a programming mistake rather than a runtime condition.
-func mustMarshal(v any) json.RawMessage {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(fmt.Sprintf("kafka: marshal analytics data: %v", err))
-	}
-	return b
 }
 
 // Close releases the underlying Kafka writer.

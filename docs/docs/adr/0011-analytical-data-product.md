@@ -10,7 +10,15 @@ description: An analytical read model (the "Inventory Flow & Accuracy report") b
 
 ## Status
 
-**Accepted.**
+**Accepted; envelope superseded by
+[ADR-0024](./0024-cloudevents-mandatory-envelope.md).** The "Envelope v1"
+wrapper (`event_id` / `event_type` / `occurred_at` / `source` /
+`schema_version` / `data`) described below is retired: analytics events are
+CloudEvents 1.0 with `dataschema`
+`urn:warehouse:inventory-storage:analytics:<EventName>:v1` replacing
+`schema_version`, the projector dispatches on the full `type` and dedupes on
+the CloudEvents `id`. The rest of this decision (separate topic, projector,
+read model) stands.
 
 ## Context
 
@@ -62,6 +70,8 @@ processes; one writer.**
 
 A new outbound adapter publishes the report-input event set to
 **`warehouse.inventory.analytics`**, using the shared **Envelope v1** wrapper
+(*superseded by ADR-0024: now CloudEvents 1.0, `schema_version` replaced by
+`dataschema`*)
 (`event_id`, `event_type`, `occurred_at` RFC3339 UTC, `source`,
 `schema_version`, `data` snake_case) with a per-`event_type` `data` payload. The
 event key is the aggregate id (SKU or BinId as appropriate). The existing

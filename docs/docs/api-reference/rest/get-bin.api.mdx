@@ -1,0 +1,71 @@
+---
+id: get-bin
+title: "Get a bin's capacity and occupancy"
+description: "Returns the bin's capacity, how much of it is occupied, and how much is still available for stow. Side-effect-free. An unknown bin is a 404 (there is no meaningful empty bin to return)."
+sidebar_label: "Get a bin's capacity and occupancy"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Get a bin's capacity and occupancy"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/bins/{binId}"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Returns the bin's capacity, how much of it is occupied, and how much is still available for stow. Side-effect-free. An unknown bin is a 404 (there is no meaningful empty bin to return).
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-bin.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-bin.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-bin.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

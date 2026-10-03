@@ -37,7 +37,11 @@ type reserveStockRequest struct {
 
 type allocationResponse struct {
 	StockUnitID string `json:"stockUnitId"`
-	Quantity    int    `json:"quantity"`
+	// BinID is the pick location (the bin the allocated StockUnit sits
+	// in). Omitted only for legacy allocations persisted before it was
+	// recorded and that the 0008 migration could not backfill (ADR 0025).
+	BinID    string `json:"binId,omitempty"`
+	Quantity int    `json:"quantity"`
 }
 
 type reservationResponse struct {
@@ -68,6 +72,19 @@ type cycleCountResponse struct {
 	CountedQty  int    `json:"countedQuantity"`
 	SystemQty   int    `json:"systemQuantity"`
 	Discrepancy bool   `json:"discrepancy"`
+}
+
+type registerBinRequest struct {
+	// Capacity is a pointer so an omitted field (400 capacity-required)
+	// is distinguishable from an explicit 0 (422 invalid-bin-capacity).
+	Capacity *int `json:"capacity"`
+}
+
+type binResponse struct {
+	BinID     string `json:"binId"`
+	Capacity  int    `json:"capacity"`
+	Occupied  int    `json:"occupied"`
+	Available int    `json:"available"`
 }
 
 type classifyProductRequest struct {

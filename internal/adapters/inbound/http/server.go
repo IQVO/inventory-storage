@@ -2,7 +2,9 @@ package http
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
+	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -33,6 +36,11 @@ type Server struct {
 	GetReservationsByDemandRef *usecases.GetReservationsByDemandRef
 	RunCycleCount              *usecases.RunCycleCount
 	ClassifyProduct            *usecases.ClassifyProduct
+	// RegisterBin backs PUT /bins/{binId}: declarative, idempotent bin
+	// registration/resize by inventory control (ADR 0025).
+	RegisterBin *usecases.RegisterBin
+	// GetBin backs GET /bins/{binId}: capacity/occupancy read.
+	GetBin *usecases.GetBin
 	// Classifications backs the read-only GET endpoint. It is the same
 	// port ClassifyProduct writes through; there is no dedicated
 	// "GetProductClassification" use case because the read is a direct,
@@ -140,6 +148,8 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	r.Delete("/reservations/{id}", s.handleRevokeReservation)
 	r.Post("/reservations/{id}/confirm-pick", s.handleConfirmPick)
 	r.Get("/inventory/{sku}/usable", s.handleGetUsable)
+	r.Put("/bins/{binId}", s.handleRegisterBin)
+	r.Get("/bins/{binId}", s.handleGetBin)
 	r.Post("/bins/{binId}/cycle-count", s.handleRunCycleCount)
 	r.Put("/products/{sku}/classification", s.handleClassifyProduct)
 	r.Get("/products/{sku}/classification", s.handleGetProductClassification)
@@ -258,6 +268,14 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// demandRef is the idempotency key ReserveStock retries on and the key
+	// GET /reservations?demandRef= looks up by — an empty one would make
+	// every such reservation unreachable, so reject it like the GET does.
+	if req.DemandRef == "" {
+		writeProblem(w, http.StatusBadRequest, problemInfo{"missing-demand-ref", "demandRef is required"}, "demandRef must not be empty", r.URL.Path)
+		return
+	}
+
 	res, err := s.ReserveStock.Execute(r.Context(), sku, qty, req.DemandRef)
 	if err != nil {
 		writeError(w, r, err)
@@ -363,6 +381,71 @@ func (s *Server) handleRunCycleCount(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRegisterBin backs PUT /bins/{binId}. It is idempotent and
+// declarative: the body states the desired capacity and the response is
+// 201 when the bin was created, 200 when it already existed (unchanged or
+// resized). A capacity below current occupancy is a 409
+// (capacity-below-occupancy).
+func (s *Server) handleRegisterBin(w http.ResponseWriter, r *http.Request) {
+	binID, err := shared.NewBinId(chi.URLParam(r, "binId"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	var req registerBinRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Capacity == nil {
+		writeProblem(w, http.StatusBadRequest, problemInfo{"capacity-required", "capacity is required"}, "capacity must be present in the request body", r.URL.Path)
+		return
+	}
+	if *req.Capacity > maxBinCapacity {
+		writeProblem(w, http.StatusUnprocessableEntity, problemInfo{"capacity-out-of-range", "Bin capacity is out of range"}, fmt.Sprintf("capacity must not exceed %d", maxBinCapacity), r.URL.Path)
+		return
+	}
+	capacity, err := shared.NewQuantity(*req.Capacity)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	bin, outcome, err := s.RegisterBin.Execute(r.Context(), binID, capacity)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	status := http.StatusOK
+	if outcome == usecases.BinCreated {
+		w.Header().Set("Location", "/bins/"+bin.ID().String())
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, toBinResponse(bin))
+}
+
+// maxBinCapacity is the largest capacity the wire contract (int32) and the
+// bins.capacity INTEGER column can hold.
+const maxBinCapacity = math.MaxInt32
+
+// handleGetBin backs GET /bins/{binId}: the bin's capacity, occupancy and
+// remaining space, or 404 bin-not-found.
+func (s *Server) handleGetBin(w http.ResponseWriter, r *http.Request) {
+	binID, err := shared.NewBinId(chi.URLParam(r, "binId"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	bin, err := s.GetBin.Execute(r.Context(), binID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toBinResponse(bin))
+}
+
 func (s *Server) handleClassifyProduct(w http.ResponseWriter, r *http.Request) {
 	skuParam := chi.URLParam(r, "sku")
 	sku, err := shared.NewSKU(skuParam)
@@ -463,7 +546,7 @@ func toStockUnitResponse(u *stock.StockUnit) stockUnitResponse {
 func toReservationResponse(res *reservation.Reservation) reservationResponse {
 	allocations := make([]allocationResponse, 0, len(res.Allocations()))
 	for _, a := range res.Allocations() {
-		allocations = append(allocations, allocationResponse{StockUnitID: a.StockUnitID, Quantity: a.Quantity.Int()})
+		allocations = append(allocations, allocationResponse{StockUnitID: a.StockUnitID, BinID: a.BinID.String(), Quantity: a.Quantity.Int()})
 	}
 	return reservationResponse{
 		ID:          res.ID(),
@@ -474,6 +557,15 @@ func toReservationResponse(res *reservation.Reservation) reservationResponse {
 		Allocations: allocations,
 		CreatedAt:   res.CreatedAt().Format(timeFormat),
 		ExpiresAt:   res.ExpiresAt().Format(timeFormat),
+	}
+}
+
+func toBinResponse(b *location.Bin) binResponse {
+	return binResponse{
+		BinID:     b.ID().String(),
+		Capacity:  b.Capacity().Int(),
+		Occupied:  b.Occupied().Int(),
+		Available: b.Available().Int(),
 	}
 }
 

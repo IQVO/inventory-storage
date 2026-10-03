@@ -1,13 +1,18 @@
 package kafka_test
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
+	kafkago "github.com/segmentio/kafka-go"
+
 	inboundkafka "github.com/claudioed/inventory-storage/internal/adapters/inbound/kafka"
+	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 )
 
 // call captures one projection-store method invocation.
@@ -78,23 +83,22 @@ func (p *fakeProcessed) MarkProcessed(_ context.Context, eventId string) (bool, 
 	return true, nil
 }
 
-func envelope(t *testing.T, eventId, eventType string, at time.Time, data map[string]any) []byte {
+// cloudEvent builds a CloudEvents 1.0 analytics message exactly as the
+// outbound AnalyticsPublisher does, via the shared helper.
+func cloudEvent(t *testing.T, id, entity, eventName string, at time.Time, data map[string]any) []byte {
 	t.Helper()
-	raw, err := json.Marshal(data)
+	b, err := cloudevents.New(cloudevents.Spec{
+		ID:        id,
+		Entity:    entity,
+		EventName: eventName,
+		Subject:   "subject-1",
+		Time:      at,
+		Stream:    cloudevents.StreamAnalytics,
+		Version:   1,
+		Data:      data,
+	})
 	if err != nil {
-		t.Fatalf("marshal data: %v", err)
-	}
-	env := map[string]any{
-		"event_id":       eventId,
-		"event_type":     eventType,
-		"occurred_at":    at.Format(time.RFC3339Nano),
-		"source":         "inventory-storage",
-		"schema_version": 1,
-		"data":           json.RawMessage(raw),
-	}
-	b, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("marshal envelope: %v", err)
+		t.Fatalf("cloudevents.New: %v", err)
 	}
 	return b
 }
@@ -104,6 +108,7 @@ func TestAnalyticsConsumer_RoutesEachEventType(t *testing.T) {
 
 	tests := []struct {
 		name       string
+		entity     string
 		eventType  string
 		data       map[string]any
 		wantMethod string
@@ -111,15 +116,15 @@ func TestAnalyticsConsumer_RoutesEachEventType(t *testing.T) {
 		wantBin    string
 		wantQty    int
 	}{
-		{"received", "StockReceived", map[string]any{"sku": "SKU-1", "quantity": 10}, "received", "SKU-1", "", 10},
-		{"stowed", "ItemStowed", map[string]any{"sku": "SKU-1", "bin_id": "BIN-A"}, "stowed", "SKU-1", "BIN-A", 0},
-		{"picked", "StockPicked", map[string]any{"sku": "SKU-1", "quantity": 4}, "picked", "SKU-1", "", 4},
-		{"reserved", "StockReserved", map[string]any{"sku": "SKU-1"}, "reserved", "SKU-1", "", 0},
-		{"expired", "ReservationExpired", map[string]any{"sku": "SKU-1"}, "expired", "SKU-1", "", 0},
-		{"revoked", "ReservationRevoked", map[string]any{"sku": "SKU-1"}, "revoked", "SKU-1", "", 0},
-		{"cycle", "CycleCountCompleted", map[string]any{"bin_id": "BIN-A"}, "cycle", "", "BIN-A", 0},
-		{"discrepancy", "DiscrepancyDetected", map[string]any{"bin_id": "BIN-A"}, "discrepancy", "", "BIN-A", 0},
-		{"unlocated", "ItemUnlocated", map[string]any{"sku": "SKU-1", "bin_id": "BIN-A"}, "unlocated", "SKU-1", "BIN-A", 0},
+		{"received", "stock", "StockReceived", map[string]any{"sku": "SKU-1", "quantity": 10}, "received", "SKU-1", "", 10},
+		{"stowed", "stock", "ItemStowed", map[string]any{"sku": "SKU-1", "bin_id": "BIN-A"}, "stowed", "SKU-1", "BIN-A", 0},
+		{"picked", "reservation", "StockPicked", map[string]any{"sku": "SKU-1", "quantity": 4}, "picked", "SKU-1", "", 4},
+		{"reserved", "reservation", "StockReserved", map[string]any{"sku": "SKU-1"}, "reserved", "SKU-1", "", 0},
+		{"expired", "reservation", "ReservationExpired", map[string]any{"sku": "SKU-1"}, "expired", "SKU-1", "", 0},
+		{"revoked", "reservation", "ReservationRevoked", map[string]any{"sku": "SKU-1"}, "revoked", "SKU-1", "", 0},
+		{"cycle", "bin", "CycleCountCompleted", map[string]any{"bin_id": "BIN-A"}, "cycle", "", "BIN-A", 0},
+		{"discrepancy", "bin", "DiscrepancyDetected", map[string]any{"bin_id": "BIN-A"}, "discrepancy", "", "BIN-A", 0},
+		{"unlocated", "stock", "ItemUnlocated", map[string]any{"sku": "SKU-1", "bin_id": "BIN-A"}, "unlocated", "SKU-1", "BIN-A", 0},
 	}
 
 	for _, tt := range tests {
@@ -128,7 +133,7 @@ func TestAnalyticsConsumer_RoutesEachEventType(t *testing.T) {
 			processed := newFakeProcessed()
 			c := &inboundkafka.AnalyticsConsumer{Projection: proj, Processed: processed, Logger: slog.Default()}
 
-			raw := envelope(t, "e-"+tt.name, tt.eventType, at, tt.data)
+			raw := cloudEvent(t, "e-"+tt.name, tt.entity, tt.eventType, at, tt.data)
 			if err := c.HandleMessage(context.Background(), raw); err != nil {
 				t.Fatalf("HandleMessage: %v", err)
 			}
@@ -141,6 +146,9 @@ func TestAnalyticsConsumer_RoutesEachEventType(t *testing.T) {
 			}
 			if got.sku != tt.wantSKU || got.binId != tt.wantBin || got.qty != tt.wantQty {
 				t.Errorf("fields = %+v, want sku=%q bin=%q qty=%d", got, tt.wantSKU, tt.wantBin, tt.wantQty)
+			}
+			if got.eventId != "e-"+tt.name {
+				t.Errorf("eventId = %q, want the CloudEvents id %q", got.eventId, "e-"+tt.name)
 			}
 			if !got.at.Equal(at) {
 				t.Errorf("at = %v, want %v", got.at, at)
@@ -155,7 +163,7 @@ func TestAnalyticsConsumer_Idempotent(t *testing.T) {
 	processed := newFakeProcessed()
 	c := &inboundkafka.AnalyticsConsumer{Projection: proj, Processed: processed, Logger: slog.Default()}
 
-	raw := envelope(t, "dup", "StockReceived", at, map[string]any{"sku": "SKU-1", "quantity": 5})
+	raw := cloudEvent(t, "dup", "stock", "StockReceived", at, map[string]any{"sku": "SKU-1", "quantity": 5})
 	for range 2 {
 		if err := c.HandleMessage(context.Background(), raw); err != nil {
 			t.Fatalf("HandleMessage: %v", err)
@@ -172,7 +180,7 @@ func TestAnalyticsConsumer_IgnoresUnknownEventType(t *testing.T) {
 	c := &inboundkafka.AnalyticsConsumer{Projection: proj, Processed: processed, Logger: slog.Default()}
 
 	// LocationRecorded is on the topic but does not move the report.
-	raw := envelope(t, "e1", "LocationRecorded", time.Now(), map[string]any{"bin_id": "BIN-A"})
+	raw := cloudEvent(t, "e1", "stock", "LocationRecorded", time.Now(), map[string]any{"bin_id": "BIN-A"})
 	if err := c.HandleMessage(context.Background(), raw); err != nil {
 		t.Fatalf("HandleMessage: %v", err)
 	}
@@ -183,5 +191,48 @@ func TestAnalyticsConsumer_IgnoresUnknownEventType(t *testing.T) {
 	// later contract change could reprocess it.
 	if processed.seen["e1"] {
 		t.Error("non-projecting event should not be marked processed")
+	}
+}
+
+// TestAnalyticsConsumer_DispatchesOnFullTypeOnly proves a bare short name or
+// another context's type with the same trailing event name is NOT applied.
+func TestAnalyticsConsumer_DispatchesOnFullTypeOnly(t *testing.T) {
+	proj := &fakeProjection{}
+	c := &inboundkafka.AnalyticsConsumer{Projection: proj, Processed: newFakeProcessed(), Logger: slog.Default()}
+
+	foreign := `{"specversion":"1.0","id":"f1","source":"/warehouse/other","type":"com.warehouse.wes.other.stock.StockReceived","time":"2026-05-01T08:00:00Z","datacontenttype":"application/json","data":{"sku":"SKU-1","quantity":1}}`
+	if err := c.HandleMessage(context.Background(), []byte(foreign)); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if len(proj.calls) != 0 {
+		t.Fatalf("expected a foreign type to be ignored, got %d calls", len(proj.calls))
+	}
+}
+
+// TestAnalyticsConsumer_RejectsLegacyFlatEnvelope proves the retired flat
+// envelope (event_id/event_type/occurred_at/schema_version) is rejected as
+// not-a-CloudEvent — never parsed — and that Handle skips it (WARN + commit
+// past, this consumer has no DLQ) without touching the projection.
+func TestAnalyticsConsumer_RejectsLegacyFlatEnvelope(t *testing.T) {
+	legacy := []byte(`{"event_id":"legacy-1","event_type":"StockReceived","occurred_at":"2026-05-01T08:00:00Z","source":"inventory-storage","schema_version":1,"data":{"sku":"SKU-1","quantity":5}}`)
+
+	proj := &fakeProjection{}
+	processed := newFakeProcessed()
+	var logs bytes.Buffer
+	c := &inboundkafka.AnalyticsConsumer{Projection: proj, Processed: processed, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+
+	err := c.HandleMessage(context.Background(), legacy)
+	if !errors.Is(err, cloudevents.ErrNotCloudEvent) {
+		t.Fatalf("HandleMessage err = %v, want ErrNotCloudEvent", err)
+	}
+
+	if err := c.Handle(context.Background(), kafkago.Message{Topic: "warehouse.inventory.analytics", Partition: 2, Offset: 7, Value: legacy}); err != nil {
+		t.Fatalf("Handle must skip (nil error) a non-CloudEvent message, got %v", err)
+	}
+	if len(proj.calls) != 0 || len(processed.seen) != 0 {
+		t.Fatalf("legacy message must not be applied or marked processed: calls=%d seen=%v", len(proj.calls), processed.seen)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "offset=7") {
+		t.Errorf("expected a WARN log with the offset, got %q", logs.String())
 	}
 }

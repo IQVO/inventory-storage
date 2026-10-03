@@ -147,6 +147,8 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | DELETE | `/reservations/{id}` | RevokeReservation |
 | POST   | `/reservations/{id}/confirm-pick` | ConfirmPick |
 | GET    | `/inventory/{sku}/usable` | GetUsable |
+| PUT    | `/bins/{binId}` | RegisterBin — idempotent: 201 created / 200 unchanged or resized / 409 below occupancy (ADR-0025) |
+| GET    | `/bins/{binId}` | GetBin — capacity, occupied, available |
 | POST   | `/bins/{binId}/cycle-count` | RunCycleCount |
 | PUT    | `/products/{sku}/classification` | ClassifyProduct |
 | GET    | `/products/{sku}/classification` | current ProductClassification |
@@ -173,11 +175,17 @@ REST and the MCP surface.
 ### curl walkthrough
 
 ```sh
-# Stow requires a bin to exist first (there is no "create bin" endpoint yet;
-# seed one directly via the Postgres adapter, or run against in-memory and
-# call StowStock against a bin your test/seed script created).
-
 curl -s localhost:8080/healthz
+
+# Stow requires a bin to exist first. Register it (idempotent, declarative —
+# ADR-0025): 201 the first time, 200 on a repeat; a capacity below what the
+# bin already holds is a 409 capacity-below-occupancy.
+curl -s -i -X PUT localhost:8080/bins/A-1-1 -d '{"capacity":20}'
+# => 201 Created, Location: /bins/A-1-1
+#    {"binId":"A-1-1","capacity":20,"occupied":0,"available":20}
+
+curl -s localhost:8080/bins/A-1-1
+# => {"binId":"A-1-1","capacity":20,"occupied":0,"available":20}
 
 curl -s -X POST localhost:8080/stock/receive \
   -H 'Idempotency-Key: 8b1a...' \
@@ -191,7 +199,9 @@ curl -s -i -X POST localhost:8080/stock/stow \
 curl -s -i -X POST localhost:8080/reservations \
   -H 'Idempotency-Key: 8b1a...' \
   -d '{"sku":"SKU-1","quantity":6,"demandRef":"order-42"}'
-# => 201 Created, Location: /reservations/<id>, body {"id":"res-...", ...}
+# => 201 Created, Location: /reservations/<id>, body {"id":"res-...", ...,
+#    "allocations":[{"stockUnitId":"su-...","binId":"A-1-1","quantity":6}]}
+#    Every allocation names its pick location (binId) — ADR-0025.
 # A retry with the SAME Idempotency-Key + body returns this exact response
 # again without creating a second reservation (ADR-0018); omitting the
 # header entirely on these two routes is a 400.
@@ -251,19 +261,28 @@ below).
   `localhost:9092`. There is one broker platform-wide: the in-cluster Kafka
   deployed by `warehouse-infra`, whose external listener is reachable from
   the host at `localhost:9092`.
-- **Envelope** (identical across all warehouse-systems services):
+- **Envelope: CloudEvents 1.0, mandatory** (structured mode, fleet-wide —
+  [ADR-0024](docs/docs/adr/0024-cloudevents-mandatory-envelope.md)). Every
+  message carries the Kafka header
+  `content-type: application/cloudevents+json; charset=UTF-8`; the Kafka key
+  is the reservation id:
   ```json
   {
-    "event_id": "uuid-v4",
-    "event_type": "StockReserved",
-    "occurred_at": "2026-08-21T22:00:00Z",
-    "source": "inventory-storage",
+    "specversion": "1.0",
+    "id": "uuid-v4",
+    "source": "/warehouse/inventory-storage",
+    "type": "com.warehouse.wms.inventory-storage.reservation.StockReserved",
+    "subject": "res-1",
+    "time": "2026-08-21T22:00:00Z",
+    "datacontenttype": "application/json",
+    "dataschema": "urn:warehouse:inventory-storage:events:StockReserved:v1",
     "data": {}
   }
   ```
-- **Events published** — `StockReserved` (on a successful `ReserveStock`) and
-  `ReservationRevoked` (on a successful `RevokeReservation`), both with the
-  same `data` shape:
+- **Events published** — `com.warehouse.wms.inventory-storage.reservation.StockReserved`
+  (on a successful `ReserveStock`) and
+  `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` (on a
+  successful `RevokeReservation`), both with the same `data` shape:
   ```json
   {"sku": "SKU-1", "quantity": 4, "demand_ref": "order-42"}
   ```
@@ -327,8 +346,10 @@ and the [report contract](docs/docs/analytics/inventory-flow-accuracy-report.md)
 
 - **Analytics topic**: `warehouse.inventory.analytics` (separate from the
   integration topic; published by a NEW outbound adapter, fanned out alongside
-  the integration publisher when `EVENT_PUBLISHER=kafka`). Envelope v1:
-  `{event_id, event_type, occurred_at, source, schema_version, data}`.
+  the integration publisher when `EVENT_PUBLISHER=kafka`). Same CloudEvents
+  envelope and `type` strings, with `dataschema`
+  `urn:warehouse:inventory-storage:analytics:<EventName>:v1` (the old
+  `schema_version` field is gone).
 - **Analytical database**: its own `ANALYTICS_DATABASE_URL`, its own migrations
   (`migrations/analytics/`), and a read-only role for the reader.
 - **Three processes, one writer**:
@@ -523,6 +544,7 @@ aggregate/bounded concept, using the ubiquitous language from `CLAUDE.md`
 | `features/stow.feature` | `POST /stock/receive`, `POST /stock/stow` — chaotic stow, bin-capacity rejection |
 | `features/reservation.feature` | `POST /reservations`, `DELETE /reservations/{id}`, `POST /reservations/{id}/confirm-pick` — reserve against usable, revoke, confirm pick |
 | `features/cycle_count.feature` | `POST /bins/{binId}/cycle-count` — clean count vs. discrepancy/Unlocated |
+| `features/bin_registration.feature` | `PUT /bins/{binId}`, `GET /bins/{binId}` — create / no-op / resize / below-occupancy rejection, and pick location (`binId`) on reservation allocations |
 | `features/usable_inventory.feature` | `GET /inventory/{sku}/usable` — on-hand minus active reservations |
 
 The step definitions live in [`features_test.go`](features_test.go) at the repo

@@ -37,7 +37,6 @@ package facilitycache
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -48,13 +47,14 @@ import (
 
 	kafkago "github.com/segmentio/kafka-go"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
 // Topic is facility-layout's integration topic. This service has no
 // business knowing anything else about that context beyond this topic name
-// and the envelope/payload shapes below.
+// and the CloudEvents types/payload shapes below.
 const Topic = "warehouse.facility.events"
 
 // consumerGroupPrefix names this service's dedicated, PER-PROCESS consumer
@@ -73,23 +73,15 @@ const consumerGroupPrefix = "inventory-storage-facility-location-cache"
 // hanging forever on a broker that will never deliver.
 const WaitReadyTimeout = 60 * time.Second
 
-// Event types this consumer acts on. facility-layout's Published Language
-// uses fully-qualified CloudEvents types
-// (com.warehouse.wms.facility-layout.<entity>.<EventName>); matching is
-// done on the trailing event name so a namespace change upstream does not
-// silently stop this cache from updating.
+// CloudEvents `type` strings this consumer acts on: facility-layout's
+// Published Language (ADR-0024 cross-service catalogue). Dispatch is on the
+// FULL, byte-identical type string — never a suffix match — so an
+// unrelated event that merely shares a trailing name can never be applied.
 const (
-	eventZoneRegistered             = "ZoneRegistered"
-	eventLocationSlotRegistered     = "LocationSlotRegistered"
-	eventLocationSlotDecommissioned = "LocationSlotDecommissioned"
+	typeZoneRegistered             = "com.warehouse.wms.facility-layout.zone.ZoneRegistered"
+	typeLocationSlotRegistered     = "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered"
+	typeLocationSlotDecommissioned = "com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned"
 )
-
-// envelope is the CloudEvents-like wrapper shared across every
-// warehouse-systems publisher.
-type envelope struct {
-	EventType string          `json:"event_type"`
-	Data      json.RawMessage `json:"data"`
-}
 
 // zoneData is facility-layout's ZoneRegistered payload. Only the
 // classification attributes matter here; the rest is decoded and ignored.
@@ -213,17 +205,14 @@ func NewConsumerForTopic(ctx context.Context, brokers []string, topic string, lo
 	})
 
 	c := &Consumer{
-		Reader:  reader,
-		Logger:  logger,
-		zones:   make(map[string]product.SlotAttributes),
-		slots:   make(map[string]string),
-		readyCh: make(chan struct{}),
-		target:  target,
-		topic:   topic,
-		dlqWriter: &kafkago.Writer{
-			Addr:  kafkago.TCP(brokers...),
-			Topic: topic + dlqTopicSuffix,
-		},
+		Reader:    reader,
+		Logger:    logger,
+		zones:     make(map[string]product.SlotAttributes),
+		slots:     make(map[string]string),
+		readyCh:   make(chan struct{}),
+		target:    target,
+		topic:     topic,
+		dlqWriter: newDLQWriter(brokers, topic),
 	}
 	if len(target) == 0 {
 		// The topic has no partitions carrying any messages yet (brand
@@ -410,8 +399,9 @@ func (c *Consumer) GetSlotAttributes(_ context.Context, binID shared.BinId) (pro
 // every recognized event to the local cache. It is intended to run in its
 // own goroutine for the life of the process.
 //
-// A message apply() cannot parse (malformed envelope/data JSON, a
-// required field missing) is dead-lettered to topic+dlqTopicSuffix
+// A message apply() cannot parse (not a valid CloudEvents 1.0 event —
+// including the retired flat envelope — malformed data JSON, or a required
+// field missing) is dead-lettered to topic+dlqTopicSuffix
 // (ADR-0020 §DLQ) — the raw payload plus x-dlq-* headers preserved for
 // operator inspection/replay — then observe() still runs, exactly as
 // before this change, so readiness and the read model keep advancing
@@ -456,7 +446,7 @@ func (c *Consumer) dlqPublish(ctx context.Context, msg kafkago.Message, cause er
 		kafkago.Header{Key: "x-dlq-error", Value: []byte(cause.Error())},
 		kafkago.Header{Key: "x-dlq-failed-at", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
 	)
-	return c.dlqWriter.WriteMessages(ctx, kafkago.Message{
+	return writeDLQ(ctx, c.dlqWriter, kafkago.Message{
 		Key:     msg.Key,
 		Value:   msg.Value,
 		Headers: headers,
@@ -477,63 +467,31 @@ func (c *Consumer) observe(partition int, offset int64) {
 	}
 }
 
-// apply decodes one envelope and updates the cache.
+// apply decodes one CloudEvents 1.0 event and updates the cache. Anything
+// cloudevents.Decode rejects (the retired flat envelope, bad JSON, missing
+// required attributes) is returned as an error so Run dead-letters it —
+// it is never parsed as a legacy shape. Every update is an idempotent
+// upsert/delete keyed by the aggregate, so a redelivered event (same
+// CloudEvents id) re-applies harmlessly and needs no separate id dedupe.
 func (c *Consumer) apply(value []byte) error {
-	var env envelope
-	if err := json.Unmarshal(value, &env); err != nil {
-		return fmt.Errorf("facilitycache: decode envelope: %w", err)
+	e, err := cloudevents.Decode(value)
+	if err != nil {
+		return fmt.Errorf("facilitycache: %w", err)
 	}
 
-	switch eventName(env.EventType) {
-	case eventZoneRegistered:
-		var data zoneData
-		if err := json.Unmarshal(env.Data, &data); err != nil {
-			return fmt.Errorf("facilitycache: decode %s: %w", eventZoneRegistered, err)
-		}
-		if data.ZoneID == "" {
-			return fmt.Errorf("facilitycache: %s with empty zoneId", eventZoneRegistered)
-		}
-		temperatureClass, err := product.ParseTemperatureClass(data.TemperatureClass)
-		if err != nil {
-			temperatureClass = ""
-		}
-		c.mu.Lock()
-		c.zones[data.ZoneID] = product.SlotAttributes{
-			Hazmat:           data.Hazmat,
-			TemperatureClass: temperatureClass,
-			Known:            true,
-		}
-		c.mu.Unlock()
-
-	case eventLocationSlotRegistered:
+	switch e.Type() {
+	case typeZoneRegistered:
+		return c.applyZoneRegistered(e.DataAs)
+	case typeLocationSlotRegistered:
+		return c.applySlotRegistered(e.DataAs)
+	case typeLocationSlotDecommissioned:
 		var data slotData
-		if err := json.Unmarshal(env.Data, &data); err != nil {
-			return fmt.Errorf("facilitycache: decode %s: %w", eventLocationSlotRegistered, err)
-		}
-		if data.LocationCode == "" {
-			return fmt.Errorf("facilitycache: %s with empty locationCode", eventLocationSlotRegistered)
-		}
-		zoneID := data.ZoneID
-		if zoneID == "" {
-			// Derive the zone identity from the code itself, mirroring
-			// facility-layout's own LocationCode.ZoneID() (site-area-zone,
-			// the first three of seven hyphen-separated segments), so a
-			// payload that omits the field still resolves.
-			zoneID = zoneIDFromLocationCode(data.LocationCode)
-		}
-		c.mu.Lock()
-		c.slots[data.LocationCode] = zoneID
-		c.mu.Unlock()
-
-	case eventLocationSlotDecommissioned:
-		var data slotData
-		if err := json.Unmarshal(env.Data, &data); err != nil {
-			return fmt.Errorf("facilitycache: decode %s: %w", eventLocationSlotDecommissioned, err)
+		if err := e.DataAs(&data); err != nil {
+			return fmt.Errorf("facilitycache: decode %s: %w", typeLocationSlotDecommissioned, err)
 		}
 		c.mu.Lock()
 		delete(c.slots, data.LocationCode)
 		c.mu.Unlock()
-
 	default:
 		// Every other event on this topic (SiteRegistered, AisleRegistered,
 		// LocationTypeRegistered, PlacementRuleDefined, FacilityLayoutImported)
@@ -544,14 +502,50 @@ func (c *Consumer) apply(value []byte) error {
 	return nil
 }
 
-// eventName reduces a fully-qualified CloudEvents type to its trailing
-// event name (com.warehouse.wms.facility-layout.zone.ZoneRegistered ->
-// ZoneRegistered), and passes a bare name through unchanged.
-func eventName(eventType string) string {
-	if i := strings.LastIndex(eventType, "."); i >= 0 {
-		return eventType[i+1:]
+// applyZoneRegistered caches a zone's classification attributes.
+func (c *Consumer) applyZoneRegistered(dataAs func(any) error) error {
+	var data zoneData
+	if err := dataAs(&data); err != nil {
+		return fmt.Errorf("facilitycache: decode %s: %w", typeZoneRegistered, err)
 	}
-	return eventType
+	if data.ZoneID == "" {
+		return fmt.Errorf("facilitycache: %s with empty zoneId", typeZoneRegistered)
+	}
+	temperatureClass, err := product.ParseTemperatureClass(data.TemperatureClass)
+	if err != nil {
+		temperatureClass = ""
+	}
+	c.mu.Lock()
+	c.zones[data.ZoneID] = product.SlotAttributes{
+		Hazmat:           data.Hazmat,
+		TemperatureClass: temperatureClass,
+		Known:            true,
+	}
+	c.mu.Unlock()
+	return nil
+}
+
+// applySlotRegistered caches a location slot -> zone binding.
+func (c *Consumer) applySlotRegistered(dataAs func(any) error) error {
+	var data slotData
+	if err := dataAs(&data); err != nil {
+		return fmt.Errorf("facilitycache: decode %s: %w", typeLocationSlotRegistered, err)
+	}
+	if data.LocationCode == "" {
+		return fmt.Errorf("facilitycache: %s with empty locationCode", typeLocationSlotRegistered)
+	}
+	zoneID := data.ZoneID
+	if zoneID == "" {
+		// Derive the zone identity from the code itself, mirroring
+		// facility-layout's own LocationCode.ZoneID() (site-area-zone,
+		// the first three of seven hyphen-separated segments), so a
+		// payload that omits the field still resolves.
+		zoneID = zoneIDFromLocationCode(data.LocationCode)
+	}
+	c.mu.Lock()
+	c.slots[data.LocationCode] = zoneID
+	c.mu.Unlock()
+	return nil
 }
 
 // zoneIDFromLocationCode mirrors facility-layout's LocationCode.ZoneID():
@@ -565,3 +559,73 @@ func zoneIDFromLocationCode(code string) string {
 	}
 	return strings.Join(parts[:3], "-")
 }
+
+// newDLQWriter builds the dead-letter writer for topic. The fleet
+// auto-creates every topic on first write (warehouse-infra kafka.tf);
+// without AllowAutoTopicCreation a missing "<topic>.dlq" fails the DLQ
+// publish with "Unknown Topic Or Partition" and stops the consumer,
+// freezing the facility cache.
+func newDLQWriter(brokers []string, topic string) *kafkago.Writer {
+	return &kafkago.Writer{
+		Addr:                   kafkago.TCP(brokers...),
+		Topic:                  topic + dlqTopicSuffix,
+		AllowAutoTopicCreation: true,
+		// BatchTimeout: a DLQ write is a synchronous single message; with
+		// kafka-go's 1s default the writer holds every write for a full second
+		// waiting to fill a batch, capping dead-lettering at ~1 msg/s/partition
+		// (observed live: a backlog of legacy messages took hours to drain while
+		// the consumer processed nothing else).
+		BatchTimeout: dlqBatchTimeout,
+	}
+}
+
+// dlqTopicReadyAttempts / dlqTopicReadyBackoff bound how long a DLQ publish
+// waits for an auto-created "<topic>.dlq" to become writable.
+const (
+	dlqTopicReadyAttempts = 40
+	dlqTopicReadyBackoff  = 250 * time.Millisecond
+)
+
+// dlqMessageWriter is the slice of *kafkago.Writer writeDLQ needs.
+type dlqMessageWriter interface {
+	WriteMessages(ctx context.Context, msgs ...kafkago.Message) error
+}
+
+// writeDLQ publishes msg to the dead-letter topic, retrying (bounded) while
+// the topic is still being auto-created. AllowAutoTopicCreation alone is not
+// enough: the first write races partition leader election and the broker
+// answers UnknownTopicOrPartition / LeaderNotAvailable for a few hundred
+// milliseconds. Any other error -- or exhausting the budget -- is returned,
+// so the caller still refuses to commit the offset (no message loss).
+func writeDLQ(ctx context.Context, w dlqMessageWriter, msg kafkago.Message) error {
+	var err error
+	for attempt := 0; attempt < dlqTopicReadyAttempts; attempt++ {
+		if err = w.WriteMessages(ctx, msg); err == nil || !isTopicNotReady(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, ctx.Err())
+		case <-time.After(dlqTopicReadyBackoff):
+		}
+	}
+	return err
+}
+
+// isTopicNotReady reports whether err only means the (auto-created) topic
+// has no leader yet.
+func isTopicNotReady(err error) bool {
+	var werrs kafkago.WriteErrors
+	if errors.As(err, &werrs) {
+		for _, e := range werrs {
+			if e != nil && !isTopicNotReady(e) {
+				return false
+			}
+		}
+		return werrs.Count() > 0
+	}
+	return errors.Is(err, kafkago.UnknownTopicOrPartition) || errors.Is(err, kafkago.LeaderNotAvailable)
+}
+
+// dlqBatchTimeout flushes a dead-letter write almost immediately.
+const dlqBatchTimeout = 10 * time.Millisecond

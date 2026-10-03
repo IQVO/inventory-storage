@@ -26,9 +26,10 @@ info:
 
     Out of this service's boundary: it does not pick, pack, ship, route
     associates, or manage stations/tasks/labor (that is Work Planning /
-    fulfillment-execution); it does not decide *what* to receive or forecast
-    demand; and it does not create bins (bin provisioning is an
-    infrastructure/seed-data concern today, not an HTTP-exposed operation).
+    fulfillment-execution); and it does not decide *what* to receive or
+    forecast demand. Bins are registered declaratively by inventory control
+    via `PUT /bins/{binId}` (ADR 0025); every reservation allocation names
+    the bin to pick from (`allocations[].binId`).
     Error responses across this API use RFC 7807 (`application/problem+json`)
     Problem Details.
   contact:
@@ -55,9 +56,11 @@ tags:
       by SKU (on-hand minus active reservations minus held/unlocated stock).
   - name: Bins
     description: >
-      Cycle counting: verifying a bin's physical contents against system
-      records and reconciling discrepancies (shortfall marks stock
-      Unlocated; overage is flagged for a separate receiving/audit process).
+      Bin registration and inspection (declarative, idempotent
+      `PUT /bins/{binId}` and `GET /bins/{binId}`, ADR 0025), and cycle
+      counting: verifying a bin's physical contents against system records
+      and reconciling discrepancies (shortfall marks stock Unlocated;
+      overage is flagged for a separate receiving/audit process).
   - name: Products
     description: >
       SKU-level product classification (Hazmat/Fragile/TemperatureSensitive/
@@ -378,10 +381,13 @@ paths:
         draw from a different holding. This is what lets a failed physical
         pick be retried without stranding the order. The reservation
         expires automatically after a timeout if never confirmed or
-        revoked. Idempotent (best-effort) by demandRef: retrying this call
-        after a dropped response returns the existing ACTIVE reservation
-        for the same demandRef instead of creating a second one (see
-        REST_AUDIT.md's idempotency notes).
+        revoked. Idempotent (best-effort) by (demandRef, sku, quantity):
+        retrying this call after a dropped response returns the existing
+        ACTIVE reservation for the same demandRef, SKU and quantity instead
+        of creating a second one (see REST_AUDIT.md's idempotency notes).
+        One demandRef (e.g. an order) may hold several ACTIVE reservations
+        at once -- one per line/SKU -- so a request for a different SKU or
+        quantity under the same demandRef is always a new reservation.
       tags: [Reservations]
       requestBody:
         required: true
@@ -418,17 +424,28 @@ paths:
                 createdAt: "2026-08-22T14:20:00Z"
                 expiresAt: "2026-08-22T14:50:00Z"
         "400":
-          description: Malformed JSON body, or SKU missing/empty.
+          description: Malformed JSON body, SKU missing/empty, or demandRef missing/empty.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/empty-sku
-                title: SKU must not be empty
-                status: 400
-                detail: sku must not be empty
-                instance: /reservations
+              examples:
+                emptySku:
+                  summary: SKU missing or empty
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/empty-sku
+                    title: SKU must not be empty
+                    status: 400
+                    detail: sku must not be empty
+                    instance: /reservations
+                missingDemandRef:
+                  summary: demandRef missing or empty
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/missing-demand-ref
+                    title: demandRef is required
+                    status: 400
+                    detail: demandRef must not be empty
+                    instance: /reservations
         "409":
           description: >
             Requested quantity exceeds this SKU's currently usable
@@ -631,6 +648,183 @@ paths:
                 status: 400
                 detail: sku must not be empty
                 instance: /inventory//usable
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /bins/{binId}:
+    put:
+      operationId: registerBin
+      summary: Register a bin, or converge an existing bin to a capacity
+      description: >
+        Declarative, idempotent bin registration by inventory control
+        (ADR 0025). The body states the desired capacity and the bin
+        converges to it. An absent bin is created empty (201). A present
+        bin with the same capacity is left untouched (200, nothing
+        written). A present bin with a different capacity is resized (200),
+        as long as the new capacity is not below what the bin already holds
+        — shrinking below occupancy is rejected (409
+        capacity-below-occupancy) because that stock is physically in the
+        slot. Occupancy is never changed by this call; it moves only through
+        stow and pick. A resize racing a concurrent stow can surface as 409
+        concurrent-modification (re-fetch and retry).
+      tags: [Bins]
+      parameters:
+        - $ref: "#/components/parameters/BinId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterBinRequest"
+            example:
+              capacity: 20
+      responses:
+        "200":
+          description: >
+            The bin already existed; it is now at the requested capacity
+            (unchanged, or resized).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bin"
+              example:
+                binId: A-1-1
+                capacity: 20
+                occupied: 4
+                available: 16
+        "201":
+          description: The bin did not exist and was created, empty.
+          headers:
+            Location:
+              description: Path of the registered bin.
+              schema:
+                type: string
+                example: /bins/A-1-1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bin"
+              example:
+                binId: A-1-1
+                capacity: 20
+                occupied: 0
+                available: 20
+        "400":
+          description: Malformed JSON body, or the body omits capacity.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                capacityRequired:
+                  summary: capacity omitted
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/capacity-required
+                    title: capacity is required
+                    status: 400
+                    detail: capacity must be present in the request body
+                    instance: /bins/A-1-1
+                malformedBody:
+                  summary: Body is not valid JSON
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/malformed-request-body
+                    title: The request body is not valid JSON
+                    status: 400
+                    detail: invalid character 'n' looking for beginning of object key string
+                    instance: /bins/A-1-1
+        "409":
+          description: >
+            The requested capacity is below the bin's current occupancy, or
+            the bin was concurrently modified (re-fetch and retry).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                belowOccupancy:
+                  summary: Capacity below current occupancy
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/capacity-below-occupancy
+                    title: Bin capacity cannot be set below current occupancy
+                    status: 409
+                    detail: bin capacity cannot be set below current occupancy
+                    instance: /bins/A-1-1
+                concurrentModification:
+                  summary: Concurrent modification
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/concurrent-modification
+                    title: The resource was modified by another request; re-fetch the latest version and retry
+                    status: 409
+                    detail: aggregate was concurrently modified by another writer; re-fetch and retry
+                    instance: /bins/A-1-1
+        "422":
+          description: capacity is zero, negative, or above the int32 range.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                zeroCapacity:
+                  summary: Zero capacity
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/invalid-bin-capacity
+                    title: Bin capacity must be greater than zero
+                    status: 422
+                    detail: bin capacity must be greater than zero
+                    instance: /bins/A-1-1
+                negativeCapacity:
+                  summary: Negative capacity
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/negative-quantity
+                    title: Quantity must not be negative
+                    status: 422
+                    detail: quantity must not be negative
+                    instance: /bins/A-1-1
+                capacityOutOfRange:
+                  summary: Capacity above the int32 range
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/capacity-out-of-range
+                    title: Bin capacity is out of range
+                    status: 422
+                    detail: capacity must not exceed 2147483647
+                    instance: /bins/A-1-1
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: getBin
+      summary: Get a bin's capacity and occupancy
+      description: >
+        Returns the bin's capacity, how much of it is occupied, and how much
+        is still available for stow. Side-effect-free. An unknown bin is a
+        404 (there is no meaningful empty bin to return).
+      tags: [Bins]
+      parameters:
+        - $ref: "#/components/parameters/BinId"
+      responses:
+        "200":
+          description: The bin's current capacity and occupancy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bin"
+              example:
+                binId: A-1-1
+                capacity: 20
+                occupied: 4
+                available: 16
+        "404":
+          description: No bin exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/bin-not-found
+                title: Bin not found
+                status: 404
+                detail: bin not found
+                instance: /bins/A-1-1
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1032,11 +1226,21 @@ components:
 
     Allocation:
       type: object
-      description: A specific StockUnit and quantity a Reservation drew from.
+      description: >
+        A specific StockUnit and quantity a Reservation drew from, plus the
+        pick location: the bin that StockUnit sits in (ADR 0025).
       properties:
         stockUnitId:
           type: string
           example: su-164710cb-5e14-400b-849c-ed94d8256c6b
+        binId:
+          type: string
+          description: >
+            Pick location — the bin the allocated StockUnit sits in, i.e.
+            where a picker goes to fulfil this allocation. Always present
+            for allocations made by this version; omitted only for a legacy
+            allocation whose bin could not be backfilled.
+          example: A-1-1
         quantity:
           type: integer
           format: int32
@@ -1077,6 +1281,43 @@ components:
           format: date-time
           description: Timestamp this reservation auto-expires if never confirmed or revoked, RFC 3339.
           example: "2026-08-22T14:50:00Z"
+
+    RegisterBinRequest:
+      type: object
+      required: [capacity]
+      properties:
+        capacity:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 2147483647
+          description: >
+            Desired capacity of the bin, in units. Must be greater than zero
+            and not below the bin's current occupancy.
+          example: 20
+
+    Bin:
+      type: object
+      description: A coded storage slot with a fixed capacity (chaotic storage).
+      properties:
+        binId:
+          type: string
+          example: A-1-1
+        capacity:
+          type: integer
+          format: int32
+          description: Maximum units the bin can hold.
+          example: 20
+        occupied:
+          type: integer
+          format: int32
+          description: Units currently stowed in the bin.
+          example: 4
+        available:
+          type: integer
+          format: int32
+          description: capacity minus occupied — space still free for stow.
+          example: 16
 
     UsableInventory:
       type: object

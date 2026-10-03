@@ -45,19 +45,24 @@ everything else is an event count.
 ## Inputs (analytics topic events)
 
 Consumed from **`warehouse.inventory.analytics`** (the dedicated analytics
-topic, separate from the integration topic — Envelope v1):
+topic, separate from the integration topic). Every message is a CloudEvents
+1.0 event ([ADR-0024](../adr/0024-cloudevents-mandatory-envelope.md)) with
+`dataschema` `urn:warehouse:inventory-storage:analytics:<EventName>:v1`. The
+projector dispatches on the full `type`, dedupes on the CloudEvents `id`,
+takes the bucket timestamp from `time`, and logs-and-skips (WARN) anything
+that is not a valid CloudEvent.
 
-| `event_type` | Contributes | Keyed by |
+| `type` (`com.warehouse.wms.inventory-storage.` + …) | Contributes | Keyed by |
 |---|---|---|
-| `StockReceived` | `receivedQuantity` | SKU |
-| `ItemStowed` | `stowedCount` | SKU + bin |
-| `StockPicked` | `pickedQuantity` | SKU |
-| `StockReserved` | `reservationsCreated` | SKU |
-| `ReservationExpired` | `reservationsExpired` | SKU (enriched) |
-| `ReservationRevoked` | `reservationsRevoked` | SKU (enriched) |
-| `CycleCountCompleted` | `cycleCountsCompleted` | bin |
-| `DiscrepancyDetected` | `discrepanciesDetected` | bin |
-| `ItemUnlocated` | `unlocatedCount` | SKU + bin |
+| `stock.StockReceived` | `receivedQuantity` | SKU |
+| `stock.ItemStowed` | `stowedCount` | SKU + bin |
+| `reservation.StockPicked` | `pickedQuantity` | SKU |
+| `reservation.StockReserved` | `reservationsCreated` | SKU |
+| `reservation.ReservationExpired` | `reservationsExpired` | SKU (enriched) |
+| `reservation.ReservationRevoked` | `reservationsRevoked` | SKU (enriched) |
+| `bin.CycleCountCompleted` | `cycleCountsCompleted` | bin |
+| `bin.DiscrepancyDetected` | `discrepanciesDetected` | bin |
+| `stock.ItemUnlocated` | `unlocatedCount` | SKU + bin |
 
 `sku` is enriched onto reservation-lifecycle events (`ReservationExpired`,
 `ReservationRevoked`) by the publisher via a `ReservationRepo` lookup, since
@@ -133,8 +138,9 @@ Exposed by the existing `cmd/mcp` server (Streamable HTTP) when
 
 - Additive fields (new optional row metric, new query filter) are non-breaking.
 - A breaking change to a row's shape or meaning is a new endpoint/tool version.
-- The analytics event contract versions independently via the Envelope
-  `schema_version` and the analytics topic suffix (see Envelope v1).
+- The analytics event contract versions independently via the CloudEvents
+  `dataschema` (`urn:warehouse:inventory-storage:analytics:<EventName>:v<N>`);
+  a breaking payload change is a new `.v2` type plus a new `dataschema`.
 
 ## Runbook notes
 

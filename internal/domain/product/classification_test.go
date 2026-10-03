@@ -312,3 +312,25 @@ func TestNewProductClassified_CarriesFieldsAndOccurredAt(t *testing.T) {
 }
 
 var _ shared.DomainEvent = ProductClassified{}
+
+// ParseDOTHazardClass accepts exactly the 1-9 range: both edges are valid,
+// and the values just outside them are rejected. Pins the boundaries so a
+// `<`/`<=` slip on either side is caught (gremlins CONDITIONALS_BOUNDARY).
+func TestParseDOTHazardClass_Boundaries(t *testing.T) {
+	tests := []struct {
+		value   int
+		want    DOTHazardClass
+		wantErr error
+	}{
+		{value: 0, want: DOTHazardClassUnspecified, wantErr: ErrInvalidDOTHazardClass},
+		{value: 1, want: 1, wantErr: nil},
+		{value: 9, want: 9, wantErr: nil},
+		{value: 10, want: DOTHazardClassUnspecified, wantErr: ErrInvalidDOTHazardClass},
+	}
+	for _, tt := range tests {
+		got, err := ParseDOTHazardClass(tt.value)
+		if err != tt.wantErr || got != tt.want {
+			t.Fatalf("ParseDOTHazardClass(%d) = (%v, %v), want (%v, %v)", tt.value, got, err, tt.want, tt.wantErr)
+		}
+	}
+}

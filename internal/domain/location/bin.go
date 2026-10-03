@@ -13,6 +13,11 @@ var (
 	ErrBinFull                 = errors.New("bin is full: capacity exceeded")
 	ErrInvalidCapacity         = errors.New("bin capacity must be greater than zero")
 	ErrReleaseExceedsOccupancy = errors.New("cannot release more than is occupied")
+	// ErrCapacityBelowOccupancy is returned by Resize when the requested
+	// capacity is smaller than what the bin already holds: shrinking a bin
+	// below its occupancy would break the sum(stock in bin) <= capacity
+	// invariant for stock that is physically already there.
+	ErrCapacityBelowOccupancy = errors.New("bin capacity cannot be set below current occupancy")
 )
 
 // Bin is the aggregate root for a coded storage slot.
@@ -81,5 +86,21 @@ func (b *Bin) Release(qty shared.Quantity) error {
 		return ErrReleaseExceedsOccupancy
 	}
 	b.occupied = remaining
+	return nil
+}
+
+// Resize changes the bin's capacity (e.g. inventory control re-registering
+// a slot after a physical re-rack). The new capacity must be greater than
+// zero and must not drop below what the bin already holds — a resize never
+// strands stock that is physically in the slot. Resizing exactly to the
+// current occupancy is allowed (the bin simply becomes full).
+func (b *Bin) Resize(capacity shared.Quantity) error {
+	if capacity.Int() <= 0 {
+		return ErrInvalidCapacity
+	}
+	if b.occupied.GreaterThan(capacity) {
+		return ErrCapacityBelowOccupancy
+	}
+	b.capacity = capacity
 	return nil
 }

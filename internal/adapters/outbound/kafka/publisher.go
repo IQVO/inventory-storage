@@ -9,9 +9,7 @@ package kafka
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"time"
 
 	"github.com/google/uuid"
 	kafkago "github.com/segmentio/kafka-go"
@@ -21,6 +19,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
@@ -28,8 +27,10 @@ import (
 // Topic is the integration events topic this service publishes to.
 const Topic = "warehouse.inventory.events"
 
-// Source identifies this service in the event envelope.
-const Source = "inventory-storage"
+// reservationEntity is the `<entity>` segment of the CloudEvents `type` for
+// every event this publisher forwards (the Reservation aggregate raises both
+// StockReserved and ReservationRevoked — see apis/asyncapi.yaml).
+const reservationEntity = "reservation"
 
 // tracerName scopes the publish spans this adapter emits.
 const tracerName = "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
@@ -50,16 +51,6 @@ type Writer interface {
 	WriteMessages(ctx context.Context, msgs ...kafkago.Message) error
 }
 
-// envelope is the integration event wrapper shared across all
-// warehouse-systems services.
-type envelope struct {
-	EventID    string          `json:"event_id"`
-	EventType  string          `json:"event_type"`
-	OccurredAt time.Time       `json:"occurred_at"`
-	Source     string          `json:"source"`
-	Data       json.RawMessage `json:"data"`
-}
-
 // reservationData is the `data` payload shape for both StockReserved and
 // ReservationRevoked, per CLAUDE.md.
 type reservationData struct {
@@ -75,6 +66,10 @@ type reservationData struct {
 type Publisher struct {
 	writer       Writer
 	reservations ports.ReservationRepo
+	// NewID mints the CloudEvents `id`. nil means a random UUID v4. The id
+	// is minted ONCE in Encode and baked into the message value, so the
+	// outbox row persists it and every relay redelivery carries the same id.
+	NewID func() string
 }
 
 // NewPublisher builds a Publisher. reservations is used to look up the SKU,
@@ -95,6 +90,8 @@ func NewPublisher(writer Writer, reservations ports.ReservationRepo) *Publisher 
 // doc comment true (ADR-0021).
 func NewWriter(brokers ...string) *kafkago.Writer {
 	return &kafkago.Writer{
+		BatchTimeout:           syncWriterBatchTimeout,
+		RequiredAcks:           syncWriterRequiredAcks,
 		Addr:                   kafkago.TCP(brokers...),
 		Topic:                  Topic,
 		Balancer:               &kafkago.Hash{},
@@ -114,8 +111,9 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 	}
 }
 
-// Encode maps event onto its integration wire form: the envelope, the
-// event's data payload, and W3C trace headers injected from whatever span
+// Encode maps event onto its integration wire form: a CloudEvents 1.0
+// structured-mode event (ADR-0024) whose `data` is the event payload, the
+// `content-type: application/cloudevents+json` header, and W3C trace headers injected from whatever span
 // is active on ctx. The Kafka message Key is always the reservation
 // aggregate id (ReservationID) — StockReserved and ReservationRevoked for
 // the SAME reservation must land on the same partition so a consumer never
@@ -153,20 +151,16 @@ func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Enc
 		return nil, nil
 	}
 
-	payload, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
-
-	env := envelope{
-		EventID:    uuid.NewString(),
-		EventType:  event.EventName(),
-		OccurredAt: event.OccurredAt(),
-		Source:     Source,
-		Data:       payload,
-	}
-
-	msg, err := json.Marshal(env)
+	msg, err := cloudevents.New(cloudevents.Spec{
+		ID:        newEventID(p.NewID),
+		Entity:    reservationEntity,
+		EventName: event.EventName(),
+		Subject:   key,
+		Time:      event.OccurredAt(),
+		Stream:    cloudevents.StreamEvents,
+		Version:   1,
+		Data:      data,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -174,10 +168,10 @@ func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Enc
 	// Inject whatever span is active on ctx: for a direct publish that is
 	// the just-started publish span (see Publish below), so a downstream
 	// consumer's Extract parents onto it.
-	headers := []kafkago.Header{}
+	headers := []kafkago.Header{cloudevents.ContentTypeHeader()}
 	otel.GetTextMapPropagator().Inject(ctx, headerCarrier{headers: &headers})
 
-	return []Encoded{{Topic: Topic, EventType: env.EventType, Key: []byte(key), Value: msg, Headers: headers}}, nil
+	return []Encoded{{Topic: Topic, EventType: cloudevents.Type(reservationEntity, event.EventName()), Key: []byte(key), Value: msg, Headers: headers}}, nil
 }
 
 // Compile-time assertion that Publisher satisfies the outbox's Encoder port.
@@ -228,6 +222,15 @@ func (p *Publisher) Publish(ctx context.Context, event shared.DomainEvent) error
 		}
 	}
 	return nil
+}
+
+// newEventID mints a CloudEvents `id` with gen, defaulting to a random
+// UUID v4 when gen is nil.
+func newEventID(gen func() string) string {
+	if gen != nil {
+		return gen()
+	}
+	return uuid.NewString()
 }
 
 // Close releases the underlying Kafka writer.

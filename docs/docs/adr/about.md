@@ -61,14 +61,14 @@ Typos, broken links and formatting are of course fair game.
 | [0001](./0001-hexagonal-ports-and-adapters.md) | Hexagonal (ports & adapters) architecture | Accepted |
 | [0002](./0002-chaotic-storage-over-fixed-slotting.md) | Chaotic (random) stow over fixed slotting | Accepted |
 | [0003](./0003-revocable-reservations.md) | Revocable reservations over hard allocation | Accepted |
-| [0004](./0004-kafka-integration-events.md) | Kafka and a shared envelope for integration events | Accepted |
+| [0004](./0004-kafka-integration-events.md) | Kafka and a shared envelope for integration events | Superseded by [0024](./0024-cloudevents-mandatory-envelope.md) (envelope) |
 | [0005](./0005-rfc-7807-problem-details.md) | RFC 7807 Problem Details for all error responses | Accepted |
 | [0006](./0006-arch-go-fitness-tests.md) | arch-go fitness tests to enforce the dependency rule | Accepted |
 | [0007](./0007-godog-bdd-acceptance-tests.md) | godog/Gherkin acceptance tests as executable specification | Accepted |
 | [0008](./0008-mcp-inbound-adapter.md) | Model Context Protocol as an inbound adapter, not a new service | Accepted |
 | [0009](./0009-product-classification-as-sku-master-data.md) | Product classification as SKU-level master data, enforced at stow time | Accepted |
 | [0010](./0010-dot-hazard-class-and-same-bin-segregation.md) | Optional DOT hazard class and same-bin DOT segregation at stow time | Accepted |
-| [0011](./0011-analytical-data-product.md) | Per-service analytical data product (report) via a separate analytics topic | Accepted |
+| [0011](./0011-analytical-data-product.md) | Per-service analytical data product (report) via a separate analytics topic | Accepted (envelope superseded by [0024](./0024-cloudevents-mandatory-envelope.md)) |
 | [0012](./0012-adopt-mfe-console-architecture.md) | Adopt the fleet's micro-frontend console architecture (ADR-0002 in `warehouse-ops-agent`) | Accepted |
 | [0013](./0013-location-classification-via-facility-events.md) | Location classification from facility-layout's events, not a synchronous call | Accepted |
 | [0014](./0014-rest-identity-adoption.md) | Adopt the fleet REST identity standard (static bearer keys, read/read-write scopes; `warehouse-ops-agent` ADR 0005) | Superseded by [0015](./0015-remove-rest-identity-layer.md) |
@@ -77,6 +77,8 @@ Typos, broken links and formatting are of course fair game.
 | [0017](./0017-transactional-outbox.md) | Transactional outbox + relay for Kafka publishing | Accepted |
 | [0018](./0018-idempotency-key-middleware.md) | Transactional Idempotency-Key middleware for POST /stock/receive and POST /reservations | Accepted |
 | [0021](./0021-kafka-producer-partition-key.md) | Key every integration/analytics Kafka message by its aggregate id, and route by Hash not LeastBytes | Accepted |
+| [0024](./0024-cloudevents-mandatory-envelope.md) | CloudEvents 1.0 as the mandatory event envelope | Accepted |
+| [0025](./0025-bin-registration-endpoint-and-pick-location.md) | Declarative bin registration over REST (`PUT /bins/{binId}`), and the pick location (`binId`) on every reservation allocation | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

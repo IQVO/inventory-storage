@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	ce "github.com/cloudevents/sdk-go/v2/event"
 	kafkago "github.com/segmentio/kafka-go"
 	"github.com/testcontainers/testcontainers-go"
 	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
@@ -134,22 +136,24 @@ func publish(t *testing.T, brokerList []string, topic string, msgs ...kafkago.Me
 	t.Fatalf("publish to %s: %v", topic, err)
 }
 
+// envelopeBytes builds the CloudEvents 1.0 structured-mode value
+// facility-layout publishes (ADR-0024), with the official SDK and the FULL
+// type string this consumer dispatches on.
 func envelopeBytes(t *testing.T, entity, eventName string, data any) []byte {
 	t.Helper()
-	raw, err := json.Marshal(data)
-	if err != nil {
-		t.Fatalf("marshal data: %v", err)
+	e := ce.New(ce.CloudEventsVersionV1)
+	e.SetID(fmt.Sprintf("itest-%d", time.Now().UnixNano()))
+	e.SetSource("/warehouse/facility-layout")
+	e.SetType("com.warehouse.wms.facility-layout." + entity + "." + eventName)
+	e.SetSubject("itest-subject")
+	e.SetTime(time.Now().UTC())
+	e.SetDataSchema("urn:warehouse:facility-layout:events:" + eventName + ":v1")
+	if err := e.SetData("application/json", data); err != nil {
+		t.Fatalf("SetData: %v", err)
 	}
-	env := map[string]any{
-		"event_id":    fmt.Sprintf("itest-%d", time.Now().UnixNano()),
-		"event_type":  "com.warehouse.wms.facility-layout." + entity + "." + eventName,
-		"occurred_at": time.Now().UTC(),
-		"source":      "facility-layout",
-		"data":        json.RawMessage(raw),
-	}
-	value, err := json.Marshal(env)
+	value, err := json.Marshal(e)
 	if err != nil {
-		t.Fatalf("marshal envelope: %v", err)
+		t.Fatalf("marshal cloudevent: %v", err)
 	}
 	return value
 }
@@ -478,6 +482,63 @@ func TestConsumer_MalformedMessage_GoesToDeadLetterTopicWithoutBlockingPartition
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Fatal("well-formed message published after the poison one was never applied — partition appears blocked")
+}
+
+// TestConsumer_LegacyFlatMessage_IsDeadLetteredNotParsed proves, against a
+// real broker, that a retired flat-envelope message (event_type/occurred_at)
+// is rejected as not-a-CloudEvent and dead-lettered — never parsed, even
+// though its type and payload are ones this cache would apply — and that
+// it does not stall the FirstOffset replay readiness gate: the consumer,
+// started AFTER the legacy message is already on the topic, still becomes
+// ready, and a valid CloudEvent behind it is applied.
+func TestConsumer_LegacyFlatMessage_IsDeadLetteredNotParsed(t *testing.T) {
+	brokerList := startBroker(t)
+	topic := uniqueTopic(t)
+	dlqTopic := topic + ".dlq"
+	createTopic(t, brokerList, topic)
+	createTopic(t, brokerList, dlqTopic)
+
+	legacyKey := fmt.Sprintf("legacy-zone-%d", time.Now().UnixNano())
+	publish(t, brokerList, topic,
+		kafkago.Message{
+			Key:   []byte(legacyKey),
+			Value: []byte(`{"event_id":"legacy-1","event_type":"com.warehouse.wms.facility-layout.zone.ZoneRegistered","occurred_at":"2026-09-30T12:00:00Z","source":"facility-layout","data":{"zoneId":"WH1-STOR-LEG","temperatureClass":"Frozen","hazmat":true}}`),
+		},
+		zoneMsg(t, "WH1-STOR-AMB", "Ambient", false),
+		slotMsg(t, "WH1-STOR-AMB-A07-03-02-B", "WH1-STOR-AMB"),
+	)
+
+	c := newConsumerOnTopic(t, brokerList, topic)
+	defer func() { _ = c.Close() }()
+	runInBackground(t, c)
+	waitReady(t, c, facilitycache.WaitReadyTimeout)
+
+	if got := lookup(t, c, "WH1-STOR-AMB-A07-03-02-B"); !got.Known || got.TemperatureClass != product.Ambient {
+		t.Fatalf("valid CloudEvent behind the legacy message not applied: %+v", got)
+	}
+	if c.Zones() != 1 {
+		t.Fatalf("legacy flat message must not be applied, got %d zones", c.Zones())
+	}
+
+	dlqReader := kafkago.NewReader(kafkago.ReaderConfig{
+		Brokers:     brokerList,
+		Topic:       dlqTopic,
+		GroupID:     fmt.Sprintf("dlq-reader-%d", time.Now().UnixNano()),
+		StartOffset: kafkago.FirstOffset,
+	})
+	defer func() { _ = dlqReader.Close() }()
+	dlqCtx, dlqCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer dlqCancel()
+	dlqMsg, err := dlqReader.ReadMessage(dlqCtx)
+	if err != nil {
+		t.Fatalf("read DLQ message: %v", err)
+	}
+	if string(dlqMsg.Key) != legacyKey {
+		t.Errorf("DLQ message key = %q, want %q", dlqMsg.Key, legacyKey)
+	}
+	if !strings.Contains(headerValue(dlqMsg.Headers, "x-dlq-error"), "not a valid CloudEvents") {
+		t.Errorf("x-dlq-error = %q, want a not-a-CloudEvent reason", headerValue(dlqMsg.Headers, "x-dlq-error"))
+	}
 }
 
 // headerValue returns the string value of the first header named key,

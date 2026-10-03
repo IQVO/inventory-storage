@@ -2,10 +2,10 @@ package kafka_test
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -33,22 +33,26 @@ func TestPublisher_Encode_StockReserved(t *testing.T) {
 	if enc.Topic != kafka.Topic {
 		t.Errorf("Topic = %q, want %q", enc.Topic, kafka.Topic)
 	}
-	if enc.EventType != "StockReserved" {
-		t.Errorf("EventType = %q, want StockReserved", enc.EventType)
+	const wantType = "com.warehouse.wms.inventory-storage.reservation.StockReserved"
+	if enc.EventType != wantType {
+		t.Errorf("EventType = %q, want %q", enc.EventType, wantType)
 	}
 	if string(enc.Key) != "res-1" {
 		t.Errorf("Key = %q, want %q (the reservation id)", string(enc.Key), "res-1")
 	}
 
-	var env envelope
-	if err := json.Unmarshal(enc.Value, &env); err != nil {
-		t.Fatalf("failed to unmarshal envelope: %v", err)
+	e, err := cloudevents.Decode(enc.Value)
+	if err != nil {
+		t.Fatalf("encoded value is not a valid CloudEvent: %v", err)
 	}
-	if env.EventType != "StockReserved" {
-		t.Errorf("env.EventType = %q, want StockReserved", env.EventType)
+	if e.Type() != wantType {
+		t.Errorf("type = %q, want %q", e.Type(), wantType)
 	}
-	if env.Source != kafka.Source {
-		t.Errorf("env.Source = %q, want %q", env.Source, kafka.Source)
+	if e.Source() != cloudevents.Source {
+		t.Errorf("source = %q, want %q", e.Source(), cloudevents.Source)
+	}
+	if headerValue(enc.Headers, "content-type") != cloudevents.MediaType {
+		t.Errorf("missing content-type header: %+v", enc.Headers)
 	}
 }
 
@@ -83,9 +87,9 @@ func TestPublisher_Encode_ReservationRevoked_UnknownReservation(t *testing.T) {
 	}
 }
 
-// TestAnalyticsPublisher_Encode_MatchesPublishEnvelope proves Encode alone
-// produces the exact same AnalyticsEnvelope shape Publish always has.
-func TestAnalyticsPublisher_Encode_MatchesPublishEnvelope(t *testing.T) {
+// TestAnalyticsPublisher_Encode_MatchesPublishCloudEvent proves Encode alone
+// produces the same analytics CloudEvent Publish sends.
+func TestAnalyticsPublisher_Encode_MatchesPublishCloudEvent(t *testing.T) {
 	p := kafka.NewAnalyticsPublisher(nil, fakeReservationRepo{}, func() string { return "evt-fixed" })
 
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -108,15 +112,15 @@ func TestAnalyticsPublisher_Encode_MatchesPublishEnvelope(t *testing.T) {
 		t.Errorf("Key = %q, want SKU-1", string(enc.Key))
 	}
 
-	var env kafka.AnalyticsEnvelope
-	if err := json.Unmarshal(enc.Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
+	e, err := cloudevents.Decode(enc.Value)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
 	}
-	if env.EventId != "evt-fixed" {
-		t.Errorf("event_id = %q, want evt-fixed", env.EventId)
+	if e.ID() != "evt-fixed" {
+		t.Errorf("id = %q, want evt-fixed", e.ID())
 	}
-	if env.EventType != "StockReceived" {
-		t.Errorf("event_type = %q, want StockReceived", env.EventType)
+	if e.Type() != "com.warehouse.wms.inventory-storage.stock.StockReceived" {
+		t.Errorf("type = %q", e.Type())
 	}
 }
 
