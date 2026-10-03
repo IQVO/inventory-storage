@@ -52,6 +52,14 @@ import (
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
+// replayCommitInterval makes this full-replay reader commit offsets periodically and asynchronously.
+// With a GroupID set and CommitInterval left at zero, kafka-go's ReadMessage performs a SYNCHRONOUS
+// commit round trip after EVERY message, turning boot replay into O(history) x RTT (order-management
+// hit a CrashLoopBackOff from this). Async commits are safe ONLY because the group is unique to this
+// process (uniqueConsumerGroup): its offsets are never resumed. Enforced by
+// internal/architecture/events_fitness_test.go (TestReplayConsumersSetCommitInterval).
+const replayCommitInterval = time.Second
+
 // Topic is facility-layout's integration topic. This service has no
 // business knowing anything else about that context beyond this topic name
 // and the CloudEvents types/payload shapes below.
@@ -198,10 +206,11 @@ func NewConsumerForTopic(ctx context.Context, brokers []string, topic string, lo
 	}
 
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers:     brokers,
-		Topic:       topic,
-		GroupID:     uniqueConsumerGroup(),
-		StartOffset: kafkago.FirstOffset,
+		Brokers:        brokers,
+		Topic:          topic,
+		GroupID:        uniqueConsumerGroup(),
+		StartOffset:    kafkago.FirstOffset,
+		CommitInterval: replayCommitInterval,
 	})
 
 	c := &Consumer{
