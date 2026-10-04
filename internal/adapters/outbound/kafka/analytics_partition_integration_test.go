@@ -10,12 +10,19 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
+	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 
 	outboundkafka "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
+
+// The broker itself is started by startPartitionKeyBroker (publisher_integration_test.go),
+// via testcontainers-go/modules/kafka. This blank use keeps the fleet fitness rule
+// (TestKafkaIntegrationTestsUseTestcontainers: every Kafka-touching integration
+// test file must itself import the testcontainers Kafka module) honest here.
+var _ = tckafka.Run
 
 // TestAnalyticsPublisher_RealBroker_ReservationLifecycleLandsOnSamePartition is
 // the real-Kafka regression for ADR-0021's analytics amendment: the analytics
