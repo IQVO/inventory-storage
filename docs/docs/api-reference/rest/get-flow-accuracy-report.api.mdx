@@ -1,0 +1,71 @@
+---
+id: get-flow-accuracy-report
+title: "Inventory Flow & Accuracy report (hourly)"
+description: "Read-only analytical report over the inventory-storage event stream (ADR 0011): per (SKU, bin, hour) received/stowed/picked quantities, reservation lifecycle counts, and cycle-count accuracy signals. Served by the `inventory-reports` deployment from its own read-only pool (ADR 0020 §CQRS split); the OLTP `inventory` binary does not serve this path. `from` and `to` are required RFC 3339 timestamps; `sku` and `binId` narrow the result; `granularity` is currently only `hour`. Side-effect-free and unauthenticated (ADR 0015)."
+sidebar_label: "Inventory Flow & Accuracy report (hourly)"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Inventory Flow & Accuracy report (hourly)"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/reports/flow-accuracy"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Read-only analytical report over the inventory-storage event stream (ADR 0011): per (SKU, bin, hour) received/stowed/picked quantities, reservation lifecycle counts, and cycle-count accuracy signals. Served by the `inventory-reports` deployment from its own read-only pool (ADR 0020 §CQRS split); the OLTP `inventory` binary does not serve this path. `from` and `to` are required RFC 3339 timestamps; `sku` and `binId` narrow the result; `granularity` is currently only `hour`. Side-effect-free and unauthenticated (ADR 0015).
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-flow-accuracy-report.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-flow-accuracy-report.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-flow-accuracy-report.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      
