@@ -7,7 +7,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 )
 
-// TestStatusFor_ErrConcurrentModification_Maps409 pins ADR 0018's
+// TestStatusFor_ErrConcurrentModification_Maps409 pins ADR 0019's
 // contract: a version-guarded Save's conflict must map to 409 Conflict,
 // not the generic 500 the default case would otherwise produce.
 func TestStatusFor_ErrConcurrentModification_Maps409(t *testing.T) {
@@ -19,7 +19,7 @@ func TestStatusFor_ErrConcurrentModification_Maps409(t *testing.T) {
 // TestProblemFor_ErrConcurrentModification_HasDedicatedSlugAndTitle pins
 // the RFC 7807 body: it must NOT fall through to the generic
 // "internal-error" slug — the caller needs a distinct type/title telling
-// it to re-fetch and retry (ADR 0018).
+// it to re-fetch and retry (ADR 0019).
 func TestProblemFor_ErrConcurrentModification_HasDedicatedSlugAndTitle(t *testing.T) {
 	info := problemFor(usecases.ErrConcurrentModification)
 	if info.slug != "concurrent-modification" {

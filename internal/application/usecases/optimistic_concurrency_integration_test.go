@@ -1,6 +1,6 @@
 //go:build integration
 
-// Proves ADR 0018 (optimistic concurrency) end to end through a REAL use
+// Proves ADR 0019 (optimistic concurrency) end to end through a REAL use
 // case, not just at the repo layer: two goroutines each load the SAME
 // StockUnit via ReserveStock's own FindBySKU/Save path, each reserve
 // against it in memory, both Save — exactly one must succeed and the
@@ -87,7 +87,7 @@ func (b *barrierStockRepo) FindBySKU(ctx context.Context, sku shared.SKU) ([]*st
 
 // TestIntegration_ReserveStock_ConcurrentReservations_ExactlyOneSucceeds
 // is the real concurrent-conflict proof through the actual use case
-// (ADR 0018's requirement #4/#5): two ReserveStock.Execute calls racing
+// (ADR 0019's requirement #4/#5): two ReserveStock.Execute calls racing
 // against the SAME underlying StockUnit for the SAME sku, both drawing
 // from its usable quantity. Exactly one must persist; the other must
 // surface ErrConcurrentModification unchanged from the repo layer,

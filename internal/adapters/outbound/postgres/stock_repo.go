@@ -21,7 +21,7 @@ func NewStockRepo(pool *pgxpool.Pool) *StockRepo {
 	return &StockRepo{pool: pool}
 }
 
-// Save is version-guarded (ADR 0018, optimistic concurrency): the
+// Save is version-guarded (ADR 0019, optimistic concurrency): the
 // conflict-action's own WHERE clause only fires the UPDATE branch when
 // the row's CURRENT version still matches what unit was loaded at. If
 // another writer already saved a newer version of this same row, the
@@ -32,6 +32,11 @@ func NewStockRepo(pool *pgxpool.Pool) *StockRepo {
 // pair. A brand-new id (no existing row) always takes the INSERT path
 // regardless of the WHERE clause, so first-ever Save of an aggregate
 // (version=1) is unaffected.
+//
+// Save does NOT use RETURNING and does NOT advance unit's in-memory
+// version: after a successful Save the aggregate still carries the
+// version it was loaded at, so it must be re-loaded (FindByID) before a
+// second Save in the same flow (ADR 0019 §"Save and the in-memory version").
 func (r *StockRepo) Save(ctx context.Context, unit *stock.StockUnit) error {
 	tag, err := querierFrom(ctx, r.pool).Exec(ctx, `
 		INSERT INTO stock_units (id, sku, bin_id, quantity, reserved, state, version)

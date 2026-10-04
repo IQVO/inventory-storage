@@ -1,6 +1,6 @@
 //go:build integration
 
-// Optimistic-concurrency (ADR 0018) proof, at the repo layer, for all
+// Optimistic-concurrency (ADR 0019) proof, at the repo layer, for all
 // three protected aggregates (StockUnit, Bin, Reservation): a Save with a
 // stale version must fail with usecases.ErrConcurrentModification and
 // leave the row untouched; a Save with the current version must succeed

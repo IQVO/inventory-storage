@@ -20,7 +20,7 @@ func NewLocationRepo(pool *pgxpool.Pool) *LocationRepo {
 	return &LocationRepo{pool: pool}
 }
 
-// Save is version-guarded (ADR 0018, optimistic concurrency) — see
+// Save is version-guarded (ADR 0019, optimistic concurrency) — see
 // StockRepo.Save's doc comment for the verified single-statement
 // ON CONFLICT ... WHERE RowsAffected() semantics this relies on.
 func (r *LocationRepo) Save(ctx context.Context, bin *location.Bin) error {

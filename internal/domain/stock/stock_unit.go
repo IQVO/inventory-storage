@@ -38,7 +38,7 @@ type StockUnit struct {
 
 // NewStockUnit stows a quantity of a SKU into a bin. Both the SKU and the
 // BinId must be present (item-scan + location-scan) or the stow is rejected.
-// A freshly created aggregate always starts at version 1 (see ADR 0018).
+// A freshly created aggregate always starts at version 1 (see ADR 0019).
 func NewStockUnit(id string, sku shared.SKU, binID shared.BinId, qty shared.Quantity) (*StockUnit, error) {
 	if sku == "" || binID == "" {
 		return nil, ErrStowRequiresItemAndLocation
@@ -58,7 +58,7 @@ func NewStockUnit(id string, sku shared.SKU, binID shared.BinId, qty shared.Quan
 }
 
 // RehydrateStockUnit reconstructs a StockUnit from persisted state,
-// including the row's current version (ADR 0018) so a later Save can be
+// including the row's current version (ADR 0019) so a later Save can be
 // version-guarded against a concurrent modification.
 func RehydrateStockUnit(id string, sku shared.SKU, binID shared.BinId, qty, reserved shared.Quantity, state State, version int) *StockUnit {
 	return &StockUnit{id: id, sku: sku, binID: binID, quantity: qty, reserved: reserved, state: state, version: version}
@@ -73,7 +73,7 @@ func (u *StockUnit) State() State              { return u.state }
 
 // Version reports the optimistic-concurrency version this aggregate was
 // loaded at (or 1 for a freshly constructed one). Infrastructure-only —
-// no business-logic method reads or mutates this (ADR 0018).
+// no business-logic method reads or mutates this (ADR 0019).
 func (u *StockUnit) Version() int { return u.version }
 
 // Usable is the portion of this unit's on-hand quantity not already reserved.

@@ -61,7 +61,7 @@ type Reservation struct {
 // New creates an Active reservation. Allocations must sum to quantity and
 // the caller (the ReserveStock use case) is responsible for having already
 // verified quantity <= usable at reserve time. A freshly created
-// aggregate always starts at version 1 (see ADR 0018).
+// aggregate always starts at version 1 (see ADR 0019).
 func New(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, allocations []Allocation, createdAt time.Time, timeout time.Duration) (*Reservation, error) {
 	if len(allocations) == 0 {
 		return nil, ErrNoAllocations
@@ -80,7 +80,7 @@ func New(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, 
 }
 
 // Rehydrate reconstructs a Reservation from persisted state, including the
-// row's current optimistic-concurrency version (ADR 0018).
+// row's current optimistic-concurrency version (ADR 0019).
 func Rehydrate(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, allocations []Allocation, status Status, createdAt, expiresAt time.Time, version int) *Reservation {
 	return &Reservation{
 		id: id, sku: sku, quantity: quantity, demandRef: demandRef,
@@ -100,7 +100,7 @@ func (r *Reservation) ExpiresAt() time.Time      { return r.expiresAt }
 
 // Version reports the optimistic-concurrency version this aggregate was
 // loaded at (or 1 for a freshly constructed one). Infrastructure-only —
-// no business-logic method reads or mutates this (ADR 0018).
+// no business-logic method reads or mutates this (ADR 0019).
 func (r *Reservation) Version() int { return r.version }
 
 // IsExpired reports whether now is past this reservation's timeout.
