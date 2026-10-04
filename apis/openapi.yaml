@@ -1437,7 +1437,6 @@ components:
         Schemathesis contract run boots that mode).
       schema:
         type: string
-        minLength: 1
         example: 5b0f6a0e-6a41-4c63-9f33-0c8f5c1d2a77
     BinId:
       name: binId
