@@ -8,15 +8,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
+	"github.com/claudioed/inventory-storage/internal/resilience"
 )
-
-// DefaultTimeout bounds a single classification lookup request, so a slow
-// or hanging facility-layout does not stall StowStock indefinitely.
-const DefaultTimeout = 5 * time.Second
 
 // ErrUnexpectedStatus wraps a facility-layout response status this client
 // does not have specific handling for (anything other than 200 or 404).
@@ -42,10 +38,16 @@ type Client struct {
 }
 
 // NewClient builds a Client against baseURL (e.g. from FACILITY_LAYOUT_BASE_URL).
-// A nil doer defaults to an *http.Client with DefaultTimeout.
+//
+// A nil doer defaults to a plain *http.Client WITHOUT http.Client.Timeout:
+// a client-level timeout is a fixed, per-request wall clock that silently
+// overrides the caller's context (ADR-0020 §3 — a call must honor the
+// inbound request's remaining deadline, not outlast or undercut it). The
+// per-attempt bound is instead derived from ctx in GetSlotAttributes via
+// resilience.CallTimeout.
 func NewClient(baseURL string, doer HTTPDoer) *Client {
 	if doer == nil {
-		doer = &http.Client{Timeout: DefaultTimeout}
+		doer = &http.Client{}
 	}
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), doer: doer}
 }
@@ -63,6 +65,12 @@ type classificationResponse struct {
 //   - Any transport error or non-2xx/404 status returns an error, which
 //     StowStock's caller normalizes to usecases.ErrLocationClassificationUnavailable.
 func (c *Client) GetSlotAttributes(ctx context.Context, binID shared.BinId) (product.SlotAttributes, error) {
+	// Per-attempt deadline: ctx's own deadline when it is sooner than
+	// resilience.DefaultTimeout, otherwise capped at it, so one attempt can
+	// neither hang forever nor be cut short by a hardcoded client timeout.
+	ctx, cancel := resilience.CallTimeout(ctx, resilience.DefaultTimeout)
+	defer cancel()
+
 	endpoint := fmt.Sprintf("%s/locations/%s/classification", c.baseURL, url.PathEscape(binID.String()))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)

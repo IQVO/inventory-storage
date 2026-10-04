@@ -11,7 +11,7 @@
 // StowStock consults the location classification on its hot path. With
 // the HTTP client that makes facility-layout a RUNTIME dependency of
 // every stow: if facility-layout is down, slow, or mid-redeploy, stows
-// fail (or stall for DefaultTimeout) even though the classification data
+// fail (or stall for the call timeout) even though the classification data
 // itself changes perhaps a handful of times a week. Facility layout is
 // reference data with an extremely low change rate and an extremely high
 // read rate — the textbook shape for a locally-maintained read model fed
@@ -585,6 +585,15 @@ func newDLQWriter(brokers []string, topic string) *kafkago.Writer {
 		// (observed live: a backlog of legacy messages took hours to drain while
 		// the consumer processed nothing else).
 		BatchTimeout: dlqBatchTimeout,
+		// Same synchronous-writer contract as the producer adapters in
+		// internal/adapters/outbound/kafka/writer_config.go (ADR-0020/0021):
+		// RequireAll so a DLQ write that returns nil really was stored (the
+		// consumer commits the source offset on success -- a RequireNone
+		// "success" the broker dropped would be silent message loss), and
+		// Hash so the source message Key keeps routing to one DLQ partition
+		// (kafka-go's default balancer ignores Key).
+		RequiredAcks: kafkago.RequireAll,
+		Balancer:     &kafkago.Hash{},
 	}
 }
 
