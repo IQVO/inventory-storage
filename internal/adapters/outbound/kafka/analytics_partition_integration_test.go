@@ -45,12 +45,15 @@ func TestAnalyticsPublisher_RealBroker_ReservationLifecycleLandsOnSamePartition(
 	pub := outboundkafka.NewAnalyticsPublisher(brokerList, repo, nil)
 	// Same balancer/acks as production (NewAnalyticsPublisher), but aimed at
 	// the controlled 8-partition test topic instead of AnalyticsTopic.
+	transport := &kafkago.Transport{} // not the process-global DefaultTransport (see publisher_integration_test.go)
+	t.Cleanup(transport.CloseIdleConnections)
 	pub.Writer = &kafkago.Writer{
 		Addr:         kafkago.TCP(brokerList...),
 		Topic:        topic,
 		Balancer:     &kafkago.Hash{},
 		RequiredAcks: kafkago.RequireAll,
 		BatchTimeout: 10 * time.Millisecond,
+		Transport:    transport,
 	}
 	t.Cleanup(func() { _ = pub.Close() })
 
