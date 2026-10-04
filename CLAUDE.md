@@ -88,7 +88,10 @@ Claude Code loads each rule below automatically when you touch the matching path
 | When touching | Read |
 |---|---|
 | `internal/adapters/outbound/analyticsstore/**`, `internal/**/analytics*/**` | `.claude/rules/analytics-data-product.md` |
+| `internal/**`, `cmd/**` | `.claude/rules/architecture.md` |
+| `internal/domain/**`, `internal/application/**`, `features/**` | `.claude/rules/domain-model.md` |
 | `web/**` | `.claude/rules/frontend-mfe.md` |
+| `**/*.go`, `go.mod`, `go.sum` ... | `.claude/rules/go-standards.md` |
 | `internal/adapters/**/kafka/**`, `internal/adapters/outbound/events/**`, `apis/asyncapi*` | `.claude/rules/integration-events.md` |
 | `internal/adapters/inbound/http/**`, `apis/openapi*.yaml`, `apis/openapi/**` | `.claude/rules/rest-api.md` |
 

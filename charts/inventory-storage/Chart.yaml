@@ -4,7 +4,7 @@ description: Inventory & Storage — WMS-tier bounded context (chaotic/random st
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-home: https://github.com/claudioed/inventory-storage
+home: https://github.com/IQVO/inventory-storage
 keywords:
   - ddd
   - hexagonal-architecture
