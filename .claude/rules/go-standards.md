@@ -15,8 +15,9 @@ Moved here from CLAUDE.md; the gate commands and the testcontainers rule stay th
 - Config via env (`DATABASE_URL`, `HTTP_ADDR`, `ANALYTICS_DATABASE_URL`,
   `MIGRATIONS_DATABASE_URL`, `EVENT_PUBLISHER`, `OUTBOX_RELAY_INTERVAL`,
   `KAFKA_BROKERS`, `CORS_ALLOWED_ORIGINS`, `LOCATION_LOOKUP_MODE`,
-  `FACILITY_LAYOUT_BASE_URL`, `REPORTS_BASE_URL`, `MCP_ADDR`). No hardcoded
-  config.
+  `FACILITY_LAYOUT_BASE_URL`, `REPORTS_BASE_URL`, `MCP_ADDR`,
+  `HOUSEKEEPING_INTERVAL`, `IDEMPOTENCY_KEY_TTL`, `OUTBOX_RETENTION`). No
+  hardcoded config.
 - Typed domain errors mapped to HTTP status (RFC 7807 problem details) in the
   adapter. gofmt/go vet clean; every package has a doc comment.
 - Table-driven tests: domain + application (in-memory adapter); one httptest

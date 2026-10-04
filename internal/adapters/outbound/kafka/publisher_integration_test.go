@@ -154,10 +154,17 @@ func TestPublisher_RealBroker_SameReservationLandsOnSamePartition(t *testing.T) 
 	topic := uniquePartitionKeyTopic(t)
 	createTopicWithPartitions(t, brokerList, topic, numPartitions)
 
+	// A dedicated Transport (not kafka-go's process-global DefaultTransport):
+	// the default one caches cluster metadata across writers, so a second
+	// test creating a topic right after another test's writer warmed it saw
+	// "Unknown Topic Or Partition" for its brand-new topic.
+	transport := &kafkago.Transport{}
+	defer transport.CloseIdleConnections()
 	writer := &kafkago.Writer{
-		Addr:     kafkago.TCP(brokerList...),
-		Topic:    topic,
-		Balancer: &kafkago.Hash{},
+		Addr:      kafkago.TCP(brokerList...),
+		Topic:     topic,
+		Balancer:  &kafkago.Hash{},
+		Transport: transport,
 	}
 	defer func() { _ = writer.Close() }()
 

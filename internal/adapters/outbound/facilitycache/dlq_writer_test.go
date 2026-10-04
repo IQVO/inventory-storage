@@ -23,6 +23,12 @@ func TestNewDLQWriter_AutoCreatesTopic(t *testing.T) {
 	if w.BatchTimeout != dlqBatchTimeout {
 		t.Fatalf("DLQ BatchTimeout = %v, want %v (kafka-go's 1s default caps dead-lettering at ~1 msg/s)", w.BatchTimeout, dlqBatchTimeout)
 	}
+	if w.RequiredAcks != kafkago.RequireAll {
+		t.Fatalf("DLQ RequiredAcks = %v, want RequireAll (a RequireNone write can be silently dropped before the source offset is committed)", w.RequiredAcks)
+	}
+	if _, ok := w.Balancer.(*kafkago.Hash); !ok {
+		t.Fatalf("DLQ Balancer = %T, want *kafka.Hash (default balancer ignores Message.Key)", w.Balancer)
+	}
 }
 
 type scriptedDLQWriter struct {

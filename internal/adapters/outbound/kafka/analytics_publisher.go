@@ -180,7 +180,12 @@ func (p *AnalyticsPublisher) reservationSKU(ctx context.Context, reservationID s
 // analyticsEventFor maps a domain event to its analytics CloudEvent parts:
 // the `type` entity segment (stock | reservation | bin, per
 // apis/asyncapi.yaml), the aggregate-id `subject`, the Kafka partition key
-// (unchanged from the pre-CloudEvents publisher), and the snake_case payload.
+// and the snake_case payload. The partition key follows ADR-0021: every event
+// of one reservation's lifecycle (StockReserved, StockPicked,
+// ReservationRevoked, ReservationExpired) is keyed by the RESERVATION id so
+// they all land on one partition and a consumer sees them in order; only
+// events with no reservation (StockReceived, ItemStowed, ItemUnlocated: SKU;
+// cycle-count events: bin id) are keyed by their own aggregate.
 // The bool return is false for an event outside the analytics contract, so
 // callers can skip it.
 func (p *AnalyticsPublisher) analyticsEventFor(ctx context.Context, e shared.DomainEvent) (analyticsEvent, bool) {
@@ -197,13 +202,13 @@ func (p *AnalyticsPublisher) analyticsEventFor(ctx context.Context, e shared.Dom
 			"quantity": ev.Quantity.Int(),
 		}}, true
 	case shared.StockPicked:
-		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.SKU.String(), data: map[string]any{
+		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
 			"sku":            ev.SKU.String(),
 			"reservation_id": ev.ReservationID,
 			"quantity":       ev.Quantity.Int(),
 		}}, true
 	case shared.StockReserved:
-		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.SKU.String(), data: map[string]any{
+		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
 			"sku":            ev.SKU.String(),
 			"reservation_id": ev.ReservationID,
 			"quantity":       ev.Quantity.Int(),

@@ -93,8 +93,8 @@ func TestHealthz(t *testing.T) {
 // CORS is required for the browser SPAs that call this API directly (the
 // warehouse-console shell and this service's own future MFE remote). The
 // default allowed origins cover local dev; CORS_ALLOWED_ORIGINS overrides
-// them for other environments. No credentials are needed (static bearer
-// key auth, not cookies).
+// them for other environments. No credentials are needed (the API is
+// unauthenticated by decision, ADR-0015 — no cookies, no bearer key).
 func TestCORS_Preflight_AllowsDefaultOrigin(t *testing.T) {
 	ts := newTestServer()
 	req := httptest.NewRequest(http.MethodOptions, "/reservations", nil)
@@ -111,6 +111,25 @@ func TestCORS_Preflight_AllowsDefaultOrigin(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
 		t.Fatalf("expected no Access-Control-Allow-Credentials header (no cookie auth), got %q", got)
+	}
+}
+
+// ADR-0018: a browser POST to /stock/receive or /reservations carries an
+// Idempotency-Key header, so its CORS preflight must list it in
+// Access-Control-Allow-Headers or the browser blocks the request.
+func TestCORS_Preflight_AllowsIdempotencyKeyHeader(t *testing.T) {
+	ts := newTestServer()
+	for _, path := range []string{"/reservations", "/stock/receive"} {
+		req := httptest.NewRequest(http.MethodOptions, path, nil)
+		req.Header.Set("Origin", "http://localhost:5173")
+		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+		req.Header.Set("Access-Control-Request-Headers", "content-type, idempotency-key")
+		rec := httptest.NewRecorder()
+		ts.handler.ServeHTTP(rec, req)
+
+		if got := strings.ToLower(rec.Header().Get("Access-Control-Allow-Headers")); !strings.Contains(got, "idempotency-key") {
+			t.Errorf("%s: Access-Control-Allow-Headers = %q, want it to include Idempotency-Key", path, got)
+		}
 	}
 }
 

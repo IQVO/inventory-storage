@@ -118,7 +118,9 @@ fail-open/fail-closed asymmetry.**
    contexts already code physical slots as short human-readable strings
    (`A-1-1`), and assuming the same string identifies the same physical
    location across the platform is a reasonable simplification for this
-   round, not a permanent guarantee. A future divergence between the two
+   round, not a permanent guarantee. The same assumption is restated where it
+   is relied upon, in the `facilitylayout.Client` doc comment
+   (`internal/adapters/outbound/facilitylayout/client.go`). A future divergence between the two
    contexts' coding schemes would require a real translation layer here.
 
 6. **Two adapters behind the port, selected by `LOCATION_LOOKUP_MODE`

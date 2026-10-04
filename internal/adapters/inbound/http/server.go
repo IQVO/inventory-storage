@@ -116,7 +116,7 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   corsAllowedOrigins(),
 		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete},
-		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization"},
+		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization", "Idempotency-Key"},
 		AllowCredentials: false,
 	}))
 

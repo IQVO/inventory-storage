@@ -28,7 +28,7 @@ func NewReservationRepo(pool *pgxpool.Pool) *ReservationRepo {
 // commit together; called standalone it opens and owns its own
 // transaction, same as before.
 //
-// The reservation row itself is version-guarded (ADR 0018, optimistic
+// The reservation row itself is version-guarded (ADR 0019, optimistic
 // concurrency) — see StockRepo.Save's doc comment for the verified
 // single-statement ON CONFLICT ... WHERE RowsAffected() semantics this
 // relies on. A stale-version write returns ErrConcurrentModification

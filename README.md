@@ -256,7 +256,15 @@ below).
   a background relay (`OUTBOX_RELAY_INTERVAL`, default `1s`) drains them
   onto Kafka. Without `DATABASE_URL`, `EVENT_PUBLISHER=kafka` publishes
   directly (no outbox, no transactional guarantee) — the in-memory repos
-  have nothing to commit atomically with.
+  have nothing to commit atomically with. `cmd/mcp` reads the same
+  `EVENT_PUBLISHER`/`DATABASE_URL`, so an MCP `revoke_reservation` writes the
+  same outbox rows (the relay runs only in `cmd/inventory`).
+- **Housekeeping** (ADR 0026): a background sweeper in `cmd/inventory` deletes
+  `idempotency_keys` older than `IDEMPOTENCY_KEY_TTL` (default `24h`) and
+  *published* `outbox_events` older than `OUTBOX_RETENTION` (default `168h`),
+  every `HOUSEKEEPING_INTERVAL` (default `1h`; `0` disables the sweeper, a `0`
+  TTL/retention keeps that table's rows forever). Unpublished outbox rows are
+  never deleted.
 - **Broker**: `KAFKA_BROKERS` env var, comma-separated, default
   `localhost:9092`. There is one broker platform-wide: the in-cluster Kafka
   deployed by `warehouse-infra`, whose external listener is reachable from

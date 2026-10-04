@@ -70,8 +70,11 @@ response, with `Content-Type: application/problem+json`.**
 3. **Mapping happens exactly once, in the adapter.** `statusFor(err)` chooses
    the status code and `problemFor(err)` chooses the `(type, title)` pair,
    both in `internal/adapters/inbound/http/errors.go`, both switching on
-   `errors.Is` against typed domain and application errors. The two functions
-   mirror each other's groupings one-for-one.
+   `errors.Is` against typed domain and application errors. `statusFor` is a
+   `switch`; `problemFor` is a lookup table (`problemCatalog()`, an ordered
+   slice of `(error, problemInfo)` pairs that `problemFor` walks, first
+   `errors.Is` match wins — order matters, not a map). The two mirror each
+   other's groupings one-for-one.
 4. **Status codes were corrected in the same pass:**
    - `422 Unprocessable Entity` for well-formed but semantically invalid
      *values* (quantity ≤ 0, negative quantity, invalid bin capacity), leaving
@@ -83,8 +86,12 @@ response, with `Content-Type: application/problem+json`.**
    - `409 Conflict` for state conflicts (bin full, exceeds usable, already
      resolved, expired).
 5. **The catalog is documented and enforced.** Every problem type and every
-   status code appears in `apis/openapi.yaml`, which the `api-lint` CI job
-   Spectral-lints on every push and pull request.
+   status code appears in `apis/openapi.yaml` as a response example on the
+   operation(s) that can return it — including the slugs written outside the
+   catalog (`idempotency-key-required` / `idempotency-key-reused`,
+   `counted-quantity-required`, `invalid-report-query`, `report-store-error`)
+   — and the `api-lint` CI job Spectral-lints the spec on every push and
+   pull request.
 
 ## Consequences
 
@@ -94,8 +101,8 @@ response, with `Content-Type: application/problem+json`.**
   distinguishable conditions without parsing English.
 - **One dialect across the platform.** RFC 7807 is a standard with existing
   client-side support; nobody has to learn a bespoke envelope.
-- **The mapping is auditable in one place.** Two functions, side by side, one
-  case per typed error. Adding a domain error without mapping it is visible in
+- **The mapping is auditable in one place.** A function and a table, side by
+  side, one case/row per typed error. Adding a domain error without mapping it is visible in
   review — and falls back to `internal-error` / `500` rather than leaking.
 - **The domain stayed clean.** No aggregate learned about HTTP; the entire
   change was inside the inbound adapter.
@@ -107,9 +114,10 @@ response, with `Content-Type: application/problem+json`.**
 
 - **`type` URIs are now a contract.** Renaming a slug is a breaking change for
   any consumer switching on it, even though the URI resolves to nothing.
-- **Two parallel switch statements to keep in sync.** `statusFor` and
-  `problemFor` must stay aligned; they are deliberately written in the same
-  order with the same groupings, but nothing mechanically enforces it.
+- **A status `switch` and a problem table to keep in sync.** `statusFor`
+  and `problemFor`/`problemCatalog()` must stay aligned; they are
+  deliberately written in the same order with the same groupings, but
+  nothing mechanically enforces it.
 - **`detail` leaks internal error strings.** It is currently `err.Error()`
   verbatim. For an internal service that is a feature (fast debugging); for a
   public API it would need sanitising.

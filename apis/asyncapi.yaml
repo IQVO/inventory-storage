@@ -292,7 +292,7 @@ components:
         `subject` and the Kafka key. wes-work-planning consumes this exact
         `type` to update its `UsableInventoryObserved` read model by SKU. On
         `warehouse.inventory.analytics` (dataschema
-        `...:analytics:StockReserved:v1`, Kafka key = SKU) `data` is
+        `...:analytics:StockReserved:v1`, Kafka key = reservation id — ADR 0021) `data` is
         `{sku, reservation_id, quantity}`.
       contentType: application/cloudevents+json
       tags:
@@ -411,7 +411,7 @@ components:
         because the reservation id is the only identity the event carries.
 
 
-        Published to `warehouse.inventory.analytics` only (subject = reservation id, Kafka key = SKU). Analytics `data`: `{sku, reservation_id, quantity}`.
+        Published to `warehouse.inventory.analytics` only (subject = reservation id, Kafka key = reservation id — ADR 0021). Analytics `data`: `{sku, reservation_id, quantity}`.
       contentType: application/cloudevents+json
       tags:
         - name: reservation

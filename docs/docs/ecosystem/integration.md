@@ -16,7 +16,7 @@ operator needs to run it against the shared broker.
 | **Topic** | `warehouse.inventory.events` |
 | **Events** | `StockReserved`, `ReservationRevoked` |
 | **Client library** | `github.com/segmentio/kafka-go` |
-| **Balancer** | `LeastBytes`, `AllowAutoTopicCreation: true` |
+| **Balancer** | `Hash` (message key = reservation id, [ADR 0021](/docs/adr/0021-kafka-producer-partition-key)), `AllowAutoTopicCreation: true` |
 | **Consumers today** | `wes-work-planning` |
 
 ## What this service consumes

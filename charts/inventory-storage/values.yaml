@@ -157,6 +157,19 @@ config:
   eventPublisher: "log"   # "log" or "kafka"
   migrationsPath: "migrations"
   logLevel: "info"        # debug | info | warn | error
+  # Where cmd/inventory resolves bin -> location classification (ADR-0013 /
+  # ADR-0009). kafka = facility-events cache (needs kafka.enabled),
+  # http = synchronous facility-layout call (needs facilityLayoutBaseUrl),
+  # permissive = accept every bin (rollback / local).
+  locationLookupMode: "permissive"
+  facilityLayoutBaseUrl: ""   # FACILITY_LAYOUT_BASE_URL (LOCATION_LOOKUP_MODE=http)
+  # Transactional-outbox relay poll interval (ADR-0017); OUTBOX_RELAY_INTERVAL.
+  outboxRelayInterval: "1s"
+  # Housekeeping sweeper (ADR-0026): how often it runs, how long an
+  # idempotency key is kept, how long PUBLISHED outbox rows are kept.
+  housekeepingInterval: "1h"
+  idempotencyKeyTtl: "24h"
+  outboxRetention: "168h"
 
 database:
   url: ""

@@ -1,0 +1,61 @@
+---
+id: get-flow-accuracy-freshness
+title: "Freshness lag of the flow-accuracy read model"
+description: "Seconds between now and the newest event the analytics projector has folded into the read model (ADR 0011) — the staleness a consumer of `/reports/flow-accuracy` should expect. Served by the `inventory-reports` deployment. Side-effect-free."
+sidebar_label: "Freshness lag of the flow-accuracy read model"
+hide_title: true
+hide_table_of_contents: true
+api: eJzlWNtuG8kR/ZVCPySkMrzYWWMNOgggy+tEyAYRLAn7YAlgsbvI6VVP97i7htREIJCPyBfmS4LqGd4kO7vY17xYHrKnq/rUOVWn+aRCTRHZBn9p1EytiD+6sDnXuomo24+RUukpJVUoQ0lHW8tSNVPXpIM3CRbEGyIPPmwAvQEuCTxtKDHQmjznD9Cja9nqBHUMP5PmEKHEBMvgDBmwnkNeFwkNVMGQg8H5h08wnb56NYT//Ovf+dvE6EiSAQQdfGoqihCWMJ9EqkPkNFm6sBlhn/scUhkaZ4Aea9I8hmuKazKwaPNuc+slvxDbUf/6HAzVLrQVeVltDY1ouSTNo2UkGt95VSjGVVKzz+pT94q6L1SkVAefKKnZk3o9ncqfU6wumhgFiv7wNnhwuBqrQungmTzLK1jXzupcicnPSd57UkmXVKH8j9ua1EyFhWygClVHqRvbLqrDVV+Po7W+qRYUVaGWIVbIaqZMaBaOXpTy6iQtsB5St5lkSI9Y1Y7U7NX4zXZ79HwaNX+7lQVvvobAzWlxda6LDwwLgi8NRUvmf8BRx7BwVP3hl2E5jfrp4wV8/3b6PQyuuh3gAzFaJ8SL8Nebmys4v7pMQ6AYQ4RUYk0FNIlMXkBrii344EevHx9hV2ZAHUNKwKVNkCiuraYxzCWTOdgE85K5TrPJJG+axgeaJQ4RVzTeYKQyNIlGqU1MVRobWk/+lFyz+vP8XR9WnmQ7E3QjhCQDKMTfp9EXAoLPdN7LeJCGwCUyaPQQiZvowXKxF2eFdW39CpYxVCBZGzChQut7FDjAIDFyk4qcRAFs2dEQnF1TEnYET+BCeGhqYFw4gsG8r9AFMrqwmssq65miRzdBgzVTTBPrF6HxZiIA7dBZhQI6pU/fDDuJRfrS2EhGZJbrW6icgSpUl1eus9RR1HcqhI4Pe14kjtavjiXQRPuCJudw++kSrCHPdtkKNoJTh4ZGplWILQxMoJQp64mMoBQpBbem4Rhuvf3SENQUwdjE1mt+/rr1p4TJJ91rSf1GzkSS/XLZRz7waCn4qu0OsK8AcXryj/aRTAFlU6EfiT5zOVNTVRhbaa0vgTjpCerTIYGMzT6BvlKHDIQOq9N2ZD3/8fWLnD40nfAp5ehZpd1uoIOhrIKOXSuKMNhrvKeNaGV4kuR30++2e8b8IiTSqVJN2i6t7o9eUUq4otwTchGDTJhIXtMpGvFbaFifGL3+FRXpGuWXRuZnjVx2Uq5jMI0W2kn4nNVp5GMmpIlQNfOBHm1itT0QQvWNUJ128j6n38xCmYV5EY3yu+oQsDuQLDjt+ikP44OmZ2+m00OV1NGwaDyu0TrsRtcBSvX1sT9Z7j1LP5Eq4jL05kZGJ3L5a94uVM4xyrx/Uk10PUKzycQFja4MiWdvp2+nL4r4o3wNhtbkQi2EVNt7yXwZMtg9Mpc7eOF3cN0BLONIFUqCdju9Gk/HL/cXTH/6+/WILUXAhssQLSPbtUCtQzQi3Y0QxyYoyRnYlBSpmwH5czm5sDQsweZVTRJ8i57jBC8qDbVDFumO4UZImFs5Gcgj+5HBCpfkrAnOK/xn8KPErSPQJQa2GgYRvQnVEBKHzUxiRJLAPsBSulDPcQbBNucmti8rPYcCy1RBhW0mD4fNzjeib0H8GSys3025Q6PtAel6CT2iZlknh3boO+85hkuG1IjfoAR3KnHQD+JWnOX2TkHvTX8K8QGuHHovE+L58SVuhQ+UAN3+BDKt10Hnpnok0AJSAIQlWifnLttkhS+11Q8QIhiSSSvOQ5wAJBbkctML0VCcdSZg32hkzKPbYCtePAd8EK/gDUQaJWSbllYMjYx7BGOXS+rM6C5uGZyxfjW+83f+khPgahVplRswRoKzs2sB5NZbPjuDAcKXBj1bzvMB4fpvt4AMeGiagq/UrvMx+zC5fmL6cxVcm23Egw8b31UuRKHD0uFqRQZufUaRzLCAs7P31k9+7FHtkpBRYCC5wLCxXPYc0lijtty+y6yQ1IQw0q7r9hlRel7uWhtktg47Ap2dHc21Lt6hkAvrBS45/R4JDmCoQm+KLhsEthWFhodjuFO3WVt3CvYNNeMT/KjMtLG+SYC61++hj/ffiIAnzQ4P6OgpG9jUiVnuQhzR+v75hP8b6xw4YmhD0+9ORW7CETf7HHYnyST4R8Pd7D9s8/te8BjbmYhnb4aEtAXUKP+m0tYFxNCwTOkUtBUS5cpW6DuQ+wnFmB7SxOEiRBhw36lOFTaBZeOW1jlpKiN6JN3Iu8N3uUTHORjS1hCcyeHPOmemScAMUfoZaUzc12cM7wUm4XWklU1MUfwvaYcxN1DXyv3wUCjRdwwO1hZhfnV7A5OF9WnytLD+0mznu2vq6zfDnXE/1uZRL/BY9Y5G9MGhk3tW5WB+WJc+34/z3vPhGH7I9mN/vzy5eZxfXcpNBQ53nPm3rkzzITy7/3T2U86GOt+2JLtvjKTBRYgE7/t+d9H1u2E2FXVIXKE/2mD/e0G+SfYG8mTAHl0Dn8+1p8P97//254XOiAnEk9qh9WLUsvV46n3LZ9VvJ076OB953nuX+0KJPZHlT08LTHQb3XYrH8ttu1Wzz/eFWmO02VXNPt9vC1USGorZ7DxQK/cirakWx7RG10haL36iEFuzd1d/+eFGbbf/BTh9ha4=
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Freshness lag of the flow-accuracy read model"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/reports/flow-accuracy/freshness"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Seconds between now and the newest event the analytics projector has folded into the read model (ADR 0011) — the staleness a consumer of `/reports/flow-accuracy` should expect. Served by the `inventory-reports` deployment. Side-effect-free.
+
+
+<ParamsDetails>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-flow-accuracy-freshness.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-flow-accuracy-freshness.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

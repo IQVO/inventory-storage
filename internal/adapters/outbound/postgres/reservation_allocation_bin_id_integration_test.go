@@ -195,7 +195,7 @@ func TestPostgres_Migration0008_BackfillsAllocationBinID(t *testing.T) {
 }
 
 // RegisterBin's resize persists through the version-guarded
-// LocationRepo.Save (ADR 0018): a resize bumps the version and keeps
+// LocationRepo.Save (ADR 0019): a resize bumps the version and keeps
 // occupancy intact.
 func TestPostgres_LocationRepo_Resize_Persists(t *testing.T) {
 	pool := outboxDB(t)
