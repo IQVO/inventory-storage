@@ -8,6 +8,14 @@ data:
   HTTP_ADDR: {{ .Values.config.httpAddr | quote }}
   EVENT_PUBLISHER: {{ .Values.config.eventPublisher | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  LOCATION_LOOKUP_MODE: {{ .Values.config.locationLookupMode | quote }}
+  {{- if .Values.config.facilityLayoutBaseUrl }}
+  FACILITY_LAYOUT_BASE_URL: {{ .Values.config.facilityLayoutBaseUrl | quote }}
+  {{- end }}
+  OUTBOX_RELAY_INTERVAL: {{ .Values.config.outboxRelayInterval | quote }}
+  HOUSEKEEPING_INTERVAL: {{ .Values.config.housekeepingInterval | quote }}
+  IDEMPOTENCY_KEY_TTL: {{ .Values.config.idempotencyKeyTtl | quote }}
+  OUTBOX_RETENTION: {{ .Values.config.outboxRetention | quote }}
   ENVIRONMENT: {{ .Values.environment | quote }}
   {{- if .Values.otel.enabled }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}
