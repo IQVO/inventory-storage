@@ -1,3 +1,8 @@
+---
+paths:
+  - "web/**"
+---
+
 # Frontend micro-frontend remote (`web/`)
 
 This repo also owns `web/`: `inventory-mfe`, a Vite + React Module
