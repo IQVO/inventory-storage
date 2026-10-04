@@ -150,7 +150,7 @@ can never overtake an earlier one for the same key. `Run` polls every
 `OUTBOX_RELAY_INTERVAL` (default 1s), or immediately again with no wait
 when a pass claims a full batch.
 
-### Composition root (`cmd/inventory/main.go` only)
+### Composition roots (`cmd/inventory/main.go` and `cmd/mcp/main.go`)
 
 | `DATABASE_URL` | `EVENT_PUBLISHER` | publisher wired | relay |
 |----------------|-------------------|------------------|-------|
@@ -159,12 +159,19 @@ when a pass claims a full batch.
 | set | `log` | log | no |
 | set | `kafka` | `OutboxPublisher(pool, integration, analytics)` | yes |
 
-Only `cmd/inventory/main.go` wires this — `cmd/mcp/main.go` never
-constructs a real event publisher (it only ever uses the log publisher),
-so it has no transactional write path to protect. The relay runs as a
-goroutine alongside the HTTP server; on shutdown its context is cancelled
-and the composition root waits for its current pass to finish before
-closing the pool/writers.
+`cmd/mcp/main.go` applies the **same table** (same `EVENT_PUBLISHER` /
+`DATABASE_URL` / `KAFKA_BROKERS` selection, a `UnitOfWork`, and the
+`ReservationMetrics`) so an MCP-initiated `revoke_reservation` is
+exactly as durable as `DELETE /reservations/{id}`: with a database and
+`EVENT_PUBLISHER=kafka` it writes one outbox row per topic in the
+revocation's transaction. The **relay runs only in `cmd/inventory`**; it
+drains the shared `outbox_events` table, so the MCP pod needs no broker
+connection in that configuration. This is proven by
+`TestMCPRevokeReservation_WritesOutboxRowsOnBothTopics`
+(`cmd/mcp/outbox_integration_test.go`, testcontainers Postgres). The
+relay runs as a goroutine alongside the inventory HTTP server; on
+shutdown its context is cancelled and the composition root waits for its
+current pass to finish before closing the pool/writers.
 
 ## Delivery semantics
 

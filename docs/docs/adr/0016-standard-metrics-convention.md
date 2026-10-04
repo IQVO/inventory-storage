@@ -7,7 +7,7 @@ sidebar_position: 16
 description: Fleet-wide decision establishing a mandatory Tier 1 telemetry baseline and a Tier 2 business-metric naming convention; this service is already compliant and serves as the reference implementation for inventory.reservations and telemetry.Setup.
 ---
 
-# 0013. Standard metrics convention across the fleet
+# 0016. Standard metrics convention across the fleet
 
 ## Status
 
@@ -80,7 +80,15 @@ source first.
    r.Use(middleware.Recoverer)
    ```
    This is the ONLY sanctioned way to get request rate/error/duration — no
-   service hand-rolls its own HTTP counter.
+   service hand-rolls its own HTTP counter. In `inventory-storage` this
+   applies to **every** HTTP router: the REST router (`NewRouter`), the
+   reports router (`NewReportsRouter`) and the MCP server's chi router
+   (`cmd/mcp/main.go` `newRouter`, which has no request logger/recoverer
+   but keeps the otelchi → otelchimetric order). Each router also adds
+   `otelchimetric.NewServerActiveRequests` for
+   `http.server.active_requests`. Proven by
+   `TestNewRouter_EmitsStandardHTTPServerMetrics` (`cmd/mcp`) and
+   `standard_metrics_test.go` (reports router).
 3. **Health endpoint.** `GET /healthz` returning `{"status":"ok"}`. Already
    universal; noted here because Prometheus's own liveness assumptions and
    the Kong route depend on it existing, so it is now part of the same
