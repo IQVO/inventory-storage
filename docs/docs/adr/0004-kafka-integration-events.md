@@ -110,8 +110,10 @@ using a platform-wide envelope.**
 - **At-least-once delivery is now every consumer's problem.** Consumers must
   deduplicate; `wes-work-planning` does so with a `processed_events` table
   keyed by event id.
-- **No ordering guarantee.** The `LeastBytes` balancer with no partition key
-  means no per-SKU ordering. Acceptable for an increment/decrement projection,
+- **No ordering guarantee** *(as originally accepted; superseded by
+  [ADR-0021](./0021-kafka-producer-partition-key.md): messages are now keyed
+  by reservation id and routed by `Hash`, giving per-reservation ordering)*.
+  The `LeastBytes` balancer with no partition key meant no per-SKU ordering. Acceptable for an increment/decrement projection,
   but it is why the REST read remains authoritative.
 - **Publish failures fail the request.** `Publish` errors propagate out of the
   use case, so a broker outage surfaces as a `500`. That is the honest
