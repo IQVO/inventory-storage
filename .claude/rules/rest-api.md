@@ -1,3 +1,10 @@
+---
+paths:
+  - "internal/adapters/inbound/http/**"
+  - "apis/openapi*.yaml"
+  - "apis/openapi/**"
+---
+
 # REST API (inbound adapter)
 
 - `POST /stock/receive`                        -> ReceiveStock
