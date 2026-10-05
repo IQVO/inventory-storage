@@ -100,6 +100,7 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | reservation id |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.bin.CycleCountCompleted` | bin id |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | bin id |
+| _(none: in-process only, never published)_ | `com.warehouse.wms.inventory-storage.stock.LocationRecorded` | _n/a_ |
 
 `ProductClassified` (`internal/domain/product`) is a domain event delivered
 in-process only; neither Kafka publisher forwards it, so it has no wire
