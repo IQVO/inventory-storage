@@ -459,3 +459,69 @@ func TestPostgresIntegrationDetector(t *testing.T) {
 		})
 	}
 }
+
+// domainWireTagRE matches a struct tag carrying a json or db key inside a
+// raw string literal (`json:"x"`, `db:"y"`, or several keys in one tag).
+var domainWireTagRE = regexp.MustCompile("`[^`]*\\b(json|db):\"")
+
+// domainTagViolations returns one message per line of a non-test domain
+// source file that carries a `json:"..."`/`db:"..."` struct tag. Wire and
+// persistence shapes are adapter concerns (tier-2 item 1a): the domain
+// stays free of serialisation tags, and adapters own DTOs with explicit
+// mapping. Comment lines are skipped. There are currently no whitelisted
+// exceptions.
+func domainTagViolations(path, content string) []string {
+	var out []string
+	for i, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		if domainWireTagRE.MatchString(line) {
+			out = append(out, fmt.Sprintf("%s:%d carries a json/db struct tag (%s).", path, i+1, strings.TrimSpace(line)))
+		}
+	}
+	return out
+}
+
+// TestDomainHasNoWireStructTags: nothing under internal/domain/** may carry
+// `json:"` / `db:"` struct tags. Serialisation belongs to the adapters (the
+// CloudEvents/Kafka publishers and the log publisher own their DTOs).
+func TestDomainHasNoWireStructTags(t *testing.T) {
+	for _, path := range goFilesUnder(t, "../domain", false) {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, v := range domainTagViolations(path, string(src)) {
+			t.Errorf("%s", archViolation("contents", "domain types carry no json/db struct tags", v+
+				" FIX: declare an adapter-owned DTO with the tags next to the serialiser and map the domain type to it explicitly."))
+		}
+	}
+}
+
+// The detector itself, so the sensor cannot quietly become a test that
+// always passes: each bad fixture must be flagged, each good one not.
+func TestDomainWireTagDetector(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    int
+	}{
+		{"json tag is flagged", "type E struct {\n	Name string `json:\"eventName\"`\n}\n", 1},
+		{"db tag is flagged", "type R struct {\n	ID string `db:\"id\"`\n}\n", 1},
+		{"json tag with options is flagged", "type E struct {\n	At time.Time `json:\"at,omitempty\"`\n}\n", 1},
+		{"multi-key tag is flagged", "type E struct {\n	ID string `yaml:\"id\" json:\"id\"`\n}\n", 1},
+		{"one violation per offending line", "type E struct {\n	A string `json:\"a\"`\n	B string `json:\"b\"`\n}\n", 2},
+		{"untagged struct is clean", "type E struct {\n	Name string\n	At   time.Time\n}\n", 0},
+		{"comment mentioning a tag is ignored", "// Name was `json:\"eventName\"` before the adapter DTOs.\ntype E struct{ Name string }\n", 0},
+		{"non-wire tag is clean", "type E struct {\n	Name string `validate:\"required\"`\n}\n", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := domainTagViolations("fixture.go", tc.content)
+			if len(got) != tc.want {
+				t.Fatalf("want %d violation(s), got %d: %v", tc.want, len(got), got)
+			}
+		})
+	}
+}

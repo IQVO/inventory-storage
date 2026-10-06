@@ -1,0 +1,79 @@
+{
+  "CycleCountCompleted": {
+    "eventName": "CycleCountCompleted",
+    "occurredAt": "2026-08-21T22:00:00Z",
+    "BinID": "A-1-1",
+    "CountedQty": 5,
+    "SystemQty": 7,
+    "Discrepancy": true
+  },
+  "DiscrepancyDetected": {
+    "eventName": "DiscrepancyDetected",
+    "occurredAt": "2026-08-21T22:00:00Z",
+    "BinID": "A-1-1",
+    "CountedQty": 5,
+    "SystemQty": 7
+  },
+  "ItemStowed": {
+    "eventName": "ItemStowed",
+    "occurredAt": "2026-08-21T22:00:00Z",
+    "SKU": "SKU-1",
+    "BinID": "A-1-1",
+    "Quantity": 5
+  },
+  "ItemUnlocated": {
+    "eventName": "ItemUnlocated",
+    "occurredAt": "2026-08-21T22:00:00Z",
+    "StockUnitID": "su-1",
+    "SKU": "SKU-1",
+    "BinID": "A-1-1",
+    "Quantity": 5
+  },
+  "LocationRecorded": {
+    "eventName": "LocationRecorded",
+    "occurredAt": "2026-08-21T22:00:00Z",
+    "StockUnitID": "su-1",
+    "BinID": "A-1-1"
+  },
+  "ProductClassified": {
+    "SKU": "SKU-1",
+    "HandlingTags": [
+      "Hazmat",
+      "TemperatureSensitive"
+    ],
+    "TemperatureClass": "Chilled",
+    "DOTHazardClass": 3,
+    "At": "2026-08-21T22:00:00Z"
+  },
+  "ReservationExpired": {
+    "eventName": "ReservationExpired",
+    "occurredAt": "2026-08-21T22:00:00Z",
+    "ReservationID": "res-1"
+  },
+  "ReservationRevoked": {
+    "eventName": "ReservationRevoked",
+    "occurredAt": "2026-08-21T22:00:00Z",
+    "ReservationID": "res-1"
+  },
+  "StockPicked": {
+    "eventName": "StockPicked",
+    "occurredAt": "2026-08-21T22:00:00Z",
+    "ReservationID": "res-1",
+    "SKU": "SKU-1",
+    "Quantity": 5
+  },
+  "StockReceived": {
+    "eventName": "StockReceived",
+    "occurredAt": "2026-08-21T22:00:00Z",
+    "SKU": "SKU-1",
+    "Quantity": 5
+  },
+  "StockReserved": {
+    "eventName": "StockReserved",
+    "occurredAt": "2026-08-21T22:00:00Z",
+    "ReservationID": "res-1",
+    "SKU": "SKU-1",
+    "Quantity": 5,
+    "DemandRef": "order-42"
+  }
+}

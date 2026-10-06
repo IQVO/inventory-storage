@@ -4,10 +4,10 @@
 // three protected aggregates (StockUnit, Bin, Reservation): a Save with a
 // stale version must fail with usecases.ErrConcurrentModification and
 // leave the row untouched; a Save with the current version must succeed
-// and increment the persisted version. Every test here boots its own
-// throwaway Postgres via testcontainers (outboxDB, shared with
-// outbox_integration_test.go) — never an external DATABASE_URL, never
-// t.Skip.
+// and increment the persisted version. Every test here runs on its own
+// private database in the package's shared testcontainers Postgres
+// (outboxDB, testdb_integration_test.go) — never an external DATABASE_URL,
+// never t.Skip.
 package postgres_test
 
 import (

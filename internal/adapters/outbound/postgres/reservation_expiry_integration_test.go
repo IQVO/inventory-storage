@@ -33,10 +33,7 @@ func (c *fixedClock) Now() time.Time { return c.t }
 // postgres.UnitOfWork so the reservation update and the outbox insert
 // commit in the one transaction the use case's atomically() call opens.
 func TestPostgres_LazyReservationExpiry_PersistsAndWritesOutbox(t *testing.T) {
-	databaseURL := postgresURL(t)
-	if err := postgres.RunMigrations(databaseURL, migrationsDir(t)); err != nil {
-		t.Fatalf("unexpected error running migrations: %v", err)
-	}
+	databaseURL := migratedDB(t)
 
 	ctx := context.Background()
 	pool, err := postgres.NewPool(ctx, databaseURL)
@@ -155,10 +152,7 @@ func TestPostgres_LazyReservationExpiry_PersistsAndWritesOutbox(t *testing.T) {
 // before its timeout must leave both the reservations row and the stock
 // unit's reserved quantity untouched, and must not write an outbox row.
 func TestPostgres_LazyReservationExpiry_NotYetExpired_LeavesReservationActive(t *testing.T) {
-	databaseURL := postgresURL(t)
-	if err := postgres.RunMigrations(databaseURL, migrationsDir(t)); err != nil {
-		t.Fatalf("unexpected error running migrations: %v", err)
-	}
+	databaseURL := migratedDB(t)
 
 	ctx := context.Background()
 	pool, err := postgres.NewPool(ctx, databaseURL)

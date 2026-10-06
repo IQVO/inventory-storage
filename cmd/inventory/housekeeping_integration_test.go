@@ -40,10 +40,11 @@ func TestBuildAdapters_StartsHousekeepingSweeperFromEnv(t *testing.T) {
 	t.Setenv("IDEMPOTENCY_KEY_TTL", "1h")
 	t.Setenv("OUTBOX_RETENTION", "1h")
 
-	_, _, _, _, _, _, _, closeAdapters, err := buildAdapters(ctx, url, url, migrationsDirForTest(t), "log", quietLogger())
+	adapters, err := buildAdapters(ctx, url, url, migrationsDirForTest(t), "log", quietLogger())
 	if err != nil {
 		t.Fatalf("buildAdapters: %v", err)
 	}
+	closeAdapters := adapters.close
 	closed := false
 	t.Cleanup(func() {
 		if !closed {

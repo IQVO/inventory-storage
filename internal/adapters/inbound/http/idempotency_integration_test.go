@@ -4,9 +4,10 @@
 // (docs/docs/adr/0018-idempotency-key-middleware.md) against a real
 // Postgres 16, through the REAL chi router (inboundhttp.NewRouter) over
 // real net/http requests — not the middleware's internals in isolation.
-// Testcontainers-only: the test boots and owns its own disposable
-// Postgres, never reads DATABASE_URL or hardcodes localhost, so CI cannot
-// silently skip this contract. Ported from order-management PR #105 (ADR
+// Testcontainers-only: the package's TestMain boots one disposable Postgres
+// and each test gets a private database cloned from a migrated template
+// (testdb_integration_test.go); never reads DATABASE_URL or hardcodes
+// localhost, so CI cannot silently skip this contract. Ported from order-management PR #105 (ADR
 // 0023) and extended to cover BOTH of this service's protected routes:
 // POST /stock/receive (handleReceiveStock) and POST /reservations
 // (handleReserveStock).
@@ -25,8 +26,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
@@ -37,46 +36,6 @@ import (
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
 )
-
-// idempotencyDB boots a throwaway Postgres (testcontainers — the test
-// owns its own database, never an external DATABASE_URL) and runs every
-// migration in this repo, including the idempotency_keys one.
-func idempotencyDB(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx, "postgres:16-alpine",
-		tcpostgres.WithDatabase("inventory"),
-		tcpostgres.WithUsername("inventory"),
-		tcpostgres.WithPassword("inventory"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
-	}
-	t.Cleanup(func() { _ = testcontainers.TerminateContainer(container) })
-
-	url, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("connection string: %v", err)
-	}
-	if err := postgres.RunMigrations(url, migrationsDirForIdempotencyTest(t)); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	pool, err := postgres.NewPool(ctx, url)
-	if err != nil {
-		t.Fatalf("open pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-// migrationsDirForIdempotencyTest resolves /migrations relative to this
-// test file — package http_test (external test package, different from
-// postgres_test's own migrationsDir helper) needs its own copy.
-func migrationsDirForIdempotencyTest(t *testing.T) string {
-	t.Helper()
-	return "../../../../migrations"
-}
 
 // countingPublisher wraps a real ports.EventPublisher and counts how many
 // times Publish is actually invoked, keyed by event name — used by the

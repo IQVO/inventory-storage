@@ -16,34 +16,19 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
 )
 
-// poolLimitsDB boots a throwaway Postgres (own container, never an external
-// DATABASE_URL) for tests that only need a bare connection — no migrations,
-// since these tests exercise pool-level settings, not schema.
+// poolLimitsDB returns a private, empty database in the package's shared
+// testcontainers Postgres (never an external DATABASE_URL) for tests that
+// only need a bare connection — no migrations, since these tests exercise
+// pool-level settings, not schema. They need no container of their own:
+// statement_timeout and MaxConns are per-pool, so an empty database of
+// their own is as pristine as a fresh container.
 func poolLimitsDB(t *testing.T) string {
 	t.Helper()
-	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx, "postgres:16-alpine",
-		tcpostgres.WithDatabase("inventory"),
-		tcpostgres.WithUsername("inventory"),
-		tcpostgres.WithPassword("inventory"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
-	}
-	t.Cleanup(func() { _ = testcontainers.TerminateContainer(container) })
-
-	url, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("connection string: %v", err)
-	}
-	return url
+	return emptyDB(t)
 }
 
 // TestNewPool_AppliesStatementTimeoutToNewConnections is the core claim:
