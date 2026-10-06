@@ -25,6 +25,7 @@ flowchart LR
     R["Read Model"]:::readmodel
     X["External System"]:::external
     H["Hotspot"]:::hotspot
+    D["Decided hotspot"]:::decided
     classDef actor fill:#fff59d,stroke:#b59f00,color:#000,font-size:11px
     classDef command fill:#4aa3df,stroke:#1f6f9f,color:#000
     classDef aggregate fill:#f7d84a,stroke:#a68b00,color:#000
@@ -33,6 +34,7 @@ flowchart LR
     classDef readmodel fill:#7dcea0,stroke:#1e8449,color:#000
     classDef external fill:#f1948a,stroke:#922b21,color:#000
     classDef hotspot fill:#e74c3c,stroke:#78281f,color:#fff
+    classDef decided fill:#a9dfbf,stroke:#1e8449,color:#000
 ```
 
 ## Process 1 — Inbound: register, classify, receive, stow
@@ -48,6 +50,7 @@ flowchart LR
     CP["ClassifyProduct"]:::command
     PC["ProductClassification"]:::aggregate
     PCE["ProductClassified"]:::event
+    OUT["Outbox rows, both topics<br/>warehouse.inventory.events<br/>warehouse.inventory.analytics<br/>ADR 0031"]:::external
     RS["ReceiveStock"]:::command
     SRE["StockReceived"]:::event
     SS["StowStock"]:::command
@@ -55,15 +58,14 @@ flowchart LR
     SEG["Same-bin DOT segregation"]:::policy
     SU["StockUnit"]:::aggregate
     IS["ItemStowed"]:::event
-    LR["LocationRecorded"]:::event
+    LR["LocationRecorded<br/>in-process only, no consumer"]:::event
     H1["Bin id never checked against<br/>facility-layout slot catalogue"]:::hotspot
     H2["Fragile, Oversized, HighValue<br/>have no placement rule"]:::hotspot
-    H3["Default LOCATION_LOOKUP_MODE=permissive<br/>enforces no placement at all"]:::hotspot
-    H4["ProductClassified is never published,<br/>siblings poll REST"]:::hotspot
+    H3["Decided 2026-10-06: default LOCATION_LOOKUP_MODE<br/>kept permissive (ADR 0013/0020)<br/>cold-cache safety, cluster injects kafka"]:::decided
 
     FL --> ZE --> CACHE
     IC --> RB --> BIN
-    IC --> CP --> PC --> PCE
+    IC --> CP --> PC --> PCE --> OUT
     IC --> RS --> SRE
     IC --> SS --> PLC
     CACHE --> PLC
@@ -74,7 +76,6 @@ flowchart LR
     RB -.- H1
     PLC -.- H2
     PLC -.- H3
-    PCE -.- H4
 
     classDef actor fill:#fff59d,stroke:#b59f00,color:#000,font-size:11px
     classDef command fill:#4aa3df,stroke:#1f6f9f,color:#000
@@ -84,11 +85,14 @@ flowchart LR
     classDef readmodel fill:#7dcea0,stroke:#1e8449,color:#000
     classDef external fill:#f1948a,stroke:#922b21,color:#000
     classDef hotspot fill:#e74c3c,stroke:#78281f,color:#fff
+    classDef decided fill:#a9dfbf,stroke:#1e8449,color:#000
 ```
 
 Source: `internal/application/usecases/register_bin.go`, `classify_product.go`,
 `receive_stock.go`, `stow_stock.go`, `internal/adapters/outbound/facilitycache/consumer.go`,
-`internal/domain/product/segregation.go`.
+`internal/domain/product/segregation.go`,
+`internal/adapters/outbound/kafka/publisher.go` and `analytics_publisher.go`
+(`ProductClassified`).
 Omitted: the rejection paths (they raise no event) and the HTTP fallback
 lookup.
 
@@ -114,9 +118,10 @@ flowchart LR
     WP["wes-work-planning"]:::external
     UI["Usable inventory per SKU"]:::readmodel
     RBD["Reservations by demandRef"]:::readmodel
-    H5["No background sweeper, an unread<br/>expired hold keeps stock until read"]:::hotspot
+    FE["fulfillment-execution"]:::external
+    H5["Decided 2026-10-06: lazy expiry kept (ADR 0003)<br/>no sweeper; an unread expired hold<br/>keeps stock until read"]:::decided
     H6["Replay guard is best-effort,<br/>concurrent first attempts can both pass"]:::hotspot
-    H7["No sibling context calls confirm-pick"]:::hotspot
+    H7["Decided 2026-10-06: confirm-pick is event-driven<br/>pick-completion event, no sync call (ADR 0032, Proposed)<br/>blocked on fields in fulfillment-execution / wes-work-planning"]:::decided
 
     OM --> RSV --> RG --> RES
     RES --> SU
@@ -127,6 +132,7 @@ flowchart LR
     REV --> RES
     RES --> RR --> WP
     PK --> CPK --> LE
+    FE -.->|"pick-completion event<br/>planned, ADR 0032"| CPK
     CPK --> RES
     CPK --> BIN
     RES --> SP
@@ -145,6 +151,7 @@ flowchart LR
     classDef readmodel fill:#7dcea0,stroke:#1e8449,color:#000
     classDef external fill:#f1948a,stroke:#922b21,color:#000
     classDef hotspot fill:#e74c3c,stroke:#78281f,color:#fff
+    classDef decided fill:#a9dfbf,stroke:#1e8449,color:#000
 ```
 
 Source: `internal/application/usecases/reserve_stock.go`,
@@ -215,7 +222,7 @@ Omitted: the clean-count branch (only `CycleCountCompleted` with
 | Usable inventory per SKU | Read Model | `usecases.GetUsable` |
 | Reservations by demandRef | Read Model | `usecases.GetReservationsByDemandRef` |
 | Flow and Accuracy report | Read Model | `internal/analytics/report`, table `flow_accuracy_rollup` |
-| facility-layout, order-management, wes-work-planning, warehouse-ops-agent | External System | see the [Context Map](/docs/ecosystem/context-map) |
+| facility-layout, order-management, wes-work-planning, fulfillment-execution, warehouse-ops-agent | External System | see the [Context Map](/docs/ecosystem/context-map) |
 
 ## Hotspots and where they are documented
 
@@ -223,9 +230,9 @@ Omitted: the clean-count branch (only `CycleCountCompleted` with
 | --- | --- | --- |
 | H1 | A bin id is never validated against facility-layout's slot catalogue | [Context Map](/docs/ecosystem/context-map), "What is still not built" |
 | H2 | `Fragile`, `Oversized`, `HighValue` carry no placement rule | [Context Map](/docs/ecosystem/context-map); ADR 0009 |
-| H3 | The binary default `LOCATION_LOOKUP_MODE=permissive` enforces no placement rule | `cmd/inventory/main.go` `buildLocationLookup`; ADR 0013 |
-| H4 | `ProductClassified` is raised but never published | `analytics_publisher.go` and `publisher.go` encoders; [Domain Events](./domain-events.md) |
-| H5 | No background sweeper for timed-out reservations | [Domain Events](./domain-events.md#lazy-expiry-no-sweeper-resolved-at-the-next-read); ADR 0003 |
+| H3 | **Decided 2026-10-06: kept permissive** (ADR 0013/0020) — the binary default `LOCATION_LOOKUP_MODE=permissive` stays: a cold facility cache would reject every receipt, and the cluster already injects `kafka` | `cmd/inventory/main.go` `buildLocationLookup`; ADR 0013, ADR 0020 |
+| H4 | ~~`ProductClassified` is raised but never published~~ **Resolved 2026-10-06**: published through the outbox on both topics (ADR 0031); `LocationRecorded` stays in-process (no consumer) | [ADR 0031](/docs/adr/0031), [Domain Events](./domain-events.md) |
+| H5 | **Decided 2026-10-06: kept** (ADR 0003) — no background sweeper for timed-out reservations; expiry stays lazy | [Domain Events](./domain-events.md#lazy-expiry-no-sweeper-resolved-at-the-next-read); ADR 0003 |
 | H6 | The `ReserveStock` replay guard is best-effort under concurrency | code comment on `activeReservationFor` in `reserve_stock.go` |
-| H7 | No sibling context calls `confirm-pick` | [Context Relationships](./context-relationships.md) |
+| H7 | **Decided 2026-10-06: event-driven** (ADR 0032, *Proposed*) — picks are confirmed from a pick-completion event published by fulfillment-execution, never a sync REST/MCP call; blocked on fields that event does not carry yet | [ADR 0032](/docs/adr/0032), [Context Relationships](./context-relationships.md) |
 | H8 | Cycle-count overage is reported, never reconciled | `run_cycle_count.go` comment; [Use Cases](./use-cases.md) |
