@@ -40,7 +40,8 @@ help:
 	@echo "  test           go test ./... -race — unit + httptest + bdd, no DB needed"
 	@echo "  coverage       CI coverage command + the $(COVERAGE_THRESHOLD)% gate"
 	@echo "  integration    go test -tags=integration ./... -race -count=1"
-	@echo "                 (needs a running Postgres and DATABASE_URL set; not in check)"
+	@echo "                 (needs Docker: every test boots its own Postgres/Kafka via"
+	@echo "                  testcontainers; no DATABASE_URL; not in check)"
 	@echo "  bdd            go test ./... -run TestFeatures -v — godog/Gherkin acceptance"
 	@echo "  contract       scripts/contract-test.sh — Schemathesis vs apis/openapi.yaml"
 	@echo "                 (boots the service in-memory; needs st: pip install"
@@ -93,9 +94,8 @@ coverage:
 		exit 1; \
 	fi
 
-# Needs a running Postgres and DATABASE_URL, e.g.
-#   docker compose up -d postgres
-#   DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable' make integration
+# Needs Docker only: every integration test boots its own Postgres/Kafka via
+# testcontainers (no external DATABASE_URL, no `docker compose up`).
 # Deliberately NOT part of `check` / `check-all`.
 integration:
 	$(GO) test -tags=integration ./... -race -count=1

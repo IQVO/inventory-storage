@@ -4,10 +4,12 @@ package postgres_test
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/testcontainers/testcontainers-go"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
@@ -25,27 +27,38 @@ func migrationsDir(t *testing.T) string {
 	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..", "migrations")
 }
 
-func requireDatabaseURL(t *testing.T) string {
+// postgresURL boots a throwaway Postgres via testcontainers (the test owns
+// its own database end to end — never an external DATABASE_URL, never
+// t.Skip), registers its termination with t.Cleanup, and returns the
+// connection URL of the EMPTY database (no migrations applied). Tests that
+// need a migrated schema and a pool use outboxDB(t) instead.
+func postgresURL(t *testing.T) string {
 	t.Helper()
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		t.Skip("DATABASE_URL not set; skipping Postgres integration test")
+	ctx := context.Background()
+	container, err := tcpostgres.Run(ctx, "postgres:16-alpine",
+		tcpostgres.WithDatabase("inventory"),
+		tcpostgres.WithUsername("inventory"),
+		tcpostgres.WithPassword("inventory"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		t.Fatalf("start postgres container: %v", err)
+	}
+	t.Cleanup(func() { _ = testcontainers.TerminateContainer(container) })
+
+	url, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("connection string: %v", err)
 	}
 	return url
 }
 
+// TestPostgres_BinRoundTrip boots its own throwaway, fully-migrated Postgres
+// via outboxDB (testcontainers) — never an external DATABASE_URL, never
+// t.Skip.
 func TestPostgres_BinRoundTrip(t *testing.T) {
-	databaseURL := requireDatabaseURL(t)
-	if err := postgres.RunMigrations(databaseURL, migrationsDir(t)); err != nil {
-		t.Fatalf("unexpected error running migrations: %v", err)
-	}
-
+	pool := outboxDB(t)
 	ctx := context.Background()
-	pool, err := postgres.NewPool(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("unexpected error opening pool: %v", err)
-	}
-	defer pool.Close()
 
 	repo := postgres.NewLocationRepo(pool)
 	binID, _ := shared.NewBinId("IT-BIN-1")
