@@ -26,7 +26,7 @@ type Bin struct {
 	capacity shared.Quantity
 	occupied shared.Quantity
 	// version is optimistic-concurrency infrastructure metadata (ADR
-	// 0018) — inert, never reasoned about by business logic.
+	// 0019) — inert, never reasoned about by business logic.
 	version int
 }
 

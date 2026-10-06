@@ -160,10 +160,10 @@ sequenceDiagram
             alt sum of usable below qty
                 H-->>C: 409 insufficient-usable
             else covered
-                UC->>SR: Save each touched StockUnit, joins the middleware tx
                 UC->>RR: NextID()
                 UC->>RES: reservation.New(id, sku, qty, demandRef, allocations, now, 30m)
                 rect rgb(235, 235, 235)
+                    UC->>SR: Save each touched StockUnit
                     UC->>RR: Save(reservation)
                     UC->>OB: Publish StockReserved
                     Note over OB: two rows, warehouse.inventory.events and warehouse.inventory.analytics, key = reservation id
@@ -180,9 +180,10 @@ sequenceDiagram
 Source: `internal/application/usecases/reserve_stock.go`,
 `reservation_expiry.go`, `internal/adapters/inbound/http/server.go`
 (`handleReserveStock`), `internal/adapters/outbound/kafka/publisher.go`.
-Note: the touched `StockUnit` saves happen before the use case's own
-`UnitOfWork` opens; on this REST path they are atomic with the reservation
-only because the middleware's transaction is already on the context.
+Note: the touched `StockUnit` saves, the reservation save and the publish all
+run inside the use case's own `UnitOfWork` scope, so they commit or roll back
+together whether or not an outer (middleware) transaction is on the context.
+The grey block is that scope.
 Omitted: `ErrConcurrentModification` (409) on a racing unit save.
 
 ## 4. RevokeReservation — `DELETE /reservations/{id}` and MCP `revoke_reservation`
