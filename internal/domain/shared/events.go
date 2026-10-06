@@ -11,8 +11,8 @@ type DomainEvent interface {
 }
 
 type base struct {
-	Name string    `json:"eventName"`
-	At   time.Time `json:"occurredAt"`
+	Name string
+	At   time.Time
 }
 
 func (b base) EventName() string     { return b.Name }
@@ -138,4 +138,65 @@ type DiscrepancyDetected struct {
 
 func NewDiscrepancyDetected(occurredAt time.Time, binID BinId, counted, system Quantity) DiscrepancyDetected {
 	return DiscrepancyDetected{base: newBase("DiscrepancyDetected", occurredAt), BinID: binID, CountedQty: counted, SystemQty: system}
+}
+
+// TransferStockAllocated: origin-site stock was reserved for a network
+// transfer line (command/reply leg of the transfer saga — the Reservation
+// aggregate holds the stock; this event carries the transfer correlation).
+type TransferStockAllocated struct {
+	base
+	TransferID     string
+	TransferLineID string
+	OriginSiteID   SiteID
+	ReservationID  string
+	SKU            SKU
+	Quantity       Quantity
+	Allocations    []TransferAllocationLeg
+	ExpiresAt      time.Time
+}
+
+// TransferAllocationLeg is one stock unit's contribution to a transfer
+// allocation, with its pick location.
+type TransferAllocationLeg struct {
+	StockUnitID string
+	BinID       BinId
+	Quantity    Quantity
+}
+
+func NewTransferStockAllocated(occurredAt time.Time, transferID, transferLineID string, originSiteID SiteID, reservationID string, sku SKU, qty Quantity, legs []TransferAllocationLeg, expiresAt time.Time) TransferStockAllocated {
+	return TransferStockAllocated{
+		base:           newBase("TransferStockAllocated", occurredAt),
+		TransferID:     transferID,
+		TransferLineID: transferLineID,
+		OriginSiteID:   originSiteID,
+		ReservationID:  reservationID,
+		SKU:            sku,
+		Quantity:       qty,
+		Allocations:    legs,
+		ExpiresAt:      expiresAt,
+	}
+}
+
+// TransferStockAllocationRejected: no stock was held for a network
+// transfer line, and the closed reason says why.
+type TransferStockAllocationRejected struct {
+	base
+	TransferID        string
+	TransferLineID    string
+	OriginSiteID      SiteID
+	SKU               SKU
+	RequestedQuantity Quantity
+	Reason            string
+}
+
+func NewTransferStockAllocationRejected(occurredAt time.Time, transferID, transferLineID string, originSiteID SiteID, sku SKU, requestedQty Quantity, reason string) TransferStockAllocationRejected {
+	return TransferStockAllocationRejected{
+		base:              newBase("TransferStockAllocationRejected", occurredAt),
+		TransferID:        transferID,
+		TransferLineID:    transferLineID,
+		OriginSiteID:      originSiteID,
+		SKU:               sku,
+		RequestedQuantity: requestedQty,
+		Reason:            reason,
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
+	"github.com/claudioed/inventory-storage/internal/domain/transfer"
 )
 
 // StockRepo persists and retrieves StockUnit aggregates.
@@ -20,6 +21,11 @@ type StockRepo interface {
 	FindByID(ctx context.Context, id string) (*stock.StockUnit, error)
 	FindBySKU(ctx context.Context, sku shared.SKU) ([]*stock.StockUnit, error)
 	FindByBin(ctx context.Context, binID shared.BinId) ([]*stock.StockUnit, error)
+	// FindBySKUAtSite returns the stock units of sku whose recorded site
+	// custody is originSiteID. Units with no recorded site (legacy rows)
+	// are NEVER included: site-scoped transfer allocation must fail
+	// closed rather than let an unscoped unit donate stock.
+	FindBySKUAtSite(ctx context.Context, sku shared.SKU, originSiteID shared.SiteID) ([]*stock.StockUnit, error)
 	NextID(ctx context.Context) (string, error)
 }
 
@@ -88,6 +94,19 @@ type UnitOfWork interface {
 type ProductClassificationRepo interface {
 	Save(ctx context.Context, c *product.ProductClassification) error
 	FindBySKU(ctx context.Context, sku shared.SKU) (*product.ProductClassification, error)
+}
+
+// TransferAllocationRepo persists and retrieves the transfer-allocation
+// ledger: one row per decided transfer line, DB-unique on transfer_line_id.
+type TransferAllocationRepo interface {
+	// FindByTransferLineID returns the decided allocation for that line,
+	// or nil when this line has never been decided.
+	FindByTransferLineID(ctx context.Context, transferLineID string) (*transfer.Allocation, error)
+	// Save inserts the allocation. A second Save for an already-decided
+	// transfer_line_id must fail with ErrTransferLineAlreadyDecided (the
+	// DB unique constraint) so the use case can route the replay to the
+	// "return the original outcome" path.
+	Save(ctx context.Context, a *transfer.Allocation) error
 }
 
 // LocationClassificationLookup is the outbound port for the synchronous

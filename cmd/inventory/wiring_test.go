@@ -87,7 +87,7 @@ func TestBuildAdapters_UsesMigrationsDatabaseURLNotDatabaseURLForMigrations(t *t
 		unreachableAppURL  = "postgres://u:***@127.0.0.1:1/inventory_storage?sslmode=disable&connect_timeout=1"
 	)
 
-	_, _, _, _, _, _, _, _, err := buildAdapters(context.Background(), unreachableAppURL, bogusMigrationsURL, migrationsDirForTest(t), "log", quietLogger())
+	_, err := buildAdapters(context.Background(), unreachableAppURL, bogusMigrationsURL, migrationsDirForTest(t), "log", quietLogger())
 	if err == nil {
 		t.Fatal("a malformed MIGRATIONS_DATABASE_URL must fail boot")
 	}

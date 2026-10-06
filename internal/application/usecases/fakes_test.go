@@ -31,6 +31,7 @@ type failingStockRepo struct {
 		FindByID(ctx context.Context, id string) (*stock.StockUnit, error)
 		FindBySKU(ctx context.Context, sku shared.SKU) ([]*stock.StockUnit, error)
 		FindByBin(ctx context.Context, binID shared.BinId) ([]*stock.StockUnit, error)
+		FindBySKUAtSite(ctx context.Context, sku shared.SKU, originSiteID shared.SiteID) ([]*stock.StockUnit, error)
 		NextID(ctx context.Context) (string, error)
 	}
 	failFindBySKU bool
@@ -59,6 +60,10 @@ func (f *failingStockRepo) FindBySKU(ctx context.Context, sku shared.SKU) ([]*st
 		return nil, errFake
 	}
 	return f.delegate.FindBySKU(ctx, sku)
+}
+
+func (f *failingStockRepo) FindBySKUAtSite(ctx context.Context, sku shared.SKU, originSiteID shared.SiteID) ([]*stock.StockUnit, error) {
+	return f.delegate.FindBySKUAtSite(ctx, sku, originSiteID)
 }
 
 func (f *failingStockRepo) FindByBin(ctx context.Context, binID shared.BinId) ([]*stock.StockUnit, error) {

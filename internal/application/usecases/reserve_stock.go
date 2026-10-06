@@ -55,12 +55,6 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 		return nil, err
 	}
 
-	for _, unit := range touched {
-		if err := uc.Stock.Save(ctx, unit); err != nil {
-			return nil, err
-		}
-	}
-
 	id, err := uc.Reservations.NextID(ctx)
 	if err != nil {
 		return nil, err
@@ -77,7 +71,20 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 		return nil, err
 	}
 
+	// Every mutated StockUnit save, the Reservation save AND the event
+	// publish run inside ONE UnitOfWork scope (the audit's atomicity
+	// fix): a failure after the first stock decrement rolls back all of
+	// them, so a half-drawn reservation can never survive. Before this,
+	// the stock saves ran BEFORE the closure — a failed reservation save
+	// left the stock decremented with no reservation holding it.
+	// Atomicity therefore does not depend on an outer transaction (e.g.
+	// the HTTP idempotency middleware's) already being on ctx.
 	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		for _, unit := range touched {
+			if err := uc.Stock.Save(ctx, unit); err != nil {
+				return err
+			}
+		}
 		if err := uc.Reservations.Save(ctx, res); err != nil {
 			return err
 		}
@@ -153,7 +160,7 @@ func isReplayOf(res *reservation.Reservation, sku shared.SKU, qty shared.Quantit
 // allocate reserves qty across the given stock units, greedily drawing from
 // each unit's usable quantity until the full amount is covered. It returns
 // the allocations recorded and the units touched (mutated but not yet
-// persisted; persisting is Execute's job, so a later failure never leaves a
+// persisted; persisting is Execute's job, inside its UnitOfWork, so a later failure never leaves a
 // partially-drawn reservation behind). It fails with ErrInsufficientUsable —
 // before any caller-visible state has been persisted — when the units'
 // combined usable quantity cannot cover qty.

@@ -3,9 +3,10 @@
 // Pick location on allocations (ADR 0025), proven against a real Postgres:
 // the 0008 migration's nullable reservation_allocations.bin_id column, its
 // backfill from stock_units.bin_id for rows written before it existed, and
-// the reservation repo's read/write of it. Every test boots its own
-// throwaway Postgres via testcontainers — never an external DATABASE_URL,
-// never t.Skip.
+// the reservation repo's read/write of it. Every test runs against a private
+// database in the package's shared testcontainers Postgres (see
+// testdb_integration_test.go) — never an external DATABASE_URL, never
+// t.Skip.
 package postgres_test
 
 import (
@@ -17,8 +18,6 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
@@ -106,20 +105,9 @@ func TestPostgres_ReservationAllocation_BinID_RoundTrips(t *testing.T) {
 // column existed, from the stock unit each one references.
 func TestPostgres_Migration0008_BackfillsAllocationBinID(t *testing.T) {
 	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx, "postgres:16-alpine",
-		tcpostgres.WithDatabase("inventory"),
-		tcpostgres.WithUsername("inventory"),
-		tcpostgres.WithPassword("inventory"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
-	}
-	t.Cleanup(func() { _ = testcontainers.TerminateContainer(container) })
-	url, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("connection string: %v", err)
-	}
+	// An empty database of its own in the shared container: migrating up
+	// to 0007 and back down is database-local, so it needs no container.
+	url := emptyDB(t)
 
 	m, err := migrate.New("file://"+migrationsDir(t), url)
 	if err != nil {

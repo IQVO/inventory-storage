@@ -10,6 +10,7 @@ package kafka
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	kafkago "github.com/segmentio/kafka-go"
@@ -51,12 +52,42 @@ type Writer interface {
 	WriteMessages(ctx context.Context, msgs ...kafkago.Message) error
 }
 
-// reservationData is the `data` payload shape for both StockReserved and
+// reservationData is the `data` payload shape for StockReserved and
 // ReservationRevoked, per CLAUDE.md.
 type reservationData struct {
 	SKU       string `json:"sku"`
 	Quantity  int    `json:"quantity"`
 	DemandRef string `json:"demand_ref"`
+}
+
+// transferAllocatedData is the `data` payload for
+// TransferStockAllocated (v1, frozen).
+type transferAllocatedData struct {
+	TransferID     string                     `json:"transfer_id"`
+	TransferLineID string                     `json:"transfer_line_id"`
+	OriginSiteID   string                     `json:"origin_site_id"`
+	ReservationID  string                     `json:"reservation_id"`
+	SKU            string                     `json:"sku"`
+	Quantity       int                        `json:"quantity"`
+	Allocations    []transferAllocationLegOut `json:"allocations"`
+	ExpiresAt      time.Time                  `json:"expires_at"`
+}
+
+type transferAllocationLegOut struct {
+	StockUnitID string `json:"stock_unit_id"`
+	BinID       string `json:"bin_id"`
+	Quantity    int    `json:"quantity"`
+}
+
+// transferRejectedData is the `data` payload for
+// TransferStockAllocationRejected (v1, frozen).
+type transferRejectedData struct {
+	TransferID        string `json:"transfer_id"`
+	TransferLineID    string `json:"transfer_line_id"`
+	OriginSiteID      string `json:"origin_site_id"`
+	SKU               string `json:"sku"`
+	RequestedQuantity int    `json:"requested_quantity"`
+	Reason            string `json:"reason"`
 }
 
 // Publisher publishes StockReserved and ReservationRevoked domain events as
@@ -104,7 +135,8 @@ func NewWriter(brokers ...string) *kafkago.Writer {
 // so Publish never opens a producer span for an event it will not send.
 func isIntegrationEvent(event shared.DomainEvent) bool {
 	switch event.(type) {
-	case shared.StockReserved, shared.ReservationRevoked:
+	case shared.StockReserved, shared.ReservationRevoked,
+		shared.TransferStockAllocated, shared.TransferStockAllocationRejected:
 		return true
 	default:
 		return false
@@ -130,7 +162,8 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 // span is wrapping the use case's Save+Publish call, since the eventual
 // Kafka write happens later, asynchronously, via the relay.
 func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Encoded, error) {
-	var data reservationData
+	// data is the `data` payload; transfer events carry their own shapes.
+	var data any
 	var key string
 
 	switch e := event.(type) {
@@ -147,6 +180,36 @@ func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Enc
 		}
 		data = reservationData{SKU: res.SKU().String(), Quantity: res.Quantity().Int(), DemandRef: res.DemandRef()}
 		key = e.ReservationID
+	case shared.TransferStockAllocated:
+		legs := make([]transferAllocationLegOut, 0, len(e.Allocations))
+		for _, leg := range e.Allocations {
+			legs = append(legs, transferAllocationLegOut{StockUnitID: leg.StockUnitID, BinID: leg.BinID.String(), Quantity: leg.Quantity.Int()})
+		}
+		data = transferAllocatedData{
+			TransferID:     e.TransferID,
+			TransferLineID: e.TransferLineID,
+			OriginSiteID:   e.OriginSiteID.String(),
+			ReservationID:  e.ReservationID,
+			SKU:            e.SKU.String(),
+			Quantity:       e.Quantity.Int(),
+			Allocations:    legs,
+			ExpiresAt:      e.ExpiresAt.UTC(),
+		}
+		// Key = subject = reservation_id: the transfer saga's replies for
+		// one reservation stay ordered on one partition (ADR-0021).
+		key = e.ReservationID
+	case shared.TransferStockAllocationRejected:
+		data = transferRejectedData{
+			TransferID:        e.TransferID,
+			TransferLineID:    e.TransferLineID,
+			OriginSiteID:      e.OriginSiteID.String(),
+			SKU:               e.SKU.String(),
+			RequestedQuantity: e.RequestedQuantity.Int(),
+			Reason:            e.Reason,
+		}
+		// Key = subject = transfer_line_id: a rejection has no
+		// reservation, so the line is the aggregate the reply is about.
+		key = e.TransferLineID
 	default:
 		return nil, nil
 	}

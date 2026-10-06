@@ -20,6 +20,7 @@ type fakeRow struct {
 	quantity     int
 	reserved     int
 	state        string
+	site         *string
 	version      int
 }
 
@@ -30,7 +31,8 @@ func (f fakeRow) Scan(dest ...any) error {
 	*(dest[3].(*int)) = f.quantity
 	*(dest[4].(*int)) = f.reserved
 	*(dest[5].(*string)) = f.state
-	*(dest[6].(*int)) = f.version
+	*(dest[6].(**string)) = f.site
+	*(dest[7].(*int)) = f.version
 	return nil
 }
 
@@ -41,6 +43,33 @@ func TestScanStockUnit_ValidRowRehydrates(t *testing.T) {
 	}
 	if unit.SKU().String() != "SKU-1" || unit.BinID().String() != "BIN-1" || unit.Quantity().Int() != 5 || unit.Reserved().Int() != 2 || unit.Version() != 3 {
 		t.Fatalf("rehydrated unit does not match the row: %+v", unit)
+	}
+	if unit.SiteID() != "" {
+		t.Fatalf("row without a site must rehydrate site-less, got %q", unit.SiteID())
+	}
+}
+
+func TestScanStockUnit_SiteRowRehydratesWithCustody(t *testing.T) {
+	unit, err := scanStockUnit(fakeRow{id: "su-1", sku: "SKU-1", bin: "BIN-1", quantity: 5, reserved: 2, state: "RESERVED", site: &[]string{"SITE-A"}[0], version: 3})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if unit.SiteID() != shared.SiteID("SITE-A") {
+		t.Fatalf("site = %q, want SITE-A", unit.SiteID())
+	}
+	if !unit.IsAtSite(shared.SiteID("SITE-A")) {
+		t.Fatal("unit must report itself at SITE-A")
+	}
+}
+
+func TestScanStockUnit_CorruptSiteReturnsError(t *testing.T) {
+	empty := ""
+	unit, err := scanStockUnit(fakeRow{id: "su-1", sku: "SKU-1", bin: "BIN-1", quantity: 5, state: "AVAILABLE", site: &empty, version: 1})
+	if err == nil {
+		t.Fatalf("expected an error for an empty site_id, got unit %+v", unit)
+	}
+	if !errors.Is(err, shared.ErrEmptySiteID) {
+		t.Fatalf("error %q does not wrap ErrEmptySiteID", err)
 	}
 }
 

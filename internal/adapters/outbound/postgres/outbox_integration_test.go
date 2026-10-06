@@ -18,25 +18,6 @@ import (
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
-// outboxDB boots a throwaway Postgres via testcontainers (the test owns
-// its own database end to end — never an external DATABASE_URL) and runs
-// every migration, so each test starts from a clean, fully-migrated
-// schema regardless of the order tests run in.
-func outboxDB(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	ctx := context.Background()
-	url := postgresURL(t)
-	if err := postgres.RunMigrations(url, migrationsDir(t)); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	pool, err := postgres.NewPool(ctx, url)
-	if err != nil {
-		t.Fatalf("open pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
 // recordingSink is a postgres.Sink fake that records every message it is
 // asked to send, and can be configured to fail on a specific EventType so
 // a test can force the relay's stop-at-failed-row path deterministically.
