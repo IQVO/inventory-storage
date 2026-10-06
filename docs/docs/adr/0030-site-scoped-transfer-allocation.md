@@ -1,6 +1,9 @@
 ---
+id: 0030-site-scoped-transfer-allocation
 slug: /adr/0030
 title: "ADR 0030: Site-scoped transfer allocation as a command/reply consumer"
+sidebar_label: "30. Site-scoped transfer allocation"
+sidebar_position: 30
 ---
 
 # 0030. Site-scoped transfer allocation as a command/reply consumer
