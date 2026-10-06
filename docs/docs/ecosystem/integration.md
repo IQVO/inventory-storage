@@ -133,7 +133,7 @@ sequenceDiagram
 
     Note over C,I: the physical pick fails
     C->>I: DELETE /reservations/{id}
-    I->>I: Revoke(); release quantity back to each StockUnit
+    I->>I: Revoke() — release quantity back to each StockUnit
     I->>K: ReservationRevoked {sku, quantity, demand_ref}
     I-->>C: 204 No Content
     K->>W: consume
