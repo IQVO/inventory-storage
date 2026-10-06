@@ -12,6 +12,7 @@ import (
 
 	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
+	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
@@ -36,11 +37,14 @@ type analyticsEvent struct {
 	entity  string
 	subject string
 	key     string
-	data    map[string]any
+	data    any
 }
 
 // AnalyticsPublisher publishes every inventory-storage domain event onto
-// AnalyticsTopic as a CloudEvents 1.0 event (ADR-0024). It satisfies ports.EventPublisher
+// AnalyticsTopic as a CloudEvents 1.0 event (ADR-0024) — except the
+// in-process-only LocationRecorded. ProductClassified (SKU master data,
+// ADR 0031) is published here too, with the same payload as the
+// integration topic. It satisfies ports.EventPublisher
 // (direct publish) and kafka.Encoder (used by postgres.OutboxPublisher to
 // enqueue the wire-ready message inside a transaction — ADR 0017), and is a
 // SEPARATE adapter from Publisher: the integration publisher (publisher.go)
@@ -223,6 +227,10 @@ func (p *AnalyticsPublisher) analyticsEventFor(ctx context.Context, e shared.Dom
 			"reservation_id": ev.ReservationID,
 			"sku":            p.reservationSKU(ctx, ev.ReservationID),
 		}}, true
+	case product.ProductClassified:
+		// SKU master data (ADR 0031): same payload as the integration
+		// topic, keyed and subjected by SKU.
+		return analyticsEvent{entity: productEntity, subject: ev.SKU.String(), key: ev.SKU.String(), data: newProductClassifiedData(ev)}, true
 	default:
 		return p.binOrUnlocatedEvent(e)
 	}
