@@ -165,12 +165,13 @@ The algorithm:
 4. Walk the units, taking `min(remaining, unit.Usable())` from each, recording
    an `Allocation{StockUnitID, BinID, Quantity}` per unit touched — `BinID`
    is the pick location (ADR 0025).
-5. Save every touched unit, mint a reservation id, construct the
-   `Reservation` with `expiresAt = now + timeout`, then save it and publish
-   `StockReserved` inside one `UnitOfWork` scope. The touched units are saved
-   *before* that scope opens, so on the REST path they are atomic with the
-   reservation only because the idempotency middleware's transaction is
-   already on the context and the repos join it.
+5. Mint a reservation id and construct the `Reservation` with
+   `expiresAt = now + timeout`, then, inside one `UnitOfWork` scope, save every
+   touched unit, save the reservation and publish `StockReserved`. The unit
+   saves are inside the use case's own scope, so atomicity does not depend on
+   the idempotency middleware's transaction already being on the context
+   (REST); a failed reservation save or publish rolls the unit saves back for
+   every caller.
 
 A single reservation therefore **may span multiple bins** — covered by
 `TestReserveStock_SpansMultipleStockUnits`. That is the point: SKU-scoped

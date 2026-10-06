@@ -29,7 +29,7 @@ type StockUnit struct {
 	reserved shared.Quantity
 	state    State
 	// version is optimistic-concurrency infrastructure metadata (ADR
-	// 0018): inert, unexported, carried by the aggregate but never read
+	// 0019): inert, unexported, carried by the aggregate but never read
 	// or reasoned about by business logic. It exists solely so the repo
 	// can round-trip the DB-read version through Rehydrate -> mutate ->
 	// Save and detect a lost-update race on Save.
