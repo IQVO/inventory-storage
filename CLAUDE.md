@@ -27,7 +27,7 @@ Every REST and MCP endpoint is unauthenticated (ADR-0015; an arch-test fitness t
 make check        # after EVERY change, before committing: fmt-check vet build lint test (~1 min, no DB)
 make check-fast   # harness quick gate; run before saying "done"
 make check-all    # before pushing: check + 90% coverage + arch-test + bdd
-make integration  # needs DATABASE_URL, not in check/check-all
+make integration  # needs Docker (testcontainers boots its own Postgres/Kafka), not in check/check-all
 make vuln         # govulncheck: after touching go.mod/go.sum (blocking CI job)
 make mutation     # fast gremlins subset (blocking in CI); mutation-full is scheduled only
 ```
