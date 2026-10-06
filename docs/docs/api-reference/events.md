@@ -88,8 +88,10 @@ producing a silently-unrouted message.
 The AsyncAPI document is the **complete domain-event catalog**. Two topics
 carry it: `warehouse.inventory.events` (integration — the contract other
 services build against) and `warehouse.inventory.analytics` (internal,
-consumed only by this service's analytics projector). `LocationRecorded` and
-`ProductClassified` are in-process only.
+consumed only by this service's analytics projector). `LocationRecorded` is
+in-process only (no consumer; decided 2026-10-06). `ProductClassified` (entity
+`product`, SKU master data) is published on both topics since 2026-10-06 — see
+[ADR 0031](/docs/adr/0031).
 
 ### Reservation entity
 
@@ -118,9 +120,11 @@ consumed only by this service's analytics projector). `LocationRecorded` and
 | CycleCountCompleted | `com.warehouse.wms.inventory-storage.bin.CycleCountCompleted` | — | `bin_id`, `counted`, `system`, `discrepancy` |
 | DiscrepancyDetected | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | — | `bin_id`, `counted`, `system` |
 
-`ProductClassified` (entity `product`) is a domain event that is not
-published to Kafka; if it ever is, its type will be
-`com.warehouse.wms.inventory-storage.product.ProductClassified`.
+### Product entity
+
+| Event | `type` | Integration topic `data` | Analytics topic `data` |
+| --- | --- | --- | --- |
+| **ProductClassified** | `com.warehouse.wms.inventory-storage.product.ProductClassified` | `sku`, `handling_tags[]`, `temperature_class?`, `dot_hazard_class?` (ADR-0031; key = SKU; full-state replacement, optional fields omitted when unset) | same shape (ignored by this service's projector) |
 
 ## The two integration events in full
 

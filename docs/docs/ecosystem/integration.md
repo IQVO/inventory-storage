@@ -49,7 +49,7 @@ and the replay — and the readiness gate — moves past it.
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `LOCATION_LOOKUP_MODE` | `permissive` | `kafka`: Kafka-fed local cache (what the `warehouse-infra` cluster runs). `http`: synchronous `GET /locations/{locationCode}/classification` on facility-layout per stow — the rollback for `kafka`. `permissive` (default): no lookup; every location reports `Known=false`, so placement rules never block a stow. |
+| `LOCATION_LOOKUP_MODE` | `permissive` | `kafka`: Kafka-fed local cache (what the `warehouse-infra` cluster runs). `http`: synchronous `GET /locations/{locationCode}/classification` on facility-layout per stow — the rollback for `kafka`. `permissive` (default): no lookup; every location reports `Known=false`, so placement rules never block a stow — **decided 2026-10-06: kept** (ADR 0013/0020): a cold facility cache would reject every receipt, and the cluster already injects `kafka`. |
 | `FACILITY_LAYOUT_BASE_URL` | *(unset)* | Base URL for the `http` mode client, e.g. `http://facility-layout:80`. |
 | `KAFKA_BROKERS` | *(unset)* | Required by `kafka` mode — startup fails if it is missing. |
 
@@ -157,8 +157,9 @@ If you are building a sixth consumer:
 1. **Read the spec, not this page.**
    [`apis/asyncapi.yaml`](https://github.com/IQVO/inventory-storage/blob/main/apis/asyncapi.yaml)
    is the contract and is Spectral-linted in CI.
-2. **Only two events are on the integration topic** (`StockReserved`,
-   `ReservationRevoked`). `warehouse.inventory.analytics` is internal to this
+2. **The integration topic carries `StockReserved`, `ReservationRevoked`,
+   `ProductClassified` (SKU master data, key = SKU, ADR 0031) and the two
+   transfer replies (ADR 0030).** `warehouse.inventory.analytics` is internal to this
    service's analytics projector; do not build against it.
 3. **Dispatch on the full `type` string; ignore unknown types.** The catalog
    grows. Reject (DLQ/skip) anything that is not a valid CloudEvent.

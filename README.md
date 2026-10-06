@@ -323,11 +323,20 @@ of the site-scoped transfer allocation exchange (ADR-0030).
   ```
   `reason` is the closed set `ORIGIN_SITE_UNKNOWN | INSUFFICIENT_USABLE |
   IDEMPOTENCY_CONFLICT`.
+  And `com.warehouse.wms.inventory-storage.product.ProductClassified`
+  (ADR-0031: SKU master data, published on BOTH topics through the outbox in
+  the same transaction as `ClassifyProduct`'s save; key/subject = SKU; a
+  full-state replacement) with `data`:
+  ```json
+  {"sku": "SKU-9", "handling_tags": ["Hazmat", "TemperatureSensitive"], "temperature_class": "Frozen", "dot_hazard_class": 3}
+  ```
+  (`temperature_class` / `dot_hazard_class` are omitted when unset.)
   (`ReservationRevoked`'s domain event only carries the reservation id; the
   Kafka adapter looks the reservation back up via `ReservationRepo` to fill in
   `sku`/`quantity`/`demand_ref`.) Every other domain event (`StockReceived`,
   `ItemStowed`, ...) is not part of this integration contract and is not
-  forwarded to `warehouse.inventory.events`. (Those events DO feed the separate
+  forwarded to `warehouse.inventory.events` (`LocationRecorded` stays
+  in-process: no consumer). (Those events DO feed the separate
   analytics data product on `warehouse.inventory.analytics` — see
   [Analytics](#analytics-data-product) below.)
 

@@ -194,6 +194,28 @@ func TestAnalyticsConsumer_IgnoresUnknownEventType(t *testing.T) {
 	}
 }
 
+// The projector shares warehouse.inventory.analytics with the ProductClassified
+// master-data events (ADR 0031). They must be acknowledged without touching
+// the Flow & Accuracy read model — and without WARN noise or a processed mark.
+func TestAnalyticsConsumer_IgnoresProductClassified(t *testing.T) {
+	proj := &fakeProjection{}
+	processed := newFakeProcessed()
+	c := &inboundkafka.AnalyticsConsumer{Projection: proj, Processed: processed, Logger: slog.Default()}
+
+	raw := cloudEvent(t, "e-pc", "product", "ProductClassified", time.Now(), map[string]any{
+		"sku": "SKU-9", "handling_tags": []string{"Fragile"},
+	})
+	if err := c.HandleMessage(context.Background(), raw); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if len(proj.calls) != 0 {
+		t.Fatalf("ProductClassified must not project, got %d calls", len(proj.calls))
+	}
+	if processed.seen["e-pc"] {
+		t.Error("ProductClassified should not be marked processed by the projector")
+	}
+}
+
 // TestAnalyticsConsumer_DispatchesOnFullTypeOnly proves a bare short name or
 // another context's type with the same trailing event name is NOT applied.
 func TestAnalyticsConsumer_DispatchesOnFullTypeOnly(t *testing.T) {
