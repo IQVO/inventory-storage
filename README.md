@@ -19,7 +19,10 @@ order.
 Full documentation site: **https://iqvo.github.io/inventory-storage/**
 
 Business context and domain vision, the DDD model (subdomain classification,
-aggregates and invariants, domain events, use cases), an API reference
+aggregates and invariants, domain events, use cases), the ddd-crew DDD
+artifact pack (core domain chart, bounded context canvas, aggregate design
+canvas, EventStorming, domain message flows, UML class / ER / sequence
+diagrams — all derived from the code), an API reference
 generated from `apis/openapi.yaml` plus a hand-authored Events page from
 `apis/asyncapi.yaml`, the ecosystem context map, and the Architecture Decision
 Records. Source lives in [`docs/`](docs/) (Docusaurus); it is built and
@@ -153,6 +156,7 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | PUT    | `/products/{sku}/classification` | ClassifyProduct |
 | GET    | `/products/{sku}/classification` | current ProductClassification |
 | GET    | `/healthz` | liveness |
+| GET    | `/readyz` | readiness — `503 {"status":"not_ready"}` once graceful shutdown has begun (ADR-0020) |
 
 `POST /stock/receive` and `POST /reservations` are the two true
 resource-creation endpoints (server-generated id, no caller-supplied
@@ -339,7 +343,8 @@ it reads only this service's own stock and classification repositories.
 Other contexts call this service's REST API directly: `order-management`
 reserves/revokes stock (`POST /reservations`, `DELETE /reservations/{id}`)
 and, with `wes-work-planning` and `fulfillment-execution`, reads
-`GET /products/{sku}/classification`; `warehouse-ops-agent` reads
+`GET /products/{sku}/classification`; `network-fulfillment` reads
+`GET /inventory/{sku}/usable`; `warehouse-ops-agent` reads
 `GET /reservations?demandRef=`, the reports REST and the MCP tools. Each
 caller gates the edge behind its own `*_MODE` env var.
 

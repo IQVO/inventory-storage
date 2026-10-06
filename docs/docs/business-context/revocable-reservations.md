@@ -75,7 +75,7 @@ pick against a claim whose window has closed. The claim is therefore bounded —
 past `expiresAt` it can no longer turn into a pick, and revoking it returns the
 quantity to usable.
 
-:::info Lazy expiry, not a sweeper
+:::info[Lazy expiry, not a sweeper]
 `Reservation.Expire()` and the `ReservationExpired` event exist, are
 unit-tested, and are genuinely raised — but only when something reads the
 reservation (listing it by demand ref, revoking it, confirming its pick, or
@@ -122,7 +122,7 @@ stateDiagram-v2
     [*] --> ACTIVE: ReserveStock<br/>(qty ≤ usable)
     ACTIVE --> CONFIRMED: ConfirmPick<br/>(before expiry)
     ACTIVE --> REVOKED: RevokeReservation<br/>→ qty back to usable
-    ACTIVE --> EXPIRED: Expire()<br/>modelled, no sweeper yet
+    ACTIVE --> EXPIRED: lazy expiry on next read<br/>expireIfDue then Expire, qty back to usable
     CONFIRMED --> [*]
     REVOKED --> [*]
     EXPIRED --> [*]

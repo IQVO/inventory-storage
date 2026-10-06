@@ -57,7 +57,7 @@ and the replay — and the readiness gate — moves past it.
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `EVENT_PUBLISHER` | `log` | `kafka` swaps `ports.EventPublisher` for the Kafka adapter. The default is `log` so tests and local runs need no broker. |
+| `EVENT_PUBLISHER` | `log` | `kafka` swaps `ports.EventPublisher` for the Kafka adapters. With `DATABASE_URL` set, use cases write `outbox_events` rows inside their own transaction and a background relay in `cmd/inventory` drains them onto the topics (ADR 0017, `OUTBOX_RELAY_INTERVAL`, default `1s`); without a database the adapters publish directly. The default is `log` so tests and local runs need no broker. |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated broker list |
 
 There is one Kafka broker platform-wide: the in-cluster broker deployed by
@@ -133,7 +133,7 @@ sequenceDiagram
 
     Note over C,I: the physical pick fails
     C->>I: DELETE /reservations/{id}
-    I->>I: Revoke(); release quantity back to each StockUnit
+    I->>I: Revoke() — release quantity back to each StockUnit
     I->>K: ReservationRevoked {sku, quantity, demand_ref}
     I-->>C: 204 No Content
     K->>W: consume
