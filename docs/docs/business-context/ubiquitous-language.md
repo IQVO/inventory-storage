@@ -1,6 +1,7 @@
 ---
 title: Ubiquitous Language
 sidebar_label: Ubiquitous Language
+sidebar_position: 1
 description: The exact vocabulary of the Inventory & Storage bounded context, with definitions and where each term lives in code.
 ---
 

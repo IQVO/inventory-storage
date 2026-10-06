@@ -1,6 +1,7 @@
 ---
 title: Domain Events
 sidebar_label: Domain Events
+sidebar_position: 5
 description: The eleven past-tense domain events this context raises, which aggregate raises each, and which reach the broker.
 ---
 

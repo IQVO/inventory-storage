@@ -1,6 +1,7 @@
 ---
 title: Context Map
 sidebar_label: Context Map
+sidebar_position: 1
 description: This context's slice of the warehouse-systems context map in ddd-crew Context Mapping notation — every relationship with upstream/downstream, pattern, technology, evidence and wiring status.
 ---
 

@@ -1,7 +1,7 @@
 ---
 title: Aggregate Design Canvas
 sidebar_label: Aggregate Design Canvas
-sidebar_position: 5
+sidebar_position: 4
 description: The ddd-crew Aggregate Design Canvas v1.1 for each of the four aggregate roots — state transitions, enforced invariants with their Err values and failing-path tests, handled commands, created events, throughput and size.
 ---
 
