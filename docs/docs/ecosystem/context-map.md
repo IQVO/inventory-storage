@@ -1,116 +1,115 @@
 ---
 title: Context Map
 sidebar_label: Context Map
-description: The warehouse-systems bounded contexts this service touches, what is actually wired between them, and the strategic relationships behind it.
+description: This context's slice of the warehouse-systems context map in ddd-crew Context Mapping notation — every relationship with upstream/downstream, pattern, technology, evidence and wiring status.
 ---
 
 # Context Map
 
-The platform has grown past the original five Go services (it now also
-includes `order-management`, `process-path-management`, `labor-performance`
-and `network-fulfillment`). This page shows the contexts that are **actually
-wired** to `inventory-storage` today, and separately what the strategic
-relationship is even where no wire exists. Contexts with no edge to this
-service are left off the diagram.
+Following [ddd-crew Context Mapping](https://github.com/ddd-crew/context-mapping),
+this page is `inventory-storage`'s slice of the platform map: every bounded
+context it exchanges messages with, which side is **U**pstream and
+**D**ownstream, the pattern(s) on each end, and the technology. Every row
+was checked against adapter code in both repositories on `develop`, not
+against intent. Contexts with no relationship at all are listed under
+[Separate Ways](#separate-ways), not drawn.
 
-## The platform
+Pattern legend: **OHS** Open Host Service · **PL** Published Language ·
+**CF** Conformist · **ACL** Anti-Corruption Layer · **C/S**
+Customer/Supplier · **P** Partnership · **SK** Shared Kernel. This context
+has no Partnership and no Shared Kernel with anyone — it shares no Go types
+with any sibling.
+
+## The map
 
 ```mermaid
-flowchart TB
-    subgraph WMS["WMS tier — what &amp; where · minutes → days"]
-        INV["<b>inventory-storage</b><br/>Core subdomain<br/>stock ledger · bin-accurate location<br/>revocable reservations · usable inventory"]
-        OM["<b>order-management</b><br/>order intake · allocation"]
-    end
+flowchart LR
+    FL["facility-layout<br/>Generic"]
+    INV["inventory-storage<br/>Core · WMS"]
+    WP["wes-work-planning<br/>Core · WES"]
+    OM["order-management<br/>WMS"]
+    FE["fulfillment-execution<br/>Core · WES"]
+    NF["network-fulfillment"]
+    OA["warehouse-ops-agent<br/>console BFF + agent"]
+    WM["workforce-management<br/>Supporting"]
 
-    subgraph WES["WES tier — when &amp; in what order · seconds → minutes"]
-        WP["<b>wes-work-planning</b><br/>Core subdomain<br/>waveless release · flow balance"]
-        FE["<b>fulfillment-execution</b><br/>Core subdomain<br/>Pick/Pack/SLAM task lifecycle<br/>pull-based claimNext"]
-        WM["<b>workforce-management</b><br/>Supporting subdomain<br/>shift headcount · labour assignment"]
-    end
+    FL -->|"U OHS+PL to D CF<br/>Kafka warehouse.facility.events<br/>ZoneRegistered, LocationSlotRegistered,<br/>LocationSlotDecommissioned · LIVE"| INV
+    FL -.->|"U OHS to D ACL<br/>REST GET /locations/code/classification<br/>LOCATION_LOOKUP_MODE=http · WIRED, UNUSED"| INV
+    INV -->|"U OHS+PL to D CF<br/>Kafka warehouse.inventory.events<br/>StockReserved, ReservationRevoked · LIVE"| WP
+    INV -->|"U OHS+PL to D C/S+ACL<br/>REST POST /reservations, DELETE /reservations/id,<br/>GET /products/sku/classification · LIVE"| OM
+    INV -->|"U OHS+PL to D C/S+ACL<br/>REST GET /products/sku/classification · LIVE"| WP
+    INV -->|"U OHS+PL to D C/S+ACL<br/>REST GET /products/sku/classification · LIVE"| FE
+    INV -->|"U OHS+PL to D ACL<br/>REST GET /inventory/sku/usable · LIVE"| NF
+    INV -->|"U OHS+PL to D CF<br/>REST GET /reservations?demandRef, reports REST,<br/>MCP check_availability, get_bin_occupancy · LIVE"| OA
+    INV ~~~ WM
 
-    subgraph GENERIC["Generic subdomain"]
-        FL["<b>facility-layout</b><br/>Site → Zone → Aisle → LocationSlot<br/>PlacementRules · layout read models"]
-    end
-
-    subgraph OPS["Operator tooling"]
-        OA["<b>warehouse-ops-agent</b><br/>console BFF · Order Lifecycle fan-out"]
-    end
-
-    INV ==>|"<b>warehouse.inventory.events</b><br/>StockReserved<br/>ReservationRevoked"| WP
-    FL ==>|"<b>warehouse.facility.events</b><br/>ZoneRegistered · LocationSlot*<br/>local cache, ADR-0013"| INV
-    WM ==>|"<b>warehouse.workforce.events</b><br/>ShiftPlanCommitted"| WP
-    WP ==>|"<b>warehouse.work-planning.events</b><br/>WorkReleased"| FE
-    FE ==>|"<b>warehouse.fulfillment.events</b>"| WP
-    OM -->|"<b>POST /reservations</b> · <b>DELETE /reservations/{id}</b><br/><b>GET /products/{sku}/classification</b>"| INV
-    WP -->|"<b>GET /products/{sku}/classification</b>"| INV
-    FE -->|"<b>GET /products/{sku}/classification</b>"| INV
-    OA -->|"<b>GET /reservations?demandRef=</b> · reports REST<br/>MCP tools · read-only, ADR-0012"| INV
-
-    classDef this fill:#0f766e,stroke:#134e4a,color:#fff,stroke-width:4px;
-    classDef core fill:#1e3a8a,stroke:#1e293b,color:#fff;
-    classDef supp fill:#6d28d9,stroke:#4c1d95,color:#fff;
-    classDef gen fill:#475569,stroke:#94a3b8,color:#fff,stroke-dasharray: 6 4;
-    classDef ops fill:#7c2d12,stroke:#431407,color:#fff,stroke-dasharray: 3 3;
+    classDef this fill:#0f766e,stroke:#134e4a,color:#fff,stroke-width:3px;
+    classDef other fill:#1e293b,stroke:#475569,color:#fff;
+    classDef absent fill:#e2e8f0,stroke:#94a3b8,color:#334155,stroke-dasharray: 5 5;
     class INV this;
-    class WP,FE,OM core;
-    class WM supp;
-    class FL gen;
-    class OA ops;
+    class FL,WP,OM,FE,NF,OA other;
+    class WM absent;
 ```
 
-**Thick edges are live Kafka topics with a real publisher and a real consumer on
-each end. Thin solid edges are synchronous HTTP calls** from the caller's own
-outbound adapter into this service's REST (or MCP) surface; each one is gated
-by a `*_MODE` env var in the caller that defaults to a no-network
-`permissive` stub.
+Arrows point **upstream → downstream**, not in the direction of the network
+call: `order-management` *calls* `POST /reservations`, but it is the
+downstream customer of this service's Open Host Service. The dashed arrow is
+wired in code but not selected in any deployed configuration; the
+unconnected `workforce-management` node is a deliberate Separate Ways.
+Path parameters are written without braces in the diagram (`/reservations/id`
+for `/reservations/{id}`).
 
-## Verified integration inventory
+Source: `internal/adapters/outbound/kafka/publisher.go`,
+`internal/adapters/outbound/facilitycache/consumer.go`,
+`internal/adapters/outbound/facilitylayout/client.go`,
+`internal/adapters/inbound/http/server.go`, `internal/adapters/inbound/mcp/tools.go`,
+`cmd/inventory/main.go`, and each caller's adapter listed below.
+Omitted: this service's own analytics topic and projector (internal, not a
+context relationship), the `inventory-mfe` remote in `web/` (this context's
+own UI), and the `e2e-tests` warehouse-day simulator (a test harness, not a
+bounded context).
 
-Every row below was checked against the actual adapter code in each
-repository, not against intent.
+## Relationships and evidence
 
-| Producer | Topic | Consumer | Wired? |
-| --- | --- | --- | --- |
-| `inventory-storage` | `warehouse.inventory.events` | `wes-work-planning` | ✅ publisher `internal/adapters/outbound/kafka/publisher.go`; consumer `wes-work-planning/internal/adapters/inbound/kafka/consumer.go` |
-| `workforce-management` | `warehouse.workforce.events` | `wes-work-planning` | ✅ |
-| `wes-work-planning` | `warehouse.work-planning.events` | `fulfillment-execution` | ✅ |
-| `fulfillment-execution` | `warehouse.fulfillment.events` | `wes-work-planning` | ✅ |
-| `facility-layout` | `warehouse.facility.events` | `inventory-storage` | ✅ publisher `facility-layout/internal/adapters/outbound/kafka/publisher.go`; consumer `internal/adapters/outbound/facilitycache/consumer.go` (ADR 0013) |
+| # | Upstream → Downstream | Patterns (U / D) | Technology and messages | Evidence | Status |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `facility-layout` → `inventory-storage` | OHS + PL / CF | Kafka `warehouse.facility.events`: `com.warehouse.wms.facility-layout.zone.ZoneRegistered`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | here: `internal/adapters/outbound/facilitycache/consumer.go` (per-process group, FirstOffset replay, DLQ `warehouse.facility.events.dlq`); there: facility-layout's Kafka publisher | **Live** when `LOCATION_LOOKUP_MODE=kafka` (what `warehouse-infra` sets); the binary default `permissive` does no lookup |
+| 2 | `facility-layout` → `inventory-storage` | OHS / ACL | REST `GET /locations/{locationCode}/classification` | here: `internal/adapters/outbound/facilitylayout/client.go` + `breaker.go` (circuit breaker, ADR 0020); there: `internal/adapters/inbound/http/server.go` route `/locations/{locationCode}/classification` | **Wired, unused** — `LOCATION_LOOKUP_MODE=http` is the documented rollback for #1 |
+| 3 | `inventory-storage` → `wes-work-planning` | OHS + PL / CF | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.reservation.StockReserved`, `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | here: `internal/adapters/outbound/kafka/publisher.go` (via outbox relay); there: `internal/adapters/inbound/kafka/consumer.go`, group `wes-work-planning`, projects `UsableInventoryObserved` | **Live** (`EVENT_PUBLISHER=kafka`) |
+| 4 | `inventory-storage` → `order-management` | OHS + PL / C/S + ACL | REST `POST /reservations` (with `Idempotency-Key`), `DELETE /reservations/{id}`, `GET /products/{sku}/classification` | there: `internal/adapters/outbound/inventorystorage/client.go`, `internal/adapters/outbound/productclassification/client.go`; gated by `INVENTORY_STORAGE_MODE` / `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** in the cluster; caller default `permissive` |
+| 5 | `inventory-storage` → `wes-work-planning` | OHS + PL / C/S + ACL | REST `GET /products/{sku}/classification` | there: `internal/adapters/outbound/productclassification/client.go`; `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** when the caller sets `http` |
+| 6 | `inventory-storage` → `fulfillment-execution` | OHS + PL / C/S + ACL | REST `GET /products/{sku}/classification` | there: `internal/adapters/outbound/productclassification/client.go`; `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** when the caller sets `http` |
+| 7 | `inventory-storage` → `fulfillment-execution` | OHS / — | REST `POST /reservations/{id}/confirm-pick` | here: the route exists; there: no client | **Deliberately absent** — no sibling context confirms picks; only the `e2e-tests` simulator calls it |
+| 8 | `inventory-storage` → `network-fulfillment` | OHS + PL / ACL | REST `GET /inventory/{sku}/usable` | there: `internal/adapters/outbound/inventoryclient/client.go`, `INVENTORY_STORAGE_URL` (default `http://localhost:8080`, no mode switch) | **Live** |
+| 9 | `inventory-storage` → `warehouse-ops-agent` | OHS + PL / CF | REST `GET /reservations?demandRef=`; reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP (Streamable HTTP) `check_availability`, `get_bin_occupancy` | there: `internal/adapters/outbound/restclient/clients.go`, `reports_clients.go`, `internal/adapters/outbound/mcpclient/inventory_storage.go`; `INVENTORY_STORAGE_REST_URL`, `INVENTORY_STORAGE_REPORTS_REST_URL`, `INVENTORY_STORAGE_MCP_ENDPOINT` | **Live**, read-only; the MCP write tool `revoke_reservation` exists here but the agent does not call it |
+| 10 | `inventory-storage` ↔ `workforce-management` | Separate Ways | — | no client, topic or type in either repo | **Deliberately absent** |
 
-`inventory-storage` consumes exactly **one** topic,
-`warehouse.facility.events`, and only to keep a local read model of zone
-classifications (hazmat rating, temperature class) keyed by location code.
-It is selected by `LOCATION_LOOKUP_MODE=kafka`; the binary's default is still
-`permissive` (no lookup at all), while the `warehouse-infra` cluster sets
-`kafka` (`deploy_facility_events_integration`, default `true`). The older
-synchronous `GET /locations/{locationCode}/classification` call
-(`LOCATION_LOOKUP_MODE=http`, ADR 0009) is retained as the rollback.
+All REST and MCP surfaces are unauthenticated (ADR 0015). Every Kafka
+message is CloudEvents 1.0 structured mode (ADR 0024).
 
-### Synchronous HTTP edges into this service
+## Separate Ways
 
-| Caller | Endpoint(s) | Caller-side switch |
-| --- | --- | --- |
-| `order-management` | `POST /reservations`, `DELETE /reservations/{id}` | `INVENTORY_STORAGE_MODE` + `INVENTORY_STORAGE_BASE_URL` |
-| `order-management`, `wes-work-planning`, `fulfillment-execution` | `GET /products/{sku}/classification` | `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` |
-| `warehouse-ops-agent` | `GET /reservations?demandRef=`, `GET /reports/flow-accuracy[/freshness]`, MCP `check_availability` / `get_bin_occupancy` | `INVENTORY_STORAGE_REST_URL`, `INVENTORY_STORAGE_REPORTS_REST_URL`, `INVENTORY_STORAGE_MCP_ENDPOINT` |
+- **`workforce-management`** — labour planning and inventory truth share no
+  concepts. Worker identity, shift patterns and floor conditions must never
+  leak into the system of record.
+- **`process-path-management`, `labor-performance`, `warehouse-planning`** —
+  no relationship in either direction today.
+- **`fulfillment-execution` events** — this service does not subscribe to
+  `warehouse.fulfillment.events`. Consuming a `PickCompleted` event would
+  make this ledger a *follower* of another context's execution stream; the
+  intended path is the explicit `confirm-pick` command (row 7), which keeps
+  this service the one that decides whether consumption is legal.
 
-This service makes **no** outbound HTTP call in its default and cluster
-configurations; the only outbound HTTP client it has is the `http` rollback
-mode of the facility-layout lookup above.
-
-## This service's edges
+## This service's edges, in prose
 
 ### → `wes-work-planning` (live)
 
-The only consumer of this service's integration topic. Full technical detail —
-envelope, payloads, smoke test — is on the
-[Integration](./integration.md) page.
-
-Strategically: **Customer/Supplier with a Conformist downstream.** This service
-is the **Open Host Service** for bin-accurate location and usable inventory;
-`wes-work-planning` conforms to its Published Language (the events plus the
-REST API) and never gets write access to a `StockUnit`, a `Bin` or a
-`Reservation`.
+The only consumer of this service's integration topic. Full technical
+detail — envelope, payloads, smoke test — is on the
+[Integration](./integration.md) page. Strategically **Customer/Supplier with
+a Conformist downstream**: `wes-work-planning` takes `StockReserved` /
+`ReservationRevoked` in the shape they are published and never gets write
+access to a `StockUnit`, a `Bin` or a `Reservation`.
 
 `warehouse-systems-ddd.md` is explicit that this boundary is an
 **Anti-Corruption Layer in both directions**:
@@ -118,108 +117,59 @@ REST API) and never gets write access to a `StockUnit`, a `Bin` or a
 > WMS never reaches into WES's `Assignment` aggregate to pick a worker; WES
 > never reaches into WMS's `Order` aggregate to check inventory truth.
 
-Concretely, in this codebase: there is no `path_id`, no `cpt`, no `work_unit`,
-no `station`, no `worker` anywhere in the domain — and `wes-work-planning`'s
-`inventoryview` package holds only an observed usable count per SKU, with no
-concept of a bin.
-
-### ↔ `fulfillment-execution` (indirect)
-
-No event edge, by design. `fulfillment-execution` needs *work*, not stock
-truth; it consumes `WorkReleased` from Work Planning. Its only call into this
-service is a read of `GET /products/{sku}/classification` (gated by its own
-`PRODUCT_CLASSIFICATION_MODE`). The intended way for a physical pick to reach
-this ledger is a deliberate `POST /reservations/{id}/confirm-pick` command —
-not an event this service happens to overhear. No sibling repository calls
-`confirm-pick` today; it is exercised by this service's own API and tests.
-
-That distinction matters: consuming a `PickCompleted` event would make this
-service's ledger a *follower* of another context's execution stream. Requiring
-an explicit command keeps this service the one that decides whether the
-consumption is legal (is the reservation active? expired? already consumed?).
-
-### ↔ `workforce-management` (none)
-
-No relationship, deliberately. Labour planning and inventory truth share no
-concepts. This is the concrete form of the rule that worker identity,
-shift patterns and real-time floor conditions must never leak into the system
-of record.
-
-### → `warehouse-ops-agent`'s console BFF (read-only, via `inventory-mfe`)
-
-Per [ADR-0012](/docs/adr/0012-adopt-mfe-console-architecture) (this
-service's adoption record for `warehouse-ops-agent`'s own ADR-0002, the
-fleet's micro-frontend console architecture): this service ships
-`inventory-mfe`, a Module Federation remote (`web/`) that talks only to
-this service's own REST API, plus one additive read,
-`GET /reservations?demandRef=`, that closes the join-key gap ADR-0002
-identified. `warehouse-ops-agent`'s BFF calls that same endpoint as one leg
-of its cross-service Order Lifecycle fan-out, and also reads the
-Flow & Accuracy report REST and the MCP server's read tools. This is a
-**read-only, inbound edge** — the browser (via `inventory-mfe`) and the BFF
-are callers of this service's existing surfaces, not a new dependency this
-service takes on anything else. CORS middleware (`CORS_ALLOWED_ORIGINS`) is
-the only new surface this adoption added; no domain model, aggregate, or
-pre-existing endpoint changed.
+Concretely: there is no `path_id`, `cpt`, `work_unit`, `station` or `worker`
+anywhere in this domain, and `wes-work-planning`'s `inventoryview` holds only
+an observed usable count per SKU, with no concept of a bin.
 
 ### ← `order-management` (live, synchronous)
 
-`order-management` is this service's first synchronous command caller: order
-allocation reserves stock with `POST /reservations`, order cancellation
+This service's only synchronous **command** caller among the sibling
+contexts: order allocation reserves stock with `POST /reservations` (one
+call per order line, with a derived `Idempotency-Key`), cancellation
 revokes it with `DELETE /reservations/{id}`, and order intake reads
-`GET /products/{sku}/classification`. Both run through this service's own
-invariants (reserve against usable, revoke returns to usable); order
-management never touches a `StockUnit` directly.
+`GET /products/{sku}/classification`. Every call runs through this service's
+own invariants.
+
+### Read-only callers
+
+`wes-work-planning` and `fulfillment-execution` read product classification
+master data; `network-fulfillment` reads usable inventory to answer
+availability for its external network; `warehouse-ops-agent` reads
+reservations by demand reference for the Order Lifecycle console, the Flow &
+Accuracy report, and two MCP read tools. Each caller translates the response
+into its own model in its own outbound adapter.
+
+Per [ADR-0012](/docs/adr/0012-adopt-mfe-console-architecture) this service
+also ships `inventory-mfe` (`web/`), a Module Federation remote mounted by
+the `warehouse-console` shell, which calls only this service's own
+`GET /inventory/{sku}/usable` and `GET /reservations?demandRef=`.
 
 ### ← `facility-layout` (live: Kafka-fed local read model)
 
-:::info Status as of ADR 0013
+:::info[Status as of ADR 0013]
 `inventory-storage` is a **Conformist** consumer of `facility-layout`'s
-Published Language on `warehouse.facility.events`. With
-`LOCATION_LOOKUP_MODE=kafka`, `internal/adapters/outbound/facilitycache`
-replays the topic from the earliest offset on every start (a fresh,
-per-process consumer group, so a new process can never inherit another
-instance's committed offset), applies `ZoneRegistered`,
-`LocationSlotRegistered` and `LocationSlotDecommissioned`, and blocks
-startup until that replay is complete. `StowStock` then reads zone attributes
-from memory — `facility-layout` is no longer a runtime dependency of a stow.
-See [ADR 0013](/docs/adr/0013-location-classification-via-facility-events).
+Published Language. With `LOCATION_LOOKUP_MODE=kafka`,
+`internal/adapters/outbound/facilitycache` replays
+`warehouse.facility.events` from the earliest offset on every start (a
+fresh, per-process consumer group), applies the three types above, and
+blocks startup until the replay is complete (60 s timeout). `StowStock` then
+reads zone attributes from memory — `facility-layout` is no longer a runtime
+dependency of a stow. See
+[ADR 0013](/docs/adr/0013-location-classification-via-facility-events).
 :::
 
-The first slice of this edge was ADR 0009's synchronous
-`GET /locations/{locationCode}/classification`; it is still available as
-`LOCATION_LOOKUP_MODE=http` and is the documented rollback. The binary's
-default remains `permissive` (no lookup), so a deployment that sets neither
-mode enforces no placement rules at all.
+The synchronous `GET /locations/{locationCode}/classification` of ADR 0009
+survives as `LOCATION_LOOKUP_MODE=http`, the rollback. The binary's default
+remains `permissive` (no lookup), so a deployment that sets neither mode
+enforces no placement rules at all.
 
-The strategic relationship goes further than this one read model.
-`facility-layout` is a **Generic subdomain** and an **Open Host Service** for
-physical warehouse structure. Its own `CLAUDE.md` positions the other
-services — this one included — as downstream **Conformists** to whatever it
-publishes.
-
-The reasoning for extracting it, from `facility-layout`'s own classification:
-
-> `inventory-storage` (WMS tier) needs location validity to accept a stow;
-> `wes-work-planning` / `fulfillment-execution` (WES tier) need zone/aisle
-> adjacency for travel-path and congestion reasoning. Neither owns it; both
-> consume it.
-
-That is `warehouse-systems-ddd.md`'s "extract generic logic instead of
-duplicating it" discipline — its Cartonization example — applied to physical
-location.
-
-**What is still NOT built:** `StowStock`'s location-scan check only confirms
-the bin exists in this service's own `LocationRepo` — it does not validate the
-bin against facility-layout's location catalog as "real, active,
-correctly-typed." The consumed data is used narrowly, for hazmat/temperature
-placement policy on classified SKUs only (sourced from `Zone.Hazmat` /
-`Zone.TemperatureClass`). General location validity, and any placement policy
-for the `Oversized`/`HighValue`/`Fragile` tags, remain unbuilt — `Fragile` is
-a valid classification tag that no stow rule reads.
-
-A `Bin` here remains an id, a capacity and an occupancy, seeded as
-infrastructure data — neither ADR changed that.
+**What is still not built:** `StowStock` only confirms that the bin exists in
+this service's own `LocationRepo` — it does not validate the bin against
+facility-layout's slot catalogue as "real, active, correctly typed". The
+consumed data is used narrowly, for hazmat/temperature placement on
+classified SKUs only; placement policy for `Oversized`/`HighValue`/`Fragile`
+remains unbuilt. A `Bin` here is an id, a capacity and an occupancy,
+registered over REST by `PUT /bins/{binId}` (ADR 0025).
 
 ## Where this sits in the reference model
 
@@ -236,3 +186,6 @@ where this service sits:
 
 `wes-work-planning` is that conductor. "Stock reality" is what this service
 supplies to it, and `warehouse.inventory.events` is the pipe it travels down.
+See also the strategic narrative in
+[Context Relationships](/docs/ddd/context-relationships) and the
+[DDD artifacts index](/docs/ddd/ddd-artifacts).
