@@ -69,7 +69,15 @@ tags:
       hazmat/temperature placement rules via a synchronous read from the
       facility-layout bounded context (see ADR 0009).
   - name: Health
-    description: Liveness probe.
+    description: Liveness and readiness probes.
+  - name: Reports
+    description: >
+      The read-only "Inventory Flow & Accuracy" analytical data product
+      (ADR 0011, ADR 0020). Served by the separate `inventory-reports`
+      deployment (cmd/inventory-reports) over its own read-only database
+      pool — NOT by the OLTP `inventory` binary this spec's other paths
+      describe — so these operations are excluded from the Schemathesis
+      contract run, which boots only the OLTP binary.
 
 paths:
   /healthz:
@@ -95,6 +103,44 @@ paths:
                 example:
                   status: ok
 
+  /readyz:
+    get:
+      operationId: getReadyz
+      summary: Readiness probe
+      description: >
+        Returns 200 `{"status":"ready"}` while the process is accepting
+        traffic, and 503 `{"status":"not_ready"}` once graceful shutdown
+        has begun (ADR 0020 — readiness is flipped FIRST so a Kubernetes
+        readinessProbe stops routing new requests during the drain
+        window). Distinct from `/healthz`, which is liveness only and is
+        never flipped by shutdown. Checks no downstream dependency.
+      tags: [Health]
+      responses:
+        "200":
+          description: Service is ready to receive traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+                example:
+                  status: ready
+        "503":
+          description: Service is shutting down and must not receive new traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: not_ready
+                example:
+                  status: not_ready
+
   /stock/receive:
     post:
       operationId: receiveStock
@@ -109,6 +155,8 @@ paths:
         why this operation returns 202 Accepted rather than 201 Created:
         there is no resource here to hand back a Location for.
       tags: [Stock]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -131,29 +179,56 @@ paths:
                 quantity: 10
                 receivedAt: "2026-08-22T14:20:00Z"
         "400":
-          description: Malformed JSON body, or SKU missing/empty.
+          description: >
+            Malformed JSON body, SKU missing/empty, or the Idempotency-Key
+            header is absent (ADR 0018).
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/empty-sku
-                title: SKU must not be empty
-                status: 400
-                detail: sku must not be empty
-                instance: /stock/receive
+              examples:
+                emptySku:
+                  summary: SKU missing or empty
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/empty-sku
+                    title: SKU must not be empty
+                    status: 400
+                    detail: sku must not be empty
+                    instance: /stock/receive
+                idempotencyKeyRequired:
+                  summary: Idempotency-Key header missing (ADR 0018)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint creates a new resource on every call and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /stock/receive
         "422":
-          description: Quantity present but not a positive number.
+          description: >
+            Quantity present but not a positive number, or the
+            Idempotency-Key was already used with a different request body
+            (ADR 0018).
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/zero-quantity
-                title: Quantity must be greater than zero
-                status: 422
-                detail: quantity must be greater than zero
-                instance: /stock/receive
+              examples:
+                zeroQuantity:
+                  summary: Quantity not positive
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/zero-quantity
+                    title: Quantity must be greater than zero
+                    status: 422
+                    detail: quantity must be greater than zero
+                    instance: /stock/receive
+                idempotencyKeyReused:
+                  summary: Idempotency-Key reused with a different request body (ADR 0018)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/idempotency-key-reused
+                    title: Idempotency-Key was already used with a different request
+                    status: 422
+                    detail: The Idempotency-Key header on this request was already used with a request that had a different body. Use a new Idempotency-Key for a genuinely different request.
+                    instance: /stock/receive
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -203,17 +278,29 @@ paths:
                 state: AVAILABLE
         "400":
           description: >
-            Malformed JSON body, or SKU/binId missing (either scan absent).
+            Malformed JSON body, or SKU/binId missing (either scan absent,
+            including the domain-level stow-requires-both invariant).
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/empty-bin-id
-                title: Bin ID must not be empty
-                status: 400
-                detail: bin id must not be empty
-                instance: /stock/stow
+              examples:
+                emptyBinId:
+                  summary: Bin ID missing or empty
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/empty-bin-id
+                    title: Bin ID must not be empty
+                    status: 400
+                    detail: bin id must not be empty
+                    instance: /stock/stow
+                stowRequiresItemAndLocation:
+                  summary: Stow without both an item scan and a location scan
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/stow-requires-item-and-location
+                    title: Stow requires both an item scan and a location scan
+                    status: 400
+                    detail: stow requires both an item scan (sku) and a location scan (bin)
+                    instance: /stock/stow
         "404":
           description: The target bin does not exist.
           content:
@@ -389,6 +476,8 @@ paths:
         at once -- one per line/SKU -- so a request for a different SKU or
         quantity under the same demandRef is always a new reservation.
       tags: [Reservations]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -424,7 +513,9 @@ paths:
                 createdAt: "2026-08-22T14:20:00Z"
                 expiresAt: "2026-08-22T14:50:00Z"
         "400":
-          description: Malformed JSON body, SKU missing/empty, or demandRef missing/empty.
+          description: >
+            Malformed JSON body, SKU missing/empty, demandRef missing/empty,
+            or the Idempotency-Key header is absent (ADR 0018).
           content:
             application/problem+json:
               schema:
@@ -445,6 +536,14 @@ paths:
                     title: demandRef is required
                     status: 400
                     detail: demandRef must not be empty
+                    instance: /reservations
+                idempotencyKeyRequired:
+                  summary: Idempotency-Key header missing (ADR 0018)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint creates a new resource on every call and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
                     instance: /reservations
         "409":
           description: >
@@ -474,17 +573,31 @@ paths:
                     detail: the resource was modified by another request; re-fetch the latest version and retry
                     instance: /reservations
         "422":
-          description: Quantity present but not a positive number.
+          description: >
+            Quantity present but not a positive number, or the
+            Idempotency-Key was already used with a different request body
+            (ADR 0018).
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/zero-quantity
-                title: Quantity must be greater than zero
-                status: 422
-                detail: quantity must be greater than zero
-                instance: /reservations
+              examples:
+                zeroQuantity:
+                  summary: Quantity not positive
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/zero-quantity
+                    title: Quantity must be greater than zero
+                    status: 422
+                    detail: quantity must be greater than zero
+                    instance: /reservations
+                idempotencyKeyReused:
+                  summary: Idempotency-Key reused with a different request body (ADR 0018)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/idempotency-key-reused
+                    title: Idempotency-Key was already used with a different request
+                    status: 422
+                    detail: The Idempotency-Key header on this request was already used with a request that had a different body. Use a new Idempotency-Key for a genuinely different request.
+                    instance: /reservations
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -569,18 +682,38 @@ paths:
           description: Pick confirmed; reservation consumed.
         "404":
           description: >
-            No reservation exists with this id (or, in a data-consistency
-            fault, one of its allocated stock units/bins is missing).
+            No reservation exists with this id, or (in a data-consistency
+            fault) one of its allocated stock units (stock-unit-not-found)
+            or bins (bin-not-found) is missing.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/reservation-not-found
-                title: Reservation not found
-                status: 404
-                detail: reservation not found
-                instance: /reservations/does-not-exist/confirm-pick
+              examples:
+                reservationNotFound:
+                  summary: No reservation with this id
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/reservation-not-found
+                    title: Reservation not found
+                    status: 404
+                    detail: reservation not found
+                    instance: /reservations/does-not-exist/confirm-pick
+                stockUnitNotFound:
+                  summary: An allocated stock unit is missing (data-consistency fault)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/stock-unit-not-found
+                    title: Stock unit not found
+                    status: 404
+                    detail: stock unit not found
+                    instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001/confirm-pick
+                binNotFound:
+                  summary: An allocated stock unit's bin is missing (data-consistency fault)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/bin-not-found
+                    title: Bin not found
+                    status: 404
+                    detail: bin not found
+                    instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001/confirm-pick
         "409":
           description: >
             The reservation cannot be confirmed: already resolved,
@@ -608,6 +741,38 @@ paths:
                     title: The resource was modified by another request; re-fetch the latest version and retry
                     status: 409
                     detail: the resource was modified by another request; re-fetch the latest version and retry
+                    instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001/confirm-pick
+                reservationNoAllocations:
+                  summary: Reservation holds no allocations
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/reservation-no-allocations
+                    title: Reservation requires at least one allocation
+                    status: 409
+                    detail: reservation requires at least one allocation
+                    instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001/confirm-pick
+                insufficientReserved:
+                  summary: Pick quantity exceeds what the unit has reserved
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/insufficient-reserved
+                    title: Pick quantity exceeds reserved quantity
+                    status: 409
+                    detail: pick quantity exceeds reserved quantity
+                    instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001/confirm-pick
+                unitUnlocated:
+                  summary: An allocated stock unit is Unlocated
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/unit-unlocated
+                    title: Stock unit is unlocated
+                    status: 409
+                    detail: stock unit is unlocated
+                    instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001/confirm-pick
+                releaseExceedsOccupancy:
+                  summary: Bin release would exceed its occupancy
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/release-exceeds-occupancy
+                    title: Release exceeds bin occupancy
+                    status: 409
+                    detail: cannot release more than is occupied
                     instance: /reservations/res-a1b2c3d4-0000-0000-0000-000000000001/confirm-pick
         "500":
           $ref: "#/components/responses/InternalError"
@@ -879,12 +1044,23 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/empty-bin-id
-                title: Bin ID must not be empty
-                status: 400
-                detail: bin id must not be empty
-                instance: /bins//cycle-count
+              examples:
+                emptyBinId:
+                  summary: Bin ID missing or empty
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/empty-bin-id
+                    title: Bin ID must not be empty
+                    status: 400
+                    detail: bin id must not be empty
+                    instance: /bins//cycle-count
+                countedQuantityRequired:
+                  summary: countedQuantity omitted (an explicit 0 is valid)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/counted-quantity-required
+                    title: countedQuantity is required
+                    status: 400
+                    detail: countedQuantity must be present; an explicit 0 is a valid empty-bin count, omitting it is not
+                    instance: /bins/A-1-1/cycle-count
         "404":
           description: No bin exists with this id.
           content:
@@ -996,6 +1172,46 @@ paths:
                     status: 400
                     detail: temperature-sensitive classification requires a temperature class
                     instance: /products/SKU-1/classification
+                unknownTemperatureClass:
+                  summary: Unknown temperatureClass value
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/unknown-temperature-class
+                    title: Unknown temperature class
+                    status: 400
+                    detail: unknown temperature class
+                    instance: /products/SKU-1/classification
+                temperatureClassNotApplicable:
+                  summary: temperatureClass without TemperatureSensitive
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/temperature-class-not-applicable
+                    title: Temperature class is only meaningful when the temperature-sensitive tag is present
+                    status: 400
+                    detail: temperature class is only meaningful when the temperature-sensitive tag is present
+                    instance: /products/SKU-1/classification
+                duplicateHandlingTag:
+                  summary: Same handling tag listed twice
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/duplicate-handling-tag
+                    title: Duplicate handling tag
+                    status: 400
+                    detail: duplicate handling tag
+                    instance: /products/SKU-1/classification
+                invalidDotHazardClass:
+                  summary: dotHazardClass outside 1-9
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/invalid-dot-hazard-class
+                    title: DOT hazard class must be between 1 and 9
+                    status: 400
+                    detail: dot hazard class must be between 1 and 9
+                    instance: /products/SKU-1/classification
+                dotHazardClassNotApplicable:
+                  summary: dotHazardClass without the Hazmat tag
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/dot-hazard-class-not-applicable
+                    title: DOT hazard class is only meaningful when the hazmat tag is present
+                    status: 400
+                    detail: dot hazard class is only meaningful when the hazmat tag is present
+                    instance: /products/SKU-1/classification
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1035,6 +1251,146 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /reports/flow-accuracy:
+    get:
+      operationId: getFlowAccuracyReport
+      summary: Inventory Flow & Accuracy report (hourly)
+      description: >
+        Read-only analytical report over the inventory-storage event
+        stream (ADR 0011): per (SKU, bin, hour) received/stowed/picked
+        quantities, reservation lifecycle counts, and cycle-count
+        accuracy signals. Served by the `inventory-reports` deployment
+        from its own read-only pool (ADR 0020 §CQRS split); the OLTP
+        `inventory` binary does not serve this path. `from` and `to` are
+        required RFC 3339 timestamps; `sku` and `binId` narrow the result;
+        `granularity` is currently only `hour`. Side-effect-free and
+        unauthenticated (ADR 0015).
+      tags: [Reports]
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: Inclusive start of the window, RFC 3339.
+          schema:
+            type: string
+            format: date-time
+            example: "2026-10-01T00:00:00Z"
+        - name: to
+          in: query
+          required: true
+          description: End of the window, RFC 3339.
+          schema:
+            type: string
+            format: date-time
+            example: "2026-10-02T00:00:00Z"
+        - name: sku
+          in: query
+          required: false
+          description: Restrict to one SKU.
+          schema:
+            type: string
+            example: SKU-1
+        - name: binId
+          in: query
+          required: false
+          description: Restrict to one bin.
+          schema:
+            type: string
+            example: A-1-1
+        - name: granularity
+          in: query
+          required: false
+          description: Bucket size. Only `hour` is supported (the default).
+          schema:
+            type: string
+            enum: [hour]
+            default: hour
+      responses:
+        "200":
+          description: The report rows for the window (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlowAccuracyReport"
+              example:
+                rows:
+                  - sku: SKU-1
+                    binId: A-1-1
+                    hourBucket: "2026-10-01T14:00:00Z"
+                    receivedQuantity: 10
+                    stowedCount: 1
+                    pickedQuantity: 4
+                    reservationsCreated: 1
+                    reservationsExpired: 0
+                    reservationsRevoked: 0
+                    cycleCountsCompleted: 0
+                    discrepanciesDetected: 0
+                    unlocatedCount: 0
+        "400":
+          description: >
+            `from` or `to` missing or not an RFC 3339 timestamp, or
+            `granularity` is not `hour`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/invalid-report-query
+                title: The report query is malformed or missing a required parameter
+                status: 400
+                detail: query parameter 'from' is required (RFC3339)
+                instance: /reports/flow-accuracy
+        "500":
+          description: The read model could not be queried.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/report-store-error
+                title: The report could not be served
+                status: 500
+                detail: read model unavailable
+                instance: /reports/flow-accuracy
+
+  /reports/flow-accuracy/freshness:
+    get:
+      operationId: getFlowAccuracyFreshness
+      summary: Freshness lag of the flow-accuracy read model
+      description: >
+        Seconds between now and the newest event the analytics projector
+        has folded into the read model (ADR 0011) — the staleness a
+        consumer of `/reports/flow-accuracy` should expect. Served by the
+        `inventory-reports` deployment. Side-effect-free.
+      tags: [Reports]
+      responses:
+        "200":
+          description: Current projection lag.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lagSeconds:
+                    type: number
+                    format: double
+                    description: Projection lag in seconds.
+                    example: 1.5
+                example:
+                  lagSeconds: 1.5
+        "500":
+          description: The read model could not be queried.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/report-store-error
+                title: The report could not be served
+                status: 500
+                detail: read model unavailable
+                instance: /reports/flow-accuracy/freshness
+
 components:
   parameters:
     ReservationId:
@@ -1065,6 +1421,23 @@ components:
         type: string
         minLength: 1
         example: order-42
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        Caller-generated unique key (a UUID per logical submit) that makes
+        a retried request safe (ADR 0018). Required whenever the service
+        runs with Postgres — i.e. in every deployment — and answered with
+        400 `idempotency-key-required` when absent; a replay with the same
+        key and the same body returns the original response, while the same
+        key with a different body is 422 `idempotency-key-reused`. The
+        in-memory development mode (no DATABASE_URL) does not enforce it,
+        which is why the header is not marked `required` here (the
+        Schemathesis contract run boots that mode).
+      schema:
+        type: string
+        example: 5b0f6a0e-6a41-4c63-9f33-0c8f5c1d2a77
     BinId:
       name: binId
       in: path
@@ -1093,7 +1466,13 @@ components:
       type: object
       description: >
         RFC 7807 (Problem Details for HTTP APIs) error shape, used for
-        every non-2xx response across this service.
+        every non-2xx response across this service. `type` is
+        `https://errors.inventory-storage.warehouse-systems.dev/<slug>`;
+        every slug is documented as a response example on the operation(s)
+        that can return it, and the mapping from typed domain error to
+        (status, slug, title) lives in one lookup table
+        (`problemCatalog` in internal/adapters/inbound/http/errors.go,
+        ADR 0005).
       required: [type, title, status, detail]
       properties:
         type:
@@ -1431,3 +1810,60 @@ components:
             Omitted/null unless handlingTags includes Hazmat AND a DOT
             hazard class was explicitly recorded (ADR 0010).
           example: 3
+
+    FlowAccuracyReport:
+      type: object
+      description: The Inventory Flow & Accuracy report for a window.
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/FlowAccuracyRow"
+
+    FlowAccuracyRow:
+      type: object
+      description: >
+        One (SKU, bin, hour) bucket of flow and accuracy counters.
+      properties:
+        sku:
+          type: string
+          example: SKU-1
+        binId:
+          type: string
+          example: A-1-1
+        hourBucket:
+          type: string
+          format: date-time
+          description: Start of the UTC hour this row aggregates, RFC 3339.
+          example: "2026-10-01T14:00:00Z"
+        receivedQuantity:
+          type: integer
+          description: Units received (StockReceived) in the bucket.
+          example: 10
+        stowedCount:
+          type: integer
+          description: Stow operations (StockStowed) in the bucket.
+          example: 1
+        pickedQuantity:
+          type: integer
+          description: Units picked (StockPicked) in the bucket.
+          example: 4
+        reservationsCreated:
+          type: integer
+          example: 1
+        reservationsExpired:
+          type: integer
+          example: 0
+        reservationsRevoked:
+          type: integer
+          example: 0
+        cycleCountsCompleted:
+          type: integer
+          example: 0
+        discrepanciesDetected:
+          type: integer
+          example: 0
+        unlocatedCount:
+          type: integer
+          example: 0

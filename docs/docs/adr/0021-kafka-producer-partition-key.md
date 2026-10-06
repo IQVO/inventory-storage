@@ -66,8 +66,9 @@ not the balancer choice underneath either publisher.
    (`StockReserved`, `ReservationRevoked`) now carries a Kafka message
    `Key` equal to the event's `ReservationID` — the natural ordering key
    shared by both event types for the same reservation aggregate (mirrors
-   how the analytics publisher already keys `StockReserved` by SKU and
-   `ReservationRevoked`/`ReservationExpired` by reservation id; reservation
+   how the analytics publisher keys `ReservationRevoked`/`ReservationExpired`
+   by reservation id — and, since the amendment below, `StockReserved` and
+   `StockPicked` too; reservation
    id is the one field guaranteed present on every reservation-lifecycle
    event this publisher forwards, including the case where
    `ReservationRevoked` must look up the reservation's SKU via
@@ -101,9 +102,20 @@ not the balancer choice underneath either publisher.
   as `.claude/rules/integration-events.md` already documented before this
   change.
 - The analytics topic (`warehouse.inventory.analytics`) gets the same
-  ordering guarantee "for free" from the balancer fix alone, since its own
-  `Key` was already correct — the switch from `LeastBytes` to `Hash` is
-  the whole fix on that side.
+  ordering guarantee from the balancer fix **plus a key correction
+  (amendment)**. The original text of this ADR claimed the analytics
+  publisher's `Key` "was already correct", but it keyed `StockReserved` and
+  `StockPicked` by SKU while keying `ReservationRevoked`/`ReservationExpired`
+  by reservation id, so ONE reservation's lifecycle on the analytics topic
+  spanned partitions (a consumer could see `ReservationRevoked` before
+  the `StockReserved` it revokes). Now every reservation-lifecycle analytics
+  event (`StockReserved`, `StockPicked`, `ReservationRevoked`,
+  `ReservationExpired`) is keyed by the **reservation id**; only events that
+  have no reservation stay keyed by their own aggregate (SKU for
+  `StockReceived`/`ItemStowed`/`ItemUnlocated`, bin id for the cycle-count
+  events). Proven against a real 8-partition broker by
+  `TestAnalyticsPublisher_RealBroker_ReservationLifecycleLandsOnSamePartition`
+  (`analytics_partition_integration_test.go`, testcontainers).
 - `Hash`'s FNV-1a routing means a topic's key-to-partition mapping is
   stable only for a fixed partition count; growing the topic again in the
   future (partitions can only increase in Kafka) will re-shuffle which

@@ -1,24 +1,29 @@
 ---
 id: 0008-mcp-inbound-adapter
-title: 8. Model Context Protocol as an inbound adapter, not a new service
+slug: /adr/0008-mcp-inbound-adapter
+title: 0008. Model Context Protocol as an inbound adapter, not a new service
 sidebar_label: 8. MCP inbound adapter
 sidebar_position: 8
-description: Expose this bounded context to the AI ecosystem via an MCP server built as a second driving adapter over the existing use cases — Streamable HTTP, official Go SDK, static bearer-key auth, curated intent-level tools.
+description: "Expose this bounded context to the AI ecosystem via an MCP server built as a second driving adapter over the existing use cases — Streamable HTTP, official Go SDK, curated intent-level tools (the original static bearer-key auth was superseded by ADR-0015: MCP is unauthenticated)."
 ---
 
-# 8. Model Context Protocol as an inbound adapter, not a new service
+# 0008. Model Context Protocol as an inbound adapter, not a new service
 
 ## Status
 
-**Accepted.** The pilot implementation is `fulfillment-execution` (ADR-0008
+**Accepted — auth, bearer-key, OAuth-seam and `mcp.readKey`/`mcp.readWriteKey`
+sections superseded by [ADR-0015](./0015-remove-rest-identity-layer.md).** MCP
+is **unauthenticated by decision**: `auth.go`, the bearer middleware and the
+chart's key Secret no longer exist, and the sections below that describe them
+are kept as history only. The pilot implementation is `fulfillment-execution` (ADR-0008
 there); this ADR records the same decision for `inventory-storage`, adapted to
 this context's use cases and tools.
 
 **Addendum 2026-09-07 — deployable.** `cmd/mcp` is now built into the service
 image as `/app/mcp` and deployed by the Helm chart as its own Deployment +
 ClusterIP Service (`<release>-mcp`, port 8090) behind `mcp.enabled` (off by
-default), with bearer keys from a chart-rendered Secret
-(`mcp.readKey` / `mcp.readWriteKey`). The binary now serves an unauthenticated
+default) *(originally with bearer keys from a chart-rendered Secret,
+`mcp.readKey` / `mcp.readWriteKey` — removed by ADR-0015)*. The binary now serves an unauthenticated
 `GET /healthz` for the probes and mounts the MCP endpoint at both `/` and
 `/mcp`. Made deployable to the `warehouse` kind cluster on 2026-09-07; the
 cluster rollout itself is a `warehouse-infra` change (`mcp.enabled=true` plus
@@ -85,7 +90,8 @@ internal/adapters/inbound/mcp/
   tools.go       intent-level tool handlers -> call use cases
   resources.go   read-model resources (scoped, not bulk)
   prompts.go     workflow prompts (operational SOPs)
-  auth.go        bearer-key auth middleware (interface; OAuth-ready seam)
+  auth.go        (removed by ADR-0015 — was the bearer-key auth middleware)
+  report_tool.go curated read-only report tool (ADR-0011)
   mapping.go     tool I/O DTOs + a narrow read-only query port
 ```
 
@@ -107,8 +113,12 @@ blast radius, lets the two scale independently, and keeps least-privilege clean
 
 ### Streamable HTTP only
 
-The single supported transport is **Streamable HTTP**, stateless where the SDK
-allows. We do not ship stdio builds; local desktop-client use goes through the
+The single supported transport is **Streamable HTTP**. Sessions are
+**stateful**: `inbound/mcp.Handler` calls
+`mcp.NewStreamableHTTPHandler(getServer, nil)` with nil options, so the SDK
+keeps an in-memory session per `Mcp-Session-Id` in each process (which is why
+the chart does not autoscale `cmd/mcp` and a second replica needs session
+affinity). We do not ship stdio builds; local desktop-client use goes through the
 same HTTP endpoint. One transport is one thing to secure, trace, and test.
 
 ### Curated, intent-level tools — not one tool per endpoint
@@ -134,9 +144,9 @@ Resources expose the usable read model as a **scoped** context contract
 SOPs (e.g. `triage_low_stock`: how to read availability, inspect bin occupancy,
 revoke only confirmed-failed reservations, and when to escalate).
 
-### Static bearer-key auth, behind an OAuth-ready seam
+### Static bearer-key auth, behind an OAuth-ready seam *(superseded by ADR-0015 — removed)*
 
-`auth.go` validates a per-client API key (from a Kubernetes Secret) on every
+*Historical:* `auth.go` validated a per-client API key (from a Kubernetes Secret) on every
 request; missing or invalid key returns `401`; the key is never logged. Two key
 classes — read-only and read-write — gate the write tool without an IdP. The
 middleware is an **interface**, so an OAuth 2.1 resource-server implementation
@@ -166,33 +176,34 @@ distributed traces.
   are simply not exposed.
 - **It stays in Go, in one quality gate.** The MCP adapter is unit-tested to the
   same ≥90% bar, linted, and CI-gated like every other package.
-- **The auth upgrade is contained.** Moving to OAuth later is an adapter change
-  behind a stable interface, not a rewrite.
+- ~~**The auth upgrade is contained.**~~ *(moot — auth was removed by ADR-0015.)*
 
 ### Harder
 
 - **A second deployable to run and secure.** `cmd/mcp` is another binary, image,
   Helm release, and ingress. The isolation is deliberate but it is real
   operational surface that did not exist before.
-- **Auth is deliberately minimal.** A static bearer key is appropriate for an
-  internal, non-user-facing server, but it does **not** cover user-facing,
-  multi-tenant use. The servers must stay in-cluster until the OAuth seam is
-  taken. Recording that boundary is the point.
+- **No auth at all (ADR-0015).** The original static bearer key was removed;
+  the MCP server is unauthenticated by decision and must stay in-cluster
+  (internal, non-user-facing). It does **not** cover user-facing or
+  multi-tenant use. Recording that boundary is the point.
 - **The MCP spec is a moving target.** Aggressive versioning and deprecations
-  mean the SDK must be pinned (v1.7.0) and revisited; features like
+  mean the SDK must be pinned (currently `go-sdk` v1.8.0 in `go.mod`) and revisited; features like
   `roots`/`sampling` are already deprecated and must be avoided in favour of
   tool parameters.
 - **Tool curation is an ongoing discipline, not a one-time choice.** Nothing in
   the compiler stops a future PR from adding a tool per endpoint. The MCP
-  governance charter (`docs/mcp/governance-charter.md`) and a planned CI lint on
-  tool count/annotations exist to hold the line; without them the surface
-  degrades.
+  governance charter (`docs/mcp/governance-charter.md`) and its enforcing tests
+  exist to hold the line — a tool-count budget (`maxTools = 8`,
+  `TestGovernance_ToolCountWithinBudget`) and annotation checks run in CI
+  (see ADR-0027); without them the surface degrades.
 - **LLM-chosen arguments are untrusted input.** Every tool handler must validate
   its inputs defensively — the caller is a model, not our own code — which is
   stricter than what the HTTP DTO layer assumes.
 - **`revoke_reservation` is a state change an autonomous agent can trigger.** It
-  is annotated destructive and scope-gated, and the spec expects host-side
-  consent. Revocation is recoverable (the quantity returns to usable and demand
+  is annotated destructive (there is no scope gate any more — ADR-0015), and the
+  spec expects host-side consent. Its `ReservationRevoked` event is published
+  through the same transactional outbox as the REST path (ADR-0017). Revocation is recoverable (the quantity returns to usable and demand
   can be re-allocated), but the residual risk of an agent revoking *live* demand
   is real; the `triage_low_stock` prompt tells the model to revoke only a
   positively-identified failed reservation.

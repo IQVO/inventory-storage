@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,7 +29,7 @@ func NewReservationRepo(pool *pgxpool.Pool) *ReservationRepo {
 // commit together; called standalone it opens and owns its own
 // transaction, same as before.
 //
-// The reservation row itself is version-guarded (ADR 0018, optimistic
+// The reservation row itself is version-guarded (ADR 0019, optimistic
 // concurrency) — see StockRepo.Save's doc comment for the verified
 // single-statement ON CONFLICT ... WHERE RowsAffected() semantics this
 // relies on. A stale-version write returns ErrConcurrentModification
@@ -94,8 +95,21 @@ func (r *ReservationRepo) FindByID(ctx context.Context, id string) (*reservation
 		return nil, err
 	}
 
-	skuVO, _ := shared.NewSKU(sku)
-	qty, _ := shared.NewQuantity(quantity)
+	return rehydrateReservation(id, sku, quantity, demandRef, allocations, status, createdAt, expiresAt, version)
+}
+
+// rehydrateReservation rebuilds a Reservation from its row, returning a
+// wrapped error instead of embedding a zero-value SKU/Quantity when a column
+// violates a domain invariant.
+func rehydrateReservation(id, sku string, quantity int, demandRef string, allocations []reservation.Allocation, status string, createdAt, expiresAt time.Time, version int) (*reservation.Reservation, error) {
+	skuVO, err := rehydrateSKU(sku)
+	if err != nil {
+		return nil, fmt.Errorf("reservation %q: %w", id, err)
+	}
+	qty, err := rehydrateQuantity("quantity", quantity)
+	if err != nil {
+		return nil, fmt.Errorf("reservation %q: %w", id, err)
+	}
 	return reservation.Rehydrate(id, skuVO, qty, demandRef, allocations, reservation.Status(status), createdAt, expiresAt, version), nil
 }
 
@@ -146,9 +160,11 @@ func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string)
 			return nil, err
 		}
 
-		skuVO, _ := shared.NewSKU(b.sku)
-		qty, _ := shared.NewQuantity(b.quantity)
-		results = append(results, reservation.Rehydrate(b.id, skuVO, qty, demandRef, allocations, reservation.Status(b.status), b.createdAt, b.expiresAt, b.version))
+		r, err := rehydrateReservation(b.id, b.sku, b.quantity, demandRef, allocations, b.status, b.createdAt, b.expiresAt, b.version)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, r)
 	}
 
 	return results, nil
@@ -176,11 +192,26 @@ func loadAllocations(ctx context.Context, q querier, reservationID string) ([]re
 		if err := rows.Scan(&stockUnitID, &allocQty, &binID); err != nil {
 			return nil, err
 		}
-		qty, _ := shared.NewQuantity(allocQty)
-		allocations = append(allocations, reservation.Allocation{StockUnitID: stockUnitID, BinID: shared.BinId(binID), Quantity: qty})
+		alloc, err := rehydrateAllocation(reservationID, stockUnitID, allocQty, binID)
+		if err != nil {
+			return nil, err
+		}
+		allocations = append(allocations, alloc)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return allocations, nil
+}
+
+// rehydrateAllocation rebuilds one Allocation from its row. binID stays an
+// unvalidated conversion on purpose: it is nullable for legacy rows the 0008
+// backfill could not resolve, which hydrate with an empty BinID (see
+// loadAllocations). The quantity, though, must be a valid Quantity.
+func rehydrateAllocation(reservationID, stockUnitID string, quantity int, binID string) (reservation.Allocation, error) {
+	qty, err := rehydrateQuantity("allocation quantity", quantity)
+	if err != nil {
+		return reservation.Allocation{}, fmt.Errorf("reservation %q allocation on stock unit %q: %w", reservationID, stockUnitID, err)
+	}
+	return reservation.Allocation{StockUnitID: stockUnitID, BinID: shared.BinId(binID), Quantity: qty}, nil
 }

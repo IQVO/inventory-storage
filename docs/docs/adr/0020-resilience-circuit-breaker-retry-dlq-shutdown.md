@@ -125,6 +125,18 @@ synchronous cross-context HTTP client in the service, so there was
 never a shared client to begin with. This ADR only confirms that
 invariant.
 
+**The default client carries no `http.Client.Timeout`.** The original
+default (`&http.Client{Timeout: facilitylayout.DefaultTimeout}`, 5s) was
+a fixed per-request wall clock that silently overrode the §3 context
+deadline — the very thing §3 exists to prevent — because
+`cmd/inventory` passes a nil doer. `facilitylayout.DefaultTimeout` is
+removed; `Client.GetSlotAttributes` now derives each ATTEMPT's bound
+with `resilience.CallTimeout(ctx, resilience.DefaultTimeout)` (the
+caller's deadline when sooner, else the 30s cap), and
+`BreakerClient` additionally bounds the whole retry loop the same way.
+Proven by `client_deadline_test.go` (default doer has `Timeout == 0`;
+request context carries the caller's exact deadline, or ~30s when none).
+
 ### 5. Retry (`cenkalti/backoff/v4`, jittered, max 3 attempts) on `GetSlotAttributes`
 
 `facilitylayout.BreakerClient.retryingFetch` retries
@@ -179,6 +191,13 @@ this DLQ still adds is pure visibility/replay: a malformed message is
 still logged and applied-past exactly as before, but now ALSO
 preserved on the `.dlq` topic so an operator can inspect it and, if
 facility-layout ever fixes a publish-side bug, replay it.
+
+The DLQ writer follows the same synchronous-writer contract as the
+producer adapters (`outbound/kafka/writer_config.go`): `Balancer:
+&kafka.Hash{}` (so the source key keeps routing to one DLQ partition),
+`RequiredAcks: RequireAll` (a nil return really means the broker stored
+the dead letter before the source offset is committed) and a 10ms
+`BatchTimeout`; pinned by `TestNewDLQWriter_AutoCreatesTopic`.
 
 Proven end to end with a real testcontainers Kafka
 (`consumer_integration_test.go`,

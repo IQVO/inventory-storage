@@ -83,7 +83,10 @@ func (u *StockUnit) Version() int { return u.version }
 `version` is infrastructure metadata the domain carries but never
 reasons about — no business method reads or branches on it, and there
 is deliberately no setter. The repo is the only thing that ever advances
-it (via `Save`'s `RETURNING version`).
+it — and only in the database: `Save` bumps the row's `version` in SQL
+(`version = <table>.version + 1`) and does **not** write the new value
+back into the in-memory aggregate (see "Save and the in-memory
+version" below).
 
 - **Rehydrate-style constructors** (`RehydrateStockUnit`, `RehydrateBin`,
   `reservation.Rehydrate`), called by a repo's `FindByID`/`FindBySKU`/etc.
@@ -127,13 +130,14 @@ ON CONFLICT (id) DO UPDATE SET
   state    = EXCLUDED.state,
   version  = stock_units.version + 1
 WHERE stock_units.version = $8
-RETURNING version;
 ```
 
-Confirmed: a matching `WHERE` reports 1 row affected and returns the
-new version; a stale `$loaded_version` reports 0 rows affected and
-leaves the row completely untouched (no `RETURNING` row, no partial
-write). This holds for the genuine `ON CONFLICT` path (the row already
+Confirmed: a matching `WHERE` reports 1 row affected; a stale
+`$loaded_version` reports 0 rows affected and leaves the row completely
+untouched (no partial write). The statement deliberately has **no**
+`RETURNING version` clause — `RowsAffected()` alone carries the
+success/conflict signal, and no repo in this codebase reads the new
+version back. This holds for the genuine `ON CONFLICT` path (the row already
 exists) — the plain `INSERT` path (first-ever save of a brand-new
 aggregate) has no conflict to guard and always succeeds. Since the
 single-statement form works cleanly, we use it everywhere rather than
@@ -147,13 +151,32 @@ sentinel:
 
 ```go
 // internal/application/usecases/errors.go
-var ErrConcurrentModification = errors.New("resource was modified by another request; re-fetch and retry")
+var ErrConcurrentModification = errors.New("aggregate was concurrently modified by another writer; re-fetch and retry")
 ```
+
+(The HTTP adapter's RFC 7807 `title` for it is a separate, client-facing
+string: "The resource was modified by another request; re-fetch the latest
+version and retry".)
 
 alongside this package's other sentinel errors (`ErrInsufficientUsable`,
 `ErrHazmatClassIncompatible`, etc.) — the existing convention for
 domain/application-level errors that the HTTP layer maps by
 `errors.Is`.
+
+### Save and the in-memory version
+
+Because `Save` neither uses `RETURNING` nor advances the aggregate's
+`version` field, an aggregate instance is **single-save**: after a
+successful `Save` it still carries the version it was loaded at (which is
+now stale by one), so saving the SAME instance a second time would fail
+with `ErrConcurrentModification` against its own earlier write. Every use
+case in this repo saves each loaded aggregate exactly once per
+transaction (an aggregate touched again is re-loaded first), which is why
+this has never surfaced. This is a deliberate trade-off — advancing the
+version would need either a `RETURNING` round trip result plumbed through
+an unexported setter or an in-memory `+1` that could drift from the row —
+recorded here so a future multi-save flow knows to re-`Find` the
+aggregate between saves rather than reuse the instance.
 
 ### Use cases: zero logic changes
 

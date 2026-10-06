@@ -45,7 +45,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: python3 scripts/harness/guide_lint.py
+      - run: python3 scripts/harness/repo_lint.py
       - run: python3 scripts/harness/test_hook.py
+      - run: python3 scripts/harness/test_repo_lint.py
 
 
   # Complexity gate as its own named check: cyclomatic (gocyclo, cyclop),
@@ -182,27 +184,15 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: inventory
-          POSTGRES_PASSWORD: inventory
-          POSTGRES_DB: inventory
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
+      # Every Postgres and Kafka integration test boots its own container via
+      # testcontainers (the runner's Docker daemon); there is no service
+      # container and no DATABASE_URL.
       - name: Integration tests
-        env:
-          DATABASE_URL: "postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable"
         run: go test -tags=integration ./... -race -count=1
 
   # Fast, BLOCKING mutation subset: runs on every push/PR so a drop in test
@@ -539,7 +529,7 @@ jobs:
           cosign sign --yes \
             ghcr.io/iqvo/inventory-storage@${{ steps.build.outputs.digest }}
       - name: Generate SBOM (SPDX) for the published image
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: ghcr.io/iqvo/inventory-storage@${{ steps.build.outputs.digest }}
           format: spdx-json

@@ -176,11 +176,26 @@ it instead of opening a second one.
   yet send one (it will get a 400). No caller of this service exists
   outside this fleet today; this is an accepted, one-time contract
   tightening.
-- `idempotency_keys` grows unboundedly today (nothing deletes old rows);
-  a follow-up housekeeping job is left as a known gap, consistent with
-  how ADR 0017 left the same kind of gap open for `outbox_events`, and
-  how order-management's ADR 0023 left it open for its own table. The
-  `created_at` index exists solely to make that future job's query cheap.
+- `idempotency_keys` growth is bounded by the housekeeping sweeper added
+  in [ADR 0026](/docs/adr/0026-housekeeping-sweeper-idempotency-keys-and-outbox),
+  which deletes rows older than `IDEMPOTENCY_KEY_TTL` (default 24h). The
+  `created_at` index exists to make that sweep's query cheap. (Originally
+  this was a known gap, as it was for `outbox_events` in ADR 0017.)
+- **Contract documentation.** The header is documented in
+  `apis/openapi.yaml` as the reusable `IdempotencyKey` parameter on both
+  routes, with the `400 idempotency-key-required` and
+  `422 idempotency-key-reused` problems as response examples. It is
+  declared `required: false` in the schema only because the in-memory
+  development mode (which the Schemathesis contract run boots) does not
+  enforce it; with Postgres — every deployment — it is mandatory.
+- **Browser clients.** `Idempotency-Key` is in the REST router's CORS
+  `AllowedHeaders` (`inbound/http/server.go`), otherwise a browser
+  preflight for these POSTs would be rejected. The `web/` console
+  micro-frontend (ADR 0012) is read-only today — it issues only `GET`s
+  (`/inventory/{sku}/usable`, `/reservations?demandRef=`) — so it has no
+  POST to attach a key to. Any future MFE write must send
+  `crypto.randomUUID()` as the `Idempotency-Key` per logical submit
+  (reused on retries of that submit, fresh for a new one).
 - The middleware needs a real `*pgxpool.Pool`, so it is unavailable in
   the in-memory (no `DATABASE_URL`) dev/test configuration — both routes
   are simply unprotected in that mode, matching every other optional

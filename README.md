@@ -19,7 +19,10 @@ order.
 Full documentation site: **https://iqvo.github.io/inventory-storage/**
 
 Business context and domain vision, the DDD model (subdomain classification,
-aggregates and invariants, domain events, use cases), an API reference
+aggregates and invariants, domain events, use cases), the ddd-crew DDD
+artifact pack (core domain chart, bounded context canvas, aggregate design
+canvas, EventStorming, domain message flows, UML class / ER / sequence
+diagrams — all derived from the code), an API reference
 generated from `apis/openapi.yaml` plus a hand-authored Events page from
 `apis/asyncapi.yaml`, the ecosystem context map, and the Architecture Decision
 Records. Source lives in [`docs/`](docs/) (Docusaurus); it is built and
@@ -153,6 +156,7 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | PUT    | `/products/{sku}/classification` | ClassifyProduct |
 | GET    | `/products/{sku}/classification` | current ProductClassification |
 | GET    | `/healthz` | liveness |
+| GET    | `/readyz` | readiness — `503 {"status":"not_ready"}` once graceful shutdown has begun (ADR-0020) |
 
 `POST /stock/receive` and `POST /reservations` are the two true
 resource-creation endpoints (server-generated id, no caller-supplied
@@ -256,7 +260,15 @@ below).
   a background relay (`OUTBOX_RELAY_INTERVAL`, default `1s`) drains them
   onto Kafka. Without `DATABASE_URL`, `EVENT_PUBLISHER=kafka` publishes
   directly (no outbox, no transactional guarantee) — the in-memory repos
-  have nothing to commit atomically with.
+  have nothing to commit atomically with. `cmd/mcp` reads the same
+  `EVENT_PUBLISHER`/`DATABASE_URL`, so an MCP `revoke_reservation` writes the
+  same outbox rows (the relay runs only in `cmd/inventory`).
+- **Housekeeping** (ADR 0026): a background sweeper in `cmd/inventory` deletes
+  `idempotency_keys` older than `IDEMPOTENCY_KEY_TTL` (default `24h`) and
+  *published* `outbox_events` older than `OUTBOX_RETENTION` (default `168h`),
+  every `HOUSEKEEPING_INTERVAL` (default `1h`; `0` disables the sweeper, a `0`
+  TTL/retention keeps that table's rows forever). Unpublished outbox rows are
+  never deleted.
 - **Broker**: `KAFKA_BROKERS` env var, comma-separated, default
   `localhost:9092`. There is one broker platform-wide: the in-cluster Kafka
   deployed by `warehouse-infra`, whose external listener is reachable from
@@ -331,7 +343,8 @@ it reads only this service's own stock and classification repositories.
 Other contexts call this service's REST API directly: `order-management`
 reserves/revokes stock (`POST /reservations`, `DELETE /reservations/{id}`)
 and, with `wes-work-planning` and `fulfillment-execution`, reads
-`GET /products/{sku}/classification`; `warehouse-ops-agent` reads
+`GET /products/{sku}/classification`; `network-fulfillment` reads
+`GET /inventory/{sku}/usable`; `warehouse-ops-agent` reads
 `GET /reservations?demandRef=`, the reports REST and the MCP tools. Each
 caller gates the edge behind its own `*_MODE` env var.
 
@@ -481,7 +494,7 @@ make check        # fast pre-commit loop: fmt-check, vet, build, lint, test (-ra
 make check-all    # before pushing: check + coverage gate (90%), arch-test, bdd
 make vuln         # govulncheck ./... — known CVEs in deps and the Go stdlib
 make mutation     # fast gremlins subset (blocks in CI); mutation-full = exhaustive
-make integration  # Postgres tests need DATABASE_URL; Kafka tests need Docker (testcontainers)
+make integration  # needs Docker: Postgres and Kafka tests boot their own containers (testcontainers)
 ```
 
 Git hooks are managed with [lefthook](https://github.com/evilmartians/lefthook)
@@ -510,10 +523,9 @@ go vet ./...
 go test ./...
 go test -race ./...
 
-# Postgres integration test (build-tagged, skipped without DATABASE_URL)
-docker compose up -d postgres
-DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable' \
-  go test -tags integration ./internal/adapters/outbound/postgres/...
+# Postgres integration tests (build-tagged): each test boots its own Postgres
+# via testcontainers, so they need Docker but no DATABASE_URL / compose service
+go test -tags integration ./internal/adapters/outbound/postgres/...
 
 # Kafka integration test for the facility-layout cache: starts its own
 # broker via testcontainers, so it needs Docker but no external Kafka

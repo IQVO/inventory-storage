@@ -1,12 +1,13 @@
 ---
 id: 0011-analytical-data-product
-title: 11. Per-service analytical data product (report) via a separate analytics topic
+slug: /adr/0011-analytical-data-product
+title: 0011. Per-service analytical data product (report) via a separate analytics topic
 sidebar_label: 11. Analytical data product
 sidebar_position: 11
 description: An analytical read model (the "Inventory Flow & Accuracy report") built from this service's own domain events on a dedicated warehouse.inventory.analytics topic, projected into a separate analytical database and served by a read-only reports binary over REST and MCP — a lightweight data mesh with no central data platform.
 ---
 
-# 11. Per-service analytical data product (the "report")
+# 0011. Per-service analytical data product (the "report")
 
 ## Status
 
@@ -74,7 +75,11 @@ A new outbound adapter publishes the report-input event set to
 `dataschema`*)
 (`event_id`, `event_type`, `occurred_at` RFC3339 UTC, `source`,
 `schema_version`, `data` snake_case) with a per-`event_type` `data` payload. The
-event key is the aggregate id (SKU or BinId as appropriate). The existing
+event key is the aggregate id: the reservation id for every reservation-lifecycle
+event (`StockReserved`, `StockPicked`, `ReservationRevoked`, `ReservationExpired` —
+amended by ADR-0021 so one reservation's lifecycle stays on one partition), the SKU
+for `StockReceived`/`ItemStowed`/`ItemUnlocated`, and the BinId for the cycle-count
+events. The existing
 integration publisher and `warehouse.inventory.events` are **left untouched**,
 so no existing consumer is affected. In `cmd/inventory` the analytics publisher
 is wired alongside the integration publisher via a fan-out/multi-publisher,

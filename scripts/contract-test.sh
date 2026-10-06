@@ -48,8 +48,13 @@ curl -sf "${BASE_URL}/healthz" >/dev/null # fail loudly if it never came up
 # scenarios (features/product_classification.feature) and unit tests — this
 # exclusion only stops Schemathesis generating the unexpressible-but-invalid
 # combinations.
+#
+# The Reports tag (/reports/*) is excluded because those operations are served
+# by the separate inventory-reports binary (read-only analytical pool), not by
+# the OLTP binary booted here.
 st run apis/openapi.yaml \
   --url "${BASE_URL}" \
   --max-examples "${MAX_EXAMPLES}" \
   --workers 4 \
-  --exclude-operation-id classifyProduct
+  --exclude-operation-id classifyProduct \
+  --exclude-tag Reports

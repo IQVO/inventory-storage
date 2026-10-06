@@ -20,7 +20,7 @@ func newTestRouter(t *testing.T) http.Handler {
 		GetUsable: &usecases.GetUsable{Stock: stock},
 		Stock:     stock,
 	}
-	return newRouter(inboundmcp.Handler(inboundmcp.NewServer(deps)))
+	return newRouter(inboundmcp.Handler(inboundmcp.NewServer(deps)), "inventory-storage-mcp-test")
 }
 
 func TestHealthzIsUnauthenticated(t *testing.T) {

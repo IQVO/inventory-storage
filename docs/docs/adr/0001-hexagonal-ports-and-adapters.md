@@ -66,9 +66,19 @@ Concretely:
 - `internal/adapters/` implements the ports: `inbound/http` (chi, DTOs, error
   mapping), `outbound/postgres`, `outbound/memory`, `outbound/events`,
   `outbound/kafka`.
-- `cmd/inventory/main.go` is the **only** composition root — the only file that
-  reads environment variables and the only file that knows both an interface
-  and its implementation.
+- There are **four composition roots**, one per binary — `cmd/inventory`
+  (REST + outbox relay), `cmd/mcp` (MCP server, ADR-0008), `cmd/inventory-projector`
+  and `cmd/inventory-reports` (the analytical data product, ADR-0011). They
+  are the only places that know both an interface and its implementation, and
+  they read the application's configuration from environment variables
+  (`getenv` in each `main.go`). Two narrow, documented exceptions read an
+  environment variable inside an adapter because the value is
+  adapter-private, not wiring: `CORS_ALLOWED_ORIGINS` in
+  `internal/adapters/inbound/http/server.go` (`corsAllowedOrigins`) and
+  `ENVIRONMENT` / the OTLP endpoint normalisation in
+  `internal/adapters/outbound/telemetry/telemetry.go`. Neither the domain nor
+  the application layer reads the environment (enforced by the arch-go
+  fitness tests, ADR-0006).
 
 `Clock` is a port for the same reason the repositories are: reservation expiry
 is a *domain* concept, so time is injected rather than read from `time.Now()`

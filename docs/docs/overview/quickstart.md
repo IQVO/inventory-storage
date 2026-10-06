@@ -29,6 +29,14 @@ go run ./cmd/inventory
 Migrations under `migrations/` (golang-migrate) run automatically at startup;
 `MIGRATIONS_PATH` defaults to `migrations`.
 
+:::note[Idempotency-Key in Postgres mode]
+With `DATABASE_URL` set, `POST /stock/receive` and `POST /reservations` sit
+behind the transactional `Idempotency-Key` middleware (ADR 0018): add
+`-H 'Idempotency-Key: <any-unique-string>'` to those two calls in the walk
+below, or they answer `400 idempotency-key-required`. In-memory mode
+(Option A) does not apply the middleware.
+:::
+
 ### Option C — publishing integration events to Kafka
 
 The shared broker lives outside this repository: it is the single in-cluster
@@ -46,7 +54,7 @@ wire and what is consumed.
 
 ## Walk the API
 
-:::note Register a bin first
+:::note[Register a bin first]
 `StowStock` returns `404 bin-not-found` for an unknown bin, so register one
 before stowing. `PUT /bins/{binId}` is idempotent and declarative (ADR 0025):
 `201` when it creates the bin, `200` when it already exists (unchanged or
@@ -54,9 +62,11 @@ resized), `409 capacity-below-occupancy` if you ask for less than it holds.
 :::
 
 ```bash
-# Liveness
+# Liveness and readiness
 curl -s localhost:8080/healthz
 # {"status":"ok"}
+curl -s localhost:8080/readyz
+# {"status":"ready"}   (503 {"status":"not_ready"} once shutdown has begun)
 
 # 0. Register the bin (inventory control).
 curl -s -i -X PUT localhost:8080/bins/A-1-1 \

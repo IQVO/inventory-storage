@@ -27,7 +27,7 @@ Every REST and MCP endpoint is unauthenticated (ADR-0015; an arch-test fitness t
 make check        # after EVERY change, before committing: fmt-check vet build lint test (~1 min, no DB)
 make check-fast   # harness quick gate; run before saying "done"
 make check-all    # before pushing: check + 90% coverage + arch-test + bdd
-make integration  # needs DATABASE_URL, not in check/check-all
+make integration  # needs Docker (testcontainers boots its own Postgres/Kafka), not in check/check-all
 make vuln         # govulncheck: after touching go.mod/go.sum (blocking CI job)
 make mutation     # fast gremlins subset (blocking in CI); mutation-full is scheduled only
 ```
@@ -88,7 +88,10 @@ Claude Code loads each rule below automatically when you touch the matching path
 | When touching | Read |
 |---|---|
 | `internal/adapters/outbound/analyticsstore/**`, `internal/**/analytics*/**` | `.claude/rules/analytics-data-product.md` |
+| `internal/**`, `cmd/**` | `.claude/rules/architecture.md` |
+| `internal/domain/**`, `internal/application/**`, `features/**` | `.claude/rules/domain-model.md` |
 | `web/**` | `.claude/rules/frontend-mfe.md` |
+| `**/*.go`, `go.mod`, `go.sum` ... | `.claude/rules/go-standards.md` |
 | `internal/adapters/**/kafka/**`, `internal/adapters/outbound/events/**`, `apis/asyncapi*` | `.claude/rules/integration-events.md` |
 | `internal/adapters/inbound/http/**`, `apis/openapi*.yaml`, `apis/openapi/**` | `.claude/rules/rest-api.md` |
 

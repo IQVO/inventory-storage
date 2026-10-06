@@ -2,7 +2,10 @@
 
 // Real-Postgres proof of the ReserveStock idempotency guard: a client
 // retry against the same demandRef must not create a second Reservation
-// row nor double-reserve the same StockUnit. Mirrors the seeding pattern
+// row nor double-reserve the same StockUnit. Boots its own throwaway
+// Postgres via testcontainers (ocDB in
+// optimistic_concurrency_integration_test.go) — never an external
+// DATABASE_URL, never t.Skip. Mirrors the seeding pattern
 // used by internal/adapters/outbound/postgres's own reservation
 // integration tests (bin -> stock unit, since allocations foreign-key to
 // stock_units), but exercises the full ReserveStock use case (not just the
@@ -11,7 +14,6 @@ package usecases_test
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -38,27 +40,9 @@ func migrationsDirForUsecases(t *testing.T) string {
 	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "migrations")
 }
 
-func requireDatabaseURLForUsecases(t *testing.T) string {
-	t.Helper()
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		t.Skip("DATABASE_URL not set; skipping Postgres integration test")
-	}
-	return url
-}
-
 func TestIntegration_ReserveStock_SameDemandRefRetried_NoDoubleReserve(t *testing.T) {
-	databaseURL := requireDatabaseURLForUsecases(t)
-	if err := postgres.RunMigrations(databaseURL, migrationsDirForUsecases(t)); err != nil {
-		t.Fatalf("unexpected error running migrations: %v", err)
-	}
-
+	pool := ocDB(t)
 	ctx := context.Background()
-	pool, err := postgres.NewPool(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("unexpected error opening pool: %v", err)
-	}
-	defer pool.Close()
 
 	locations := postgres.NewLocationRepo(pool)
 	stockRepo := postgres.NewStockRepo(pool)
@@ -86,8 +70,8 @@ func TestIntegration_ReserveStock_SameDemandRefRetried_NoDoubleReserve(t *testin
 		t.Fatalf("unexpected error saving stock unit: %v", err)
 	}
 
-	// Unique per test run so reruns against a persistent database don't
-	// collide with a previous run's demandRef.
+	// Unique per test run so a retry within this test is the only thing
+	// that can match the demandRef.
 	demandRefSuffix, err := reservations.NextID(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error generating demandRef suffix: %v", err)

@@ -1,0 +1,21 @@
+---
+id: reports
+title: "Reports"
+description: "Reports"
+custom_edit_url: null
+---
+
+
+
+The read-only "Inventory Flow & Accuracy" analytical data product (ADR 0011, ADR 0020). Served by the separate `inventory-reports` deployment (cmd/inventory-reports) over its own read-only database pool — NOT by the OLTP `inventory` binary this spec's other paths describe — so these operations are excluded from the Schemathesis contract run, which boots only the OLTP binary.
+
+
+
+
+```mdx-code-block
+import DocCardList from '@theme/DocCardList';
+import {useCurrentSidebarCategory} from '@docusaurus/theme-common';
+
+<DocCardList items={useCurrentSidebarCategory().items}/>
+```
+      

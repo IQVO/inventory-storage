@@ -28,7 +28,7 @@ internal/
   application/
     ports/                   OUT interfaces: StockRepo, LocationRepo, ReservationRepo,
                               ProductClassificationRepo, LocationClassificationLookup,
-                              EventPublisher, ReservationMetrics, Clock
+                              EventPublisher, UnitOfWork, ReservationMetrics, Clock
     usecases/                one struct per use case
   adapters/
     inbound/http/            chi handlers, DTOs, error mapping
@@ -72,9 +72,14 @@ structs across the wire; every response is a DTO.
 
 ## ADR index (check before re-litigating a decision)
 
-`docs/docs/adr/0001..0025`: hexagonal layering ADR-0001, chaotic storage
+`docs/docs/adr/0001..0029`: hexagonal layering ADR-0001, chaotic storage
 ADR-0002, revocable reservations ADR-0003, DOT hazard segregation ADR-0010,
 facility-layout events cache ADR-0013, why the REST identity/bearer-auth
 layer was added then removed ADR-0014/0015, standard metrics convention
-ADR-0016, CloudEvents mandatory envelope ADR-0024, declarative bin
-registration & pick location ADR-0025.
+ADR-0016, transactional outbox ADR-0017, Idempotency-Key middleware
+ADR-0018, optimistic concurrency ADR-0019, resilience (breaker, DLQ,
+graceful shutdown) ADR-0020, Kafka partition key ADR-0021, CloudEvents
+mandatory envelope ADR-0024, declarative bin registration & pick location
+ADR-0025, housekeeping sweeper ADR-0026, MCP eval/governance suite ADR-0027,
+bootretry ADR-0028, extra architecture fitness tests ADR-0029. The full
+index with every Status is `docs/docs/adr/about.md`.

@@ -1,12 +1,13 @@
 ---
 id: 0012-adopt-mfe-console-architecture
-title: 12. Adopt the fleet's micro-frontend console architecture (ADR-0002 in warehouse-ops-agent)
+slug: /adr/0012-adopt-mfe-console-architecture
+title: 0012. Adopt the fleet's micro-frontend console architecture (ADR-0002 in warehouse-ops-agent)
 sidebar_label: 12. Adopt MFE console architecture
 sidebar_position: 12
 description: This service's own adoption record for warehouse-ops-agent's ADR-0002 -- the inventory-mfe remote, the additive GET /reservations?demandRef= endpoint, and CORS middleware that let this service participate in the fleet-wide operator console without being modified.
 ---
 
-# 12. Adopt the fleet's micro-frontend console architecture
+# 0012. Adopt the fleet's micro-frontend console architecture
 
 ## Status
 
@@ -15,7 +16,7 @@ description: This service's own adoption record for warehouse-ops-agent's ADR-00
 ## Context
 
 `warehouse-ops-agent`'s
-[ADR-0002](https://github.com/claudioed/warehouse-ops-agent/blob/docs/adr-mfe-architecture/docs/docs/adr/0002-micro-frontend-console-architecture.md)
+[ADR-0002](https://github.com/IQVO/warehouse-ops-agent/blob/develop/docs/docs/adr/0002-micro-frontend-console-architecture.md)
 is the fleet-wide decision: one Module Federation micro-frontend remote per
 bounded context, composed at runtime by a separate `warehouse-console` shell,
 with the one genuinely cross-cutting screen (Order Lifecycle) backed by a thin
@@ -49,7 +50,7 @@ Three things followed directly from that fleet decision landing:
   service's own remote's dev port). This service had never needed a browser
   client before; every prior consumer was a server-to-server caller
   (`wes-work-planning`'s Kafka consumer, `facility-layout`'s synchronous
-  read). See [`internal/adapters/inbound/http/server.go`](https://github.com/claudioed/inventory-storage/blob/develop/internal/adapters/inbound/http/server.go)'s
+  read). See [`internal/adapters/inbound/http/server.go`](https://github.com/IQVO/inventory-storage/blob/develop/internal/adapters/inbound/http/server.go)'s
   `NewRouter` and `corsAllowedOrigins`.
 
 ## Decision
@@ -86,8 +87,9 @@ Concretely, what already exists in this repo because of that adoption:
 - **CORS middleware** in `NewRouter`, `AllowedOrigins` driven by
   `CORS_ALLOWED_ORIGINS` (comma-separated), defaulting to the shell's dev
   origin and this remote's own dev port, `AllowCredentials: false` (this
-  service's auth is a static bearer key, not cookies, so no credentialed
-  cross-origin request is needed).
+  service is unauthenticated by decision — ADR-0015 — and uses no cookies, so
+  no credentialed cross-origin request is needed). `Idempotency-Key` is in the
+  allowed request headers (ADR-0018) for any future MFE write.
 
 What we deliberately did **not** do, consistent with ADR-0002's own scope
 boundaries:

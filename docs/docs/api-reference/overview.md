@@ -21,16 +21,18 @@ so they cannot drift from the spec the service ships.
 
 ## Endpoint matrix
 
-All 13 API routes registered in `internal/adapters/inbound/http/server.go`'s
-`NewRouter` are documented — **13 / 13** (the `/readyz` readiness probe is
-infrastructure, not part of the spec). (The separate `cmd/inventory-reports`
-binary serves the analytics report routes — see
-[Inventory Flow & Accuracy Report](/docs/analytics/inventory-flow-accuracy-report);
-they are not part of `apis/openapi.yaml`.)
+All 14 routes registered in `internal/adapters/inbound/http/server.go`'s
+`NewRouter` (including the `/readyz` readiness probe, ADR 0020) and the two
+routes of `NewReportsRouter` (`/reports/*`, served by the separate
+`cmd/inventory-reports` binary — see
+[Inventory Flow & Accuracy Report](/docs/analytics/inventory-flow-accuracy-report))
+are documented in `apis/openapi.yaml`. The `Reports` tag is excluded from the
+Schemathesis contract run, which boots only the OLTP binary.
 
 | Method | Path | Operation | Tag | Success | Errors |
 | --- | --- | --- | --- | --- | --- |
 | `GET` | `/healthz` | `getHealthz` | Health | `200` | — |
+| `GET` | `/readyz` | `getReadyz` | Health | `200` | `503` |
 | `POST` | `/stock/receive` | `receiveStock` | Stock | `202` | `400` `422` `500` |
 | `POST` | `/stock/stow` | `stowStock` | Stock | `201` | `400` `404` `409` `422` `500` |
 | `POST` | `/reservations` | `reserveStock` | Reservations | `201` | `400` `409` `422` `500` |
@@ -43,6 +45,13 @@ they are not part of `apis/openapi.yaml`.)
 | `POST` | `/bins/{binId}/cycle-count` | `runCycleCount` | Bins | `200` | `400` `404` `422` `500` |
 | `PUT` | `/products/{sku}/classification` | `classifyProduct` | Products | `200` / `201` | `400` `500` |
 | `GET` | `/products/{sku}/classification` | `getProductClassification` | Products | `200` | `404` `500` |
+| `GET` | `/reports/flow-accuracy` | `getFlowAccuracyReport` | Reports | `200` | `400` `500` |
+| `GET` | `/reports/flow-accuracy/freshness` | `getFlowAccuracyFreshness` | Reports | `200` | `500` |
+
+`POST /stock/receive` and `POST /reservations` additionally take the
+`Idempotency-Key` header ([ADR 0018](/docs/adr/0018-idempotency-key-middleware)):
+absent → `400 idempotency-key-required`; same key with a different body →
+`422 idempotency-key-reused`.
 
 ## Status-code conventions
 
@@ -123,6 +132,12 @@ Mapping is one-for-one with the typed domain and application errors, in
 | `temperature-class-mismatch` | 409 | `usecases.ErrTemperatureClassMismatch` |
 | `location-classification-unavailable` | 409 | `usecases.ErrLocationClassificationUnavailable` |
 | `hazmat-class-incompatible` | 409 | `usecases.ErrHazmatClassIncompatible` |
+| `concurrent-modification` | 409 | `usecases.ErrConcurrentModification` — a version-guarded `Save` lost an optimistic-concurrency race (ADR 0019); re-fetch and retry |
+| `counted-quantity-required` | 400 | written directly by the `POST /bins/{binId}/cycle-count` handler when `countedQuantity` is omitted |
+| `idempotency-key-required` | 400 | written by the `RequireIdempotencyKey` middleware (ADR 0018) |
+| `idempotency-key-reused` | 422 | written by the `RequireIdempotencyKey` middleware (ADR 0018) |
+| `invalid-report-query` | 400 | written by the reports handlers (`GET /reports/flow-accuracy`) |
+| `report-store-error` | 500 | written by the reports handlers when the read model fails |
 | `missing-demand-ref` | 400 | written directly by the `GET /reservations` and `POST /reservations` handlers (empty `demandRef`) |
 | `capacity-required` | 400 | written directly by the `PUT /bins/{binId}` handler when `capacity` is omitted |
 | `capacity-out-of-range` | 422 | written directly by the `PUT /bins/{binId}` handler when `capacity` exceeds int32 |

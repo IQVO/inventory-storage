@@ -1,6 +1,7 @@
 ---
 title: Ubiquitous Language
 sidebar_label: Ubiquitous Language
+sidebar_position: 1
 description: The exact vocabulary of the Inventory & Storage bounded context, with definitions and where each term lives in code.
 ---
 
@@ -65,9 +66,11 @@ capacity. A full bin rejects a stow.
 Note the deliberate narrowness: a `Bin` here is an id, a capacity and an
 occupancy. It knows nothing about aisles, zones, travel distance or
 temperature class — that structure belongs to the `facility-layout` bounded
-context.
+context. Bins are brought under management by **bin registration**
+(`PUT /bins/{binId}`, ADR 0025).
 
-*Code:* `internal/domain/location.Bin`
+*Code:* `internal/domain/location.Bin` (package `location`, type `Bin` — the
+glossary's "Location" has no type of its own)
 
 ### Stow
 
@@ -106,15 +109,18 @@ physical holding.
 ### Allocation
 
 A line on a `Reservation` recording that `n` units were drawn from a specific
-`StockUnit`. It exists so revoke and confirm-pick are exact. It is an internal
-part of the `Reservation` aggregate, not an aggregate of its own.
+`StockUnit`, and the bin that unit sits in — the **pick location**
+(`BinID`, ADR 0025; a `StockUnit` never changes bin, so it is stable). It
+exists so revoke and confirm-pick are exact and so a picker knows where to
+go. It is an internal part of the `Reservation` aggregate, not an aggregate
+of its own.
 
 *Code:* `reservation.Allocation`
 
 ### Cycle count
 
 Verifying a bin's contents against system records and reconciling
-discrepancies. A shortfall (counted &lt; system) flags stock `Unlocated`; an
+discrepancies. A shortfall (counted below system) flags stock `Unlocated`; an
 overage is reported as a discrepancy for a separate receiving/audit process,
 because reconciling *upward* means goods entered the building without being
 received, which is not this operation's job to invent.
@@ -171,6 +177,36 @@ Anti-Corruption boundary: order semantics do not leak into the inventory model.
 `ACTIVE` is the only status from which a transition is legal. Attempting to
 revoke, confirm or expire an already-resolved reservation returns
 `ErrAlreadyResolved` — that is the no-double-consume rule.
+
+## Further terms (process and integration)
+
+| Term | Definition | Code identifier |
+| --- | --- | --- |
+| **Receive / staged receipt** | Acknowledging inbound goods for a SKU before they are located. Not persisted as an aggregate; the ledger starts at stow. | `usecases.ReceiveStock`, `usecases.StagedReceipt` |
+| **Pick location** | The bin an allocation draws from — where the picker goes. | `reservation.Allocation.BinID` (JSON `allocations[].binId`) |
+| **Confirm pick** | The accounting consequence of a successful physical pick: consumes the reservation, removes on-hand quantity, frees bin capacity. | `usecases.ConfirmPick`, `stock.StockUnit.Pick`, `location.Bin.Release` |
+| **Revoke** | Cancelling an `ACTIVE` reservation; its quantity returns to usable. | `usecases.RevokeReservation`, `reservation.Reservation.Revoke` |
+| **Lazy expiry** | A timed-out `ACTIVE` reservation is expired when it is next read, not by a timer. | `usecases.expireIfDue` / `expireAllIfDue`, `reservation.Reservation.Expire` |
+| **Replay guard** | A `ReserveStock` retry with the same `demandRef`, SKU and quantity returns the existing `ACTIVE` reservation. | `ReserveStock.activeReservationFor`, `isReplayOf` |
+| **Bin registration** | Declaratively creating or resizing a bin to a stated capacity. | `usecases.RegisterBin`, `location.Bin.Resize`, `RegisterBinOutcome` |
+| **Placement rule** | Hazmat SKUs need a hazmat-rated zone; temperature-sensitive SKUs need a matching zone temperature class. | `StowStock.checkPlacement`, `product.SlotAttributes` |
+| **Slot attributes** | This context's view of a facility-layout slot's zone: hazmat flag, temperature class, and whether it is known at all. | `product.SlotAttributes`, `ports.LocationClassificationLookup` |
+| **Same-bin segregation** | Two SKUs whose DOT hazard classes are incompatible may not share a bin. | `StowStock.checkSegregation`, `product.Incompatible` |
+| **Discrepancy** | A cycle count whose counted quantity differs from the system quantity. | `shared.DiscrepancyDetected`, `CycleCountResult.Discrepancy` |
+| **Idempotency key** | Caller-supplied header that makes `POST /stock/receive` and `POST /reservations` safe to retry. | `RequireIdempotencyKey` in `internal/adapters/inbound/http`, table `idempotency_keys` |
+| **Flow & Accuracy report** | Hourly per-SKU/bin rollup of flow and accuracy counters — the analytical data product. | `internal/analytics/report`, table `flow_accuracy_rollup` |
+
+### Where the code name differs from the spoken term
+
+| Spoken term | Code name | Note |
+| --- | --- | --- |
+| Location | `location.Bin`, `shared.BinId` | "Location" survives only as the package name and in `LocationRepo` / `LocationRecorded`. |
+| Usable inventory | `usecases.UsableInventory`, `StockUnit.Usable()` | The read model is computed on read, not stored. |
+| Cycle count | `usecases.RunCycleCount`, `CycleCountCompleted` | The command is "run"; the fact is "completed". |
+| Demand reference | `DemandRef` (Go), `demandRef` (REST), `demand_ref` (event `data`) | Three casings of one term — the wire contracts are frozen. |
+| Lost / unlocated | `stock.StateUnlocated`, `ItemUnlocated` | "Lost" appears only in comments; every identifier says Unlocated. |
+| Hazard class | `product.DOTHazardClass` | Always the US DOT top-level class 1-9. |
+| Classification | `product.ProductClassification` | Never the zone classification, which is `SlotAttributes`. |
 
 ## Words that mean something different elsewhere
 

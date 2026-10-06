@@ -46,6 +46,16 @@ spec:
               value: {{ .Values.config.migrationsPath | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            # Same publisher selection as the API deployment (ADR-0017): with
+            # EVENT_PUBLISHER=kafka and a database, MCP-initiated writes
+            # (revoke_reservation) enqueue transactional-outbox rows that the
+            # API pod's relay drains onto Kafka. The MCP pod runs no relay.
+            - name: EVENT_PUBLISHER
+              value: {{ .Values.config.eventPublisher | quote }}
+            {{- if .Values.kafka.enabled }}
+            - name: KAFKA_BROKERS
+              value: {{ .Values.kafka.brokers | quote }}
+            {{- end }}
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
             - name: SERVICE_VERSION
