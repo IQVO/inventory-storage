@@ -75,9 +75,10 @@ NO envelope toggle.
   `log`).
 - Topic: `warehouse.inventory.events`.
 
-## Published today: 2 of 10 catalog events
+## Published today: 4 of 12 catalog events
 
-**Only `StockReserved` and `ReservationRevoked` cross the service boundary.**
+**`StockReserved`, `ReservationRevoked`, `TransferStockAllocated` and
+`TransferStockAllocationRejected` cross the service boundary.**
 The Kafka adapter's `switch` has a `default: return nil` branch that
 silently drops every other domain event — deliberate, not an oversight.
 `apis/asyncapi.yaml` documents the full 10-event catalog (three of the four
@@ -98,6 +99,14 @@ documented event for a wired one.
   emitting a partial payload if the lookup misses).
   Downstream: `wes-work-planning` increments its observed usable count back.
 
+- **TransferStockAllocated** — `data`: `{"transfer_id", "transfer_line_id", "origin_site_id", "reservation_id", "sku", "quantity", "allocations": [{"stock_unit_id", "bin_id", "quantity"}], "expires_at"}`.
+  Reply leg of the transfer-allocation command/reply (ADR-0030): raised by
+  `AllocateTransferStock` when a network transfer line's stock was held.
+  Key/subject = reservation id. Integration topic only (no analytics variant).
+- **TransferStockAllocationRejected** — `data`: `{"transfer_id", "transfer_line_id", "origin_site_id", "sku", "requested_quantity", "reason"}`.
+  `reason` is the closed set `ORIGIN_SITE_UNKNOWN | INSUFFICIENT_USABLE |
+  IDEMPOTENCY_CONFLICT`. Key/subject = transfer_line_id. Integration topic only.
+
 Both events already exist in the domain event list above — do not invent
 new event names when wiring a publisher; carry them through with this exact
 `data` shape.
@@ -115,6 +124,30 @@ regardless of the topic's partition count (ADR-0021) — cross-reservation/
 cross-SKU ordering is still not guaranteed, and the authoritative answer
 for correctness-sensitive reads is always `GET /inventory/{sku}/usable`,
 not the event stream.
+
+## Consumed: `warehouse.network-inventory-planning.events` (ADR-0030)
+
+- Adapter: `internal/adapters/inbound/kafka/transfer_consumer.go` — the
+  command side of the transfer-allocation exchange. Selected by
+  `TRANSFER_ALLOCATION_CONSUMER_MODE=kafka` (default `off`; also requires
+  `DATABASE_URL` — the decision is only atomic through the Postgres
+  UnitOfWork/outbox, so an in-memory run must not consume real commands).
+  Consumer group: `TRANSFER_ALLOCATION_CONSUMER_GROUP` (default
+  `inventory-storage-transfer-allocation`).
+- Dispatches ONLY on the full type
+  `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested`
+  with `data` `{transfer_id, transfer_line_id, origin_site_id, sku, quantity}`;
+  every other type on the topic is acknowledged untouched.
+- Run loop follows the at-least-once atomicity checklist: `FetchMessage`
+  (never auto-committing `ReadMessage`), commit only after the handler
+  settles, capped-backoff retry of the SAME message on transient errors,
+  deterministic poison (not CloudEvents, malformed command) logged and
+  committed past — never retried, never blocking.
+- Idempotency is the `transfer_allocations` ledger (DB-unique
+  `transfer_line_id`): a replayed command returns the original outcome
+  without touching stock or republishing; the same line id with a
+  DIFFERENT payload answers `IDEMPOTENCY_CONFLICT` while the original
+  decision stands.
 
 ## Consumed: `warehouse.facility.events` (ADR-0013)
 

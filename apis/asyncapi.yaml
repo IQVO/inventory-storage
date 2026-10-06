@@ -133,6 +133,8 @@ channels:
         oneOf:
           - $ref: "#/components/messages/StockReserved"
           - $ref: "#/components/messages/ReservationRevoked"
+          - $ref: "#/components/messages/TransferStockAllocated"
+          - $ref: "#/components/messages/TransferStockAllocationRejected"
 
   warehouse.inventory.analytics:
     description: >
@@ -316,6 +318,105 @@ components:
               sku: SKU-1
               quantity: 5
               demand_ref: order-42
+
+    TransferStockAllocated:
+      name: TransferStockAllocated
+      title: Transfer Stock Allocated
+      summary: Origin-site stock was reserved for a network transfer line.
+      description: >
+        Raised by the AllocateTransferStock use case when a transfer
+        allocation command from network-inventory-planning
+        (com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested
+        on warehouse.network-inventory-planning.events) was satisfied:
+        usable stock in the ORIGIN SITE's custody was drawn and a
+        revocable Reservation now holds it, correlated to the transfer
+        line via the transfer_allocations ledger (one row per
+        transfer_line_id, DB-unique — replays return this same event's
+        original outcome without re-deciding).
+
+
+        **Integration topic only** (no analytics variant: the Inventory
+        Flow & Accuracy projection has no transfer dimension). Kafka key
+        and CloudEvents `subject` are the reservation id, so a transfer's
+        replies stay per-reservation ordered (ADR 0021).
+      contentType: application/cloudevents+json
+      tags:
+        - name: reservation
+          description: Raised on the Reservation aggregate's stock-holding path.
+      payload:
+        $ref: "#/components/schemas/TransferStockAllocatedEvent"
+      examples:
+        - name: allocatedForTransferLine
+          summary: Six units of SKU-T1 reserved at SITE-A for transfer line tl-77-1.
+          payload:
+            specversion: "1.0"
+            id: 3f9d2b66-8c41-4e07-b2a9-6d5c1e0f4b21
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated
+            subject: res-tr-1
+            time: "2026-10-06T12:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:TransferStockAllocated:v1
+            data:
+              transfer_id: tr-77
+              transfer_line_id: tl-77-1
+              origin_site_id: SITE-A
+              reservation_id: res-tr-1
+              sku: SKU-T1
+              quantity: 6
+              allocations:
+                - stock_unit_id: su-1
+                  bin_id: BIN-1
+                  quantity: 4
+                - stock_unit_id: su-2
+                  bin_id: BIN-2
+                  quantity: 2
+              expires_at: "2026-10-06T12:30:00Z"
+
+    TransferStockAllocationRejected:
+      name: TransferStockAllocationRejected
+      title: Transfer Stock Allocation Rejected
+      summary: No stock was held for a network transfer line; the closed reason says why.
+      description: >
+        Raised by the AllocateTransferStock use case when a transfer
+        allocation command could not be satisfied. `reason` is a CLOSED
+        set: ORIGIN_SITE_UNKNOWN (no usable stock in the requested origin
+        site's custody — including legacy site-less stock, which is never
+        transfer-allocatable), INSUFFICIENT_USABLE (the origin holds the
+        SKU but not enough usable quantity), IDEMPOTENCY_CONFLICT (the
+        transfer_line_id was replayed with a DIFFERENT command payload;
+        the original ledger decision stands and this reply tells the
+        planner so).
+
+
+        **Integration topic only** (no analytics variant). Kafka key and
+        CloudEvents `subject` are the transfer_line_id — a rejection has
+        no reservation, so the line is the aggregate the reply is about.
+      contentType: application/cloudevents+json
+      tags:
+        - name: reservation
+          description: Reply on the transfer allocation command path.
+      payload:
+        $ref: "#/components/schemas/TransferStockAllocationRejectedEvent"
+      examples:
+        - name: rejectedInsufficientUsable
+          summary: SITE-B could not cover nine units of SKU-T2.
+          payload:
+            specversion: "1.0"
+            id: 5a1e7c93-d4f8-4b60-c3d7-7e9b2f6a8c15
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected
+            subject: tl-77-2
+            time: "2026-10-06T12:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:TransferStockAllocationRejected:v1
+            data:
+              transfer_id: tr-77
+              transfer_line_id: tl-77-2
+              origin_site_id: SITE-B
+              sku: SKU-T2
+              requested_quantity: 9
+              reason: INSUFFICIENT_USABLE
 
     ReservationExpired:
       name: ReservationExpired
@@ -1043,3 +1144,128 @@ components:
                   type: integer
                   minimum: 0
                   description: Quantity the system believed was in the bin.
+
+    TransferStockAllocatedEvent:
+      description: CloudEvents envelope for a TransferStockAllocated domain event.
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for TransferStockAllocated.
+              const: "com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:TransferStockAllocated:v1
+              pattern: "^urn:warehouse:inventory-storage:events:TransferStockAllocated:v1$"
+            data:
+              type: object
+              description: Business payload for TransferStockAllocated.
+              required:
+                - transfer_id
+                - transfer_line_id
+                - origin_site_id
+                - reservation_id
+                - sku
+                - quantity
+                - allocations
+                - expires_at
+              properties:
+                transfer_id:
+                  type: string
+                  description: The planning context's transfer (saga) id.
+                transfer_line_id:
+                  type: string
+                  description: The transfer line this allocation decides; DB-unique in the ledger.
+                origin_site_id:
+                  type: string
+                  description: The site whose custody donated the stock.
+                reservation_id:
+                  type: string
+                  description: The Reservation aggregate now holding the stock.
+                sku:
+                  type: string
+                  description: The stock keeping unit allocated.
+                quantity:
+                  type: integer
+                  minimum: 1
+                  description: Total quantity held for the transfer line.
+                allocations:
+                  type: array
+                  minItems: 1
+                  description: Per-stock-unit draws with pick locations.
+                  items:
+                    type: object
+                    required:
+                      - stock_unit_id
+                      - bin_id
+                      - quantity
+                    properties:
+                      stock_unit_id:
+                        type: string
+                      bin_id:
+                        type: string
+                      quantity:
+                        type: integer
+                        minimum: 1
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: When the holding reservation times out (revocable).
+
+    TransferStockAllocationRejectedEvent:
+      description: CloudEvents envelope for a TransferStockAllocationRejected domain event.
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for TransferStockAllocationRejected.
+              const: "com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:TransferStockAllocationRejected:v1
+              pattern: "^urn:warehouse:inventory-storage:events:TransferStockAllocationRejected:v1$"
+            data:
+              type: object
+              description: Business payload for TransferStockAllocationRejected.
+              required:
+                - transfer_id
+                - transfer_line_id
+                - origin_site_id
+                - sku
+                - requested_quantity
+                - reason
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                origin_site_id:
+                  type: string
+                sku:
+                  type: string
+                requested_quantity:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+                  enum:
+                    - ORIGIN_SITE_UNKNOWN
+                    - INSUFFICIENT_USABLE
+                    - IDEMPOTENCY_CONFLICT
+                  description: >
+                    Closed rejection reason set. ORIGIN_SITE_UNKNOWN: no
+                    usable stock in the origin site's custody (including
+                    legacy site-less stock). INSUFFICIENT_USABLE: origin
+                    holds the SKU but not enough usable quantity.
+                    IDEMPOTENCY_CONFLICT: the line id was replayed with a
+                    different payload; the original decision stands.

@@ -46,4 +46,17 @@ var (
 	// than treat this as success or as a generic internal error — the
 	// inbound HTTP adapter maps it to 409 Conflict.
 	ErrConcurrentModification = errors.New("aggregate was concurrently modified by another writer; re-fetch and retry")
+
+	// ErrTransferLineAlreadyDecided is returned by
+	// TransferAllocationRepo.Save when the transfer_line_id already has a
+	// decided ledger row (the DB unique constraint fired). The use case
+	// treats it as "replay — return the original outcome", never as a
+	// write failure.
+	ErrTransferLineAlreadyDecided = errors.New("transfer line already decided")
+
+	// Closed rejection reasons for a transfer allocation (wire-stable —
+	// these exact strings ride the TransferStockAllocationRejected event).
+	RejectionOriginSiteUnknown   = "ORIGIN_SITE_UNKNOWN"
+	RejectionInsufficientUsable  = "INSUFFICIENT_USABLE"
+	RejectionIdempotencyConflict = "IDEMPOTENCY_CONFLICT"
 )

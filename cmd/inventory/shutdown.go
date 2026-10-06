@@ -16,8 +16,9 @@ const httpShutdownTimeout = 10 * time.Second
 
 // serveHTTPUntilSignal runs the HTTP server until SIGINT/SIGTERM (or a
 // listen error), then drains it together with the facility location
-// cache consumer, bounded by a grace deadline.
-func serveHTTPUntilSignal(logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness, stopLookup context.CancelFunc, closeLocationLookup func(), lookupRunDone <-chan struct{}) error {
+// cache consumer and the transfer allocation command consumer, bounded
+// by a grace deadline.
+func serveHTTPUntilSignal(logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness, stopLookup context.CancelFunc, closeLocationLookup func(), lookupRunDone <-chan struct{}, transfer transferConsumerHandle) error {
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("http server listening", "addr", httpServer.Addr)
@@ -33,11 +34,12 @@ func serveHTTPUntilSignal(logger *slog.Logger, httpServer *http.Server, readines
 	case err := <-errCh:
 		stopLookup()
 		closeLocationLookup()
+		stopTransferConsumer(logger, transfer)
 		return err
 	case <-ctx.Done():
 	}
 
-	return gracefulShutdown(logger, httpServer, readiness, stopLookup, closeLocationLookup, lookupRunDone)
+	return gracefulShutdown(logger, httpServer, readiness, stopLookup, closeLocationLookup, lookupRunDone, transfer)
 }
 
 // gracefulShutdown (ADR-0020 §graceful shutdown), in order:
@@ -50,16 +52,17 @@ func serveHTTPUntilSignal(logger *slog.Logger, httpServer *http.Server, readines
 //     here only to hit a closing connection.
 //  2. Stop accepting new HTTP connections and drain in-flight
 //     requests, bounded by httpShutdownTimeout.
-//  3. Stop the facility location cache consumer's Run loop
-//     cleanly: cancel lookupCtx (no new message is fetched/handled
-//     after this) and wait, bounded by shutdownDrainTimeout, for
-//     its goroutine to actually finish rather than merely asking
-//     it to stop and moving on.
+//  3. Stop the facility location cache consumer's and the transfer
+//     allocation command consumer's Run loops cleanly: cancel lookupCtx
+//     (no new message is fetched/handled after this — it is the shared
+//     context of BOTH consumer loops) and wait, bounded by
+//     shutdownDrainTimeout, for their goroutines to actually finish
+//     rather than merely asking them to stop and moving on.
 //  4. Only THEN does the deferred adapters.close (registered in
 //     run(), so by defer's LIFO order it runs LAST of all, after
 //     this function returns and every consumer/relay goroutine has
 //     already stopped touching the pgx pool) close Postgres.
-func gracefulShutdown(logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness, stopLookup context.CancelFunc, closeLocationLookup func(), lookupRunDone <-chan struct{}) error {
+func gracefulShutdown(logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness, stopLookup context.CancelFunc, closeLocationLookup func(), lookupRunDone <-chan struct{}, transfer transferConsumerHandle) error {
 	readiness.SetNotReady()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
@@ -68,8 +71,31 @@ func gracefulShutdown(logger *slog.Logger, httpServer *http.Server, readiness *i
 
 	stopFacilityCacheConsumer(logger, stopLookup, lookupRunDone)
 	closeLocationLookup()
+	stopTransferConsumer(logger, transfer)
 
 	return err
+}
+
+// stopTransferConsumer drains the transfer allocation command consumer:
+// its Run loop was already unblocked by the stopLookup cancel (the two
+// inbound consumers share lookupCtx), so wait (bounded) for the Run
+// goroutine to actually return before its Kafka reader is closed. A noop
+// handle ("off" mode) returns immediately.
+func stopTransferConsumer(logger *slog.Logger, transfer transferConsumerHandle) {
+	if transfer.wait == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		transfer.wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(shutdownDrainTimeout):
+		logger.Warn("transfer allocation command consumer did not stop before the shutdown drain deadline")
+	}
+	transfer.close()
 }
 
 // stopFacilityCacheConsumer stops the facility location cache consumer's

@@ -97,6 +97,8 @@ consumed only by this service's analytics projector). `LocationRecorded` and
 | --- | --- | --- | --- |
 | **StockReserved** | `com.warehouse.wms.inventory-storage.reservation.StockReserved` | `sku`, `quantity`, `demand_ref` | `sku`, `reservation_id`, `quantity` |
 | **ReservationRevoked** | `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | `sku`, `quantity`, `demand_ref` | `reservation_id`, `sku` |
+| **TransferStockAllocated** | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated` | `transfer_id`, `transfer_line_id`, `origin_site_id`, `reservation_id`, `sku`, `quantity`, `allocations[]`, `expires_at` (ADR-0030; key = reservation id) | — |
+| **TransferStockAllocationRejected** | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected` | `transfer_id`, `transfer_line_id`, `origin_site_id`, `sku`, `requested_quantity`, `reason` (closed set; key = transfer_line_id) | — |
 | ReservationExpired | `com.warehouse.wms.inventory-storage.reservation.ReservationExpired` | — | `reservation_id`, `sku` (raised on lazy read, see [Domain Events](/docs/ddd/domain-events#lazy-expiry-no-sweeper-resolved-at-the-next-read)) |
 | StockPicked | `com.warehouse.wms.inventory-storage.reservation.StockPicked` | — | `sku`, `reservation_id`, `quantity` |
 

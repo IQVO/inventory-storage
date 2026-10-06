@@ -71,10 +71,14 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 		return nil, err
 	}
 
-	// The touched StockUnit saves, the reservation row and the event all
-	// commit or roll back together in this use case's own UnitOfWork, so
-	// atomicity does not depend on an outer transaction (e.g. the HTTP
-	// idempotency middleware's) already being on ctx.
+	// Every mutated StockUnit save, the Reservation save AND the event
+	// publish run inside ONE UnitOfWork scope (the audit's atomicity
+	// fix): a failure after the first stock decrement rolls back all of
+	// them, so a half-drawn reservation can never survive. Before this,
+	// the stock saves ran BEFORE the closure — a failed reservation save
+	// left the stock decremented with no reservation holding it.
+	// Atomicity therefore does not depend on an outer transaction (e.g.
+	// the HTTP idempotency middleware's) already being on ctx.
 	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		for _, unit := range touched {
 			if err := uc.Stock.Save(ctx, unit); err != nil {

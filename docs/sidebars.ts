@@ -107,6 +107,7 @@ const sidebars: SidebarsConfig = {
         'adr/0027-mcp-eval-and-governance-suite',
         'adr/0028-bootretry-boot-time-dial-retry',
         'adr/0029-extra-architecture-fitness-tests',
+        'adr/0030-site-scoped-transfer-allocation',
       ],
     },
   ],

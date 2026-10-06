@@ -10,6 +10,7 @@
 //	postgres.go     migrations + pgxpool dial under boot retry
 //	housekeeping.go idempotency-key / outbox retention sweeper
 //	lookup.go       LocationClassificationLookup adapter selection
+//	transfer.go     transfer allocation command consumer (Phase 2)
 //	server.go       use-case + HTTP server wiring
 //	shutdown.go     signal handling and graceful drain
 package main
@@ -36,7 +37,7 @@ func main() {
 // run is the startup sequence. Order matters and mirrors the shutdown
 // order in reverse (defers run LIFO): telemetry first (so every adapter is
 // built against the real providers) and flushed last; adapters next and
-// closed after the HTTP server and the location consumer have stopped.
+// closed after the HTTP server and the inbound consumers have stopped.
 func run() error {
 	cfg := loadConfig()
 	logger := newLogger(cfg.logLevel)
@@ -70,14 +71,29 @@ func run() error {
 	// itself stops accepting connections.
 	readiness := &inboundhttp.Readiness{}
 
-	// The lookup's Kafka consumer (when LOCATION_LOOKUP_MODE=kafka) must
-	// outlive this call and stop on shutdown, so it gets its own
-	// cancellable context rather than the signal context established in
+	// The inbound consumers' Kafka loops (facility location cache when
+	// LOCATION_LOOKUP_MODE=kafka, transfer allocation commands when
+	// TRANSFER_ALLOCATION_CONSUMER_MODE=kafka) must outlive this call
+	// and stop on shutdown, so they share one cancellable context
+	// rather than the signal context established in
 	// serveHTTPUntilSignal — which does not exist yet at this point.
 	lookupCtx, stopLookup := context.WithCancel(context.Background())
 	lookup, err := buildLocationLookup(lookupCtx, cfg.locationLookupMode, cfg.facilityLayoutBaseURL, cfg.kafkaBrokers, circuitBreakerMetrics(logger), logger)
 	if err != nil {
 		stopLookup()
+		return err
+	}
+
+	// Transfer allocation command consumer (Phase 2 command/reply leg of
+	// the network transfer saga): consumes network-inventory-planning's
+	// TransferAllocationRequested and runs AllocateTransferStock. Runs
+	// under the SAME lookupCtx, so shutdown's stopLookup cancel unblocks
+	// both consumer loops. Default "off"; see buildTransferAllocationConsumer
+	// for the fail-closed guards.
+	transfer, err := buildTransferAllocationConsumer(lookupCtx, logger, cfg, adapters)
+	if err != nil {
+		stopLookup()
+		lookup.close()
 		return err
 	}
 
@@ -88,5 +104,5 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	return serveHTTPUntilSignal(logger, httpServer, readiness, stopLookup, lookup.close, lookup.runDone)
+	return serveHTTPUntilSignal(logger, httpServer, readiness, stopLookup, lookup.close, lookup.runDone, transfer)
 }

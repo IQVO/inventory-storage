@@ -40,14 +40,15 @@ func NewStockRepo(pool *pgxpool.Pool) *StockRepo {
 // second Save in the same flow (ADR 0019 §"Save and the in-memory version").
 func (r *StockRepo) Save(ctx context.Context, unit *stock.StockUnit) error {
 	tag, err := querierFrom(ctx, r.pool).Exec(ctx, `
-		INSERT INTO stock_units (id, sku, bin_id, quantity, reserved, state, version)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO stock_units (id, sku, bin_id, quantity, reserved, state, site_id, version)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8)
 		ON CONFLICT (id) DO UPDATE SET
 			sku = EXCLUDED.sku, bin_id = EXCLUDED.bin_id,
 			quantity = EXCLUDED.quantity, reserved = EXCLUDED.reserved, state = EXCLUDED.state,
+			site_id = COALESCE(EXCLUDED.site_id, stock_units.site_id),
 			version = stock_units.version + 1
-		WHERE stock_units.version = $8
-	`, unit.ID(), unit.SKU().String(), unit.BinID().String(), unit.Quantity().Int(), unit.Reserved().Int(), string(unit.State()), unit.Version(), unit.Version())
+		WHERE stock_units.version = $9
+	`, unit.ID(), unit.SKU().String(), unit.BinID().String(), unit.Quantity().Int(), unit.Reserved().Int(), string(unit.State()), unit.SiteID().String(), unit.Version(), unit.Version())
 	if err != nil {
 		return err
 	}
@@ -58,7 +59,7 @@ func (r *StockRepo) Save(ctx context.Context, unit *stock.StockUnit) error {
 }
 
 func (r *StockRepo) FindByID(ctx context.Context, id string) (*stock.StockUnit, error) {
-	row := querierFrom(ctx, r.pool).QueryRow(ctx, `SELECT id, sku, bin_id, quantity, reserved, state, version FROM stock_units WHERE id = $1`, id)
+	row := querierFrom(ctx, r.pool).QueryRow(ctx, `SELECT id, sku, bin_id, quantity, reserved, state, site_id, version FROM stock_units WHERE id = $1`, id)
 	unit, err := scanStockUnit(row)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -67,7 +68,7 @@ func (r *StockRepo) FindByID(ctx context.Context, id string) (*stock.StockUnit, 
 }
 
 func (r *StockRepo) FindBySKU(ctx context.Context, sku shared.SKU) ([]*stock.StockUnit, error) {
-	rows, err := querierFrom(ctx, r.pool).Query(ctx, `SELECT id, sku, bin_id, quantity, reserved, state, version FROM stock_units WHERE sku = $1`, sku.String())
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `SELECT id, sku, bin_id, quantity, reserved, state, site_id, version FROM stock_units WHERE sku = $1`, sku.String())
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +77,24 @@ func (r *StockRepo) FindBySKU(ctx context.Context, sku shared.SKU) ([]*stock.Sto
 }
 
 func (r *StockRepo) FindByBin(ctx context.Context, binID shared.BinId) ([]*stock.StockUnit, error) {
-	rows, err := querierFrom(ctx, r.pool).Query(ctx, `SELECT id, sku, bin_id, quantity, reserved, state, version FROM stock_units WHERE bin_id = $1`, binID.String())
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `SELECT id, sku, bin_id, quantity, reserved, state, site_id, version FROM stock_units WHERE bin_id = $1`, binID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanStockUnits(rows)
+}
+
+// FindBySKUAtSite returns sku's stock units whose recorded site custody is
+// originSiteID. Legacy site-less rows (site_id NULL) are deliberately
+// excluded: a transfer must never draw from a unit whose site is not a
+// validated fact (see ports.StockRepo.FindBySKUAtSite).
+func (r *StockRepo) FindBySKUAtSite(ctx context.Context, sku shared.SKU, originSiteID shared.SiteID) ([]*stock.StockUnit, error) {
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
+		SELECT id, sku, bin_id, quantity, reserved, state, site_id, version
+		FROM stock_units
+		WHERE sku = $1 AND site_id = $2
+	`, sku.String(), originSiteID.String())
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +113,8 @@ type rowScanner interface {
 func scanStockUnit(row rowScanner) (*stock.StockUnit, error) {
 	var id, skuStr, binStr, state string
 	var quantity, reserved, version int
-	if err := row.Scan(&id, &skuStr, &binStr, &quantity, &reserved, &state, &version); err != nil {
+	var siteID *string
+	if err := row.Scan(&id, &skuStr, &binStr, &quantity, &reserved, &state, &siteID, &version); err != nil {
 		return nil, err
 	}
 	sku, err := rehydrateSKU(skuStr)
@@ -114,6 +133,15 @@ func scanStockUnit(row rowScanner) (*stock.StockUnit, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stock unit %q: %w", id, err)
 	}
+	if siteID != nil {
+		// Site custody recorded: hydrate it as a validated fact.
+		site, err := shared.NewSiteID(*siteID)
+		if err != nil {
+			return nil, fmt.Errorf("stock unit %q: %w", id, err)
+		}
+		return stock.RehydrateStockUnitAtSite(id, sku, binID, qty, res, stock.State(state), site, version), nil
+	}
+	// Legacy site-less row: no custody fact, never transfer-allocatable.
 	return stock.RehydrateStockUnit(id, sku, binID, qty, res, stock.State(state), version), nil
 }
 

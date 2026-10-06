@@ -244,10 +244,11 @@ curl -s -i -X DELETE localhost:8080/reservations/does-not-exist
 
 This service publishes integration events to the shared warehouse-systems
 Kafka broker so other bounded contexts (e.g. `wes-work-planning`) can project
-their own read models from inventory reality. It also consumes one topic,
+their own read models from inventory reality. It also consumes two topics:
 `warehouse.facility.events`, to keep a local read model of facility-layout's
 zone classifications (see [Consumed](#consumed-facility-layouts-location-classifications)
-below).
+below), and `warehouse.network-inventory-planning.events`, the command side
+of the site-scoped transfer allocation exchange (ADR-0030).
 
 - **Topic**: `warehouse.inventory.events`
 - **Publisher selection**: `EVENT_PUBLISHER` env var — `log` (default:
@@ -298,6 +299,30 @@ below).
   ```json
   {"sku": "SKU-1", "quantity": 4, "demand_ref": "order-42"}
   ```
+  Plus the transfer-allocation replies (ADR-0030, integration topic only,
+  through the same transactional outbox):
+  `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated`
+  (key/subject = reservation id) with `data`:
+  ```json
+  {
+    "transfer_id": "tr-77", "transfer_line_id": "tl-77-1",
+    "origin_site_id": "SITE-A", "reservation_id": "res-tr-1",
+    "sku": "SKU-T1", "quantity": 6,
+    "allocations": [{"stock_unit_id": "su-1", "bin_id": "BIN-1", "quantity": 6}],
+    "expires_at": "2026-10-06T12:30:00Z"
+  }
+  ```
+  and `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected`
+  (key/subject = transfer_line_id) with `data`:
+  ```json
+  {
+    "transfer_id": "tr-77", "transfer_line_id": "tl-77-2",
+    "origin_site_id": "SITE-B", "sku": "SKU-T2",
+    "requested_quantity": 9, "reason": "INSUFFICIENT_USABLE"
+  }
+  ```
+  `reason` is the closed set `ORIGIN_SITE_UNKNOWN | INSUFFICIENT_USABLE |
+  IDEMPOTENCY_CONFLICT`.
   (`ReservationRevoked`'s domain event only carries the reservation id; the
   Kafka adapter looks the reservation back up via `ReservationRepo` to fill in
   `sku`/`quantity`/`demand_ref`.) Every other domain event (`StockReceived`,
@@ -322,7 +347,31 @@ kubectl --context kind-warehouse -n warehouse-systems exec -it kafka-controller-
 # then drive a reservation + revoke through the API (see curl walkthrough above)
 ```
 
-### Consumed: facility-layout's location classifications
+### Consumed: network-inventory-planning's transfer allocation commands
+
+The command side of the site-scoped transfer allocation exchange
+([ADR-0030](docs/docs/adr/0030-site-scoped-transfer-allocation.md)).
+network-inventory-planning publishes
+`com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested`
+(`data`: `{transfer_id, transfer_line_id, origin_site_id, sku, quantity}`) per
+transfer line; this service decides it exactly once — stock in the ORIGIN
+SITE's custody is drawn into a revocable `Reservation`, the decision is
+recorded in the `transfer_allocations` ledger (DB-unique on
+`transfer_line_id`), and the reply event goes out through the transactional
+outbox, all in ONE Postgres transaction. A replayed command returns the
+original outcome without touching stock again; a same-line-id /
+different-payload command is answered `IDEMPOTENCY_CONFLICT`.
+
+Stock without a recorded site (rows persisted before migration 0030) is
+**never transfer-allocatable** — such commands answer `ORIGIN_SITE_UNKNOWN`
+while continuing to serve ordinary demand unchanged.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `TRANSFER_ALLOCATION_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`) |
+| `TRANSFER_ALLOCATION_CONSUMER_GROUP` | `inventory-storage-transfer-allocation` | Consumer group id |
+
+## Consumed: facility-layout's location classifications
 
 `StowStock` enforces hazmat-zone and temperature-class placement for SKUs
 classified `Hazmat` or `TemperatureSensitive` (ADR-0009), which needs the
