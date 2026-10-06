@@ -66,10 +66,12 @@ that is not a valid CloudEvent.
 
 `sku` is enriched onto reservation-lifecycle events (`ReservationExpired`,
 `ReservationRevoked`) by the publisher via a `ReservationRepo` lookup, since
-those domain events carry only a reservation id. `LocationRecorded` and
-`ProductClassified` are never published to this topic — the analytics
-publisher's `analyticsEventFor` returns "not part of the contract" for them,
-so no outbox row or Kafka message is produced.
+those domain events carry only a reservation id. `LocationRecorded` is never
+published to this topic — the analytics publisher's `analyticsEventFor`
+returns "not part of the contract" for it, so no outbox row or Kafka message
+is produced. `ProductClassified` (SKU master data, [ADR 0031](/docs/adr/0031))
+IS published to this topic since 2026-10-06, but the projector acknowledges
+and ignores it: it moves no Flow & Accuracy metric.
 
 ## Interface
 

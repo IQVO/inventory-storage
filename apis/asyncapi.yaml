@@ -34,7 +34,7 @@ info:
     `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`.
 
 
-    **Aggregates and entity groupings.** Three aggregates raise every event
+    **Aggregates and entity groupings.** Four aggregates raise every event
     documented here. The **StockUnit** aggregate (entity segment `stock`)
     raises `StockReceived`, `ItemStowed`, `LocationRecorded` and
     `ItemUnlocated`. The **Reservation** aggregate (entity segment
@@ -43,19 +43,22 @@ info:
     reservation because it is emitted by ConfirmPick when a reservation is
     consumed, and reservation id is the only identity it carries. The
     **Bin/Location** aggregate (entity segment `bin`) raises
-    `CycleCountCompleted` and `DiscrepancyDetected`.
+    `CycleCountCompleted` and `DiscrepancyDetected`. The
+    **ProductClassification** aggregate (entity segment `product`) raises
+    `ProductClassified`.
 
 
     **What reaches Kafka.** This document is the complete domain-event
     catalog for the bounded context. Two topics carry a subset of it:
-    `warehouse.inventory.events` (the integration contract — exactly
-    **`StockReserved` and `ReservationRevoked`**, from
+    `warehouse.inventory.events` (the integration contract — `StockReserved`,
+    `ReservationRevoked`, the two transfer replies, and `ProductClassified`
+    (SKU master data, ADR 0031), from
     `internal/adapters/outbound/kafka/publisher.go`) and
     `warehouse.inventory.analytics` (the analytics data product — every
     message below except `LocationRecorded`, from
     `internal/adapters/outbound/kafka/analytics_publisher.go`). Each message
-    says which topics it reaches. `LocationRecorded` (and `ProductClassified`,
-    entity `product`, not listed) is in-process only.
+    says which topics it reaches. `LocationRecorded` is in-process only (no
+    consumer; decided 2026-10-06).
 
 
     **CloudEvents is mandatory (ADR-0024).** Every message on both topics is
@@ -93,6 +96,10 @@ tags:
     description: >
       Events raised by the Bin/Location aggregate: cycle counts verifying a
       bin's contents and the discrepancies they reveal.
+  - name: product
+    description: >
+      Events raised by the ProductClassification aggregate: SKU-level handling
+      master data (hazmat, fragile, temperature, ...) this service owns.
 
 servers:
   production:
@@ -111,9 +118,10 @@ channels:
   warehouse.inventory.events:
     description: >
       The outbound integration topic for this bounded context (the `Topic`
-      constant in `internal/adapters/outbound/kafka/publisher.go`). Exactly
-      two messages reach it: `StockReserved` and `ReservationRevoked`, keyed
-      by reservation id. The primary downstream consumer is
+      constant in `internal/adapters/outbound/kafka/publisher.go`). Reaching
+      it: `StockReserved` and `ReservationRevoked` (keyed by reservation
+      id), the two transfer replies, and `ProductClassified` (keyed by
+      SKU, ADR 0031). The primary downstream consumer is
       wes-work-planning, which dispatches on their full `type` strings and
       projects them into its `UsableInventoryObserved` read model, keyed by
       SKU.
@@ -135,6 +143,7 @@ channels:
           - $ref: "#/components/messages/ReservationRevoked"
           - $ref: "#/components/messages/TransferStockAllocated"
           - $ref: "#/components/messages/TransferStockAllocationRejected"
+          - $ref: "#/components/messages/ProductClassified"
 
   warehouse.inventory.analytics:
     description: >
@@ -147,7 +156,8 @@ channels:
       for reservation-lifecycle events). Consumed only by this service's own
       projector (`cmd/inventory-projector`), which dispatches on the full
       `type`, dedupes on `id`, and skips (WARN) anything that is not a valid
-      CloudEvent.
+      CloudEvent. `ProductClassified` (ADR 0031) shares this topic and is
+      acknowledged without touching the read model.
     subscribe:
       operationId: consumeInventoryStorageAnalytics
       summary: Consume inventory-storage analytics events (internal).
@@ -169,6 +179,7 @@ channels:
           - $ref: "#/components/messages/ReservationRevoked"
           - $ref: "#/components/messages/CycleCountCompleted"
           - $ref: "#/components/messages/DiscrepancyDetected"
+          - $ref: "#/components/messages/ProductClassified"
 
 components:
   messages:
@@ -275,6 +286,71 @@ components:
             data:
               stock_unit_id: su-7781
               bin_id: A-12-3
+
+    ProductClassified:
+      name: ProductClassified
+      title: Product Classified
+      summary: A SKU's handling classification (master data) was registered or replaced.
+      description: >
+        Raised by the ClassifyProduct use case when a SKU's
+        ProductClassification is registered or replaced (ADR 0009). The
+        classification is SKU-level master data this service owns; publishing
+        it lets siblings keep a local copy instead of polling
+        `GET /products/{sku}/classification` (ADR 0031, which supersedes only
+        the "in-process only" clause of ADR 0024 for this event).
+
+
+        **Published to both topics**, through the transactional outbox in the
+        same transaction as the classification save. CloudEvents `subject` and
+        the Kafka key are the SKU, so reclassifications of one SKU stay
+        ordered on one partition. `data` is `{sku, handling_tags,
+        temperature_class?, dot_hazard_class?}` on both topics (dataschema
+        `urn:warehouse:inventory-storage:events:ProductClassified:v1` on
+        `warehouse.inventory.events`, `...:analytics:ProductClassified:v1` on
+        `warehouse.inventory.analytics`). It is a **full-state replacement**:
+        overwrite your local row; an absent optional field means "none".
+        `handling_tags` is in the aggregate's stable enum order. No PII. This
+        service's own analytics projector ignores it.
+      contentType: application/cloudevents+json
+      tags:
+        - name: product
+          description: Raised by the ProductClassification aggregate.
+      payload:
+        $ref: "#/components/schemas/ProductClassifiedEvent"
+      examples:
+        - name: hazmatFrozenSku
+          summary: SKU-9 classified as Hazmat + TemperatureSensitive (Frozen), DOT class 3.
+          payload:
+            specversion: "1.0"
+            id: 7e2f5d18-0a9c-4b34-9d61-4c8a3e7b1f05
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.product.ProductClassified
+            subject: SKU-9
+            time: "2026-10-06T12:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:ProductClassified:v1
+            data:
+              sku: SKU-9
+              handling_tags:
+                - Hazmat
+                - TemperatureSensitive
+              temperature_class: Frozen
+              dot_hazard_class: 3
+        - name: fragileSku
+          summary: SKU-1 classified as Fragile only (no optional fields).
+          payload:
+            specversion: "1.0"
+            id: 9a4c1e66-3d57-4f20-b8e9-2a6d0c5f7b13
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.product.ProductClassified
+            subject: SKU-1
+            time: "2026-10-06T12:01:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:analytics:ProductClassified:v1
+            data:
+              sku: SKU-1
+              handling_tags:
+                - Fragile
 
     StockReserved:
       name: StockReserved
@@ -820,6 +896,55 @@ components:
                 bin_id:
                   type: string
                   description: The bin that authoritatively holds that StockUnit.
+
+    ProductClassifiedEvent:
+      description: >
+        CloudEvents envelope for a ProductClassified domain event, on both
+        topics; `dataschema` selects the topic variant, the `data` shape is the
+        same on both.
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for ProductClassified.
+              const: "com.warehouse.wms.inventory-storage.product.ProductClassified"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:ProductClassified:v1 on the integration topic, ...:analytics:ProductClassified:v1 on the analytics topic.
+              pattern: "^urn:warehouse:inventory-storage:(events|analytics):ProductClassified:v1$"
+            data:
+              type: object
+              description: >
+                Full-state replacement of the SKU's classification. Optional
+                fields are omitted when unset.
+              required:
+                - sku
+                - handling_tags
+              properties:
+                sku:
+                  type: string
+                  description: The classified SKU (also the CloudEvents subject and Kafka key).
+                handling_tags:
+                  type: array
+                  minItems: 1
+                  description: Non-empty, duplicate-free set of handling tags, in the aggregate's stable enum order.
+                  items:
+                    type: string
+                    enum: [Hazmat, Fragile, TemperatureSensitive, Oversized, HighValue]
+                temperature_class:
+                  type: string
+                  enum: [Ambient, Chilled, Frozen]
+                  description: Present if and only if handling_tags includes TemperatureSensitive.
+                dot_hazard_class:
+                  type: integer
+                  minimum: 1
+                  maximum: 9
+                  description: Top-level US DOT hazard class; present only for a Hazmat classification with one recorded (ADR 0010).
 
     StockReservedEvent:
       description: >
