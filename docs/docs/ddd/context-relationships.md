@@ -76,8 +76,10 @@ Every edge above is implemented today. Arrows point upstream → downstream,
 not in the direction of the network call: `order-management` *calls* this
 service, but it is the downstream customer of this service's REST OHS.
 `wes-work-planning` and `fulfillment-execution` also read
-`GET /products/{sku}/classification` synchronously — the same OHS, omitted
-from the diagram for legibility; see the
+`GET /products/{sku}/classification` synchronously, `network-fulfillment`
+reads `GET /inventory/{sku}/usable`, and `warehouse-ops-agent` reads
+`GET /reservations?demandRef=`, the Flow & Accuracy report and two MCP read
+tools — the same OHS, omitted from the diagram for legibility; see the
 [Context Map](/docs/ecosystem/context-map) for every wire.
 
 ## Relationship by relationship
@@ -116,7 +118,8 @@ Strategically that is right: `fulfillment-execution` owns the *task* lifecycle
 and needs work to do, not stock truth. The accounting consequence of a pick
 reaches this service as an explicit `POST /reservations/{id}/confirm-pick`
 call, which is a deliberate command, not an event this service happens to
-overhear. (No sibling repository issues that command today.)
+overhear. (No sibling bounded context issues that command today; only the
+`e2e-tests` warehouse-day simulator does.)
 
 ### inventory-storage ↔ workforce-management — **no relationship**
 
@@ -155,8 +158,10 @@ What is still **not** built, and remains the intended shape:
   it is, the policy belongs in `facility-layout`'s `PlacementRule` model, not
   here; that would be re-introducing fixed slotting through the back door.
 
-A `Bin` in this context remains an id, a capacity and an occupancy, seeded as
-infrastructure data.
+A `Bin` in this context remains an id, a capacity and an occupancy. Since
+ADR 0025 it is registered declaratively over REST (`PUT /bins/{binId}`, by
+inventory control or a simulator), not seeded as infrastructure data — but
+nothing checks that id against facility-layout's slot catalogue.
 
 ### order-management → inventory-storage — **Customer/Supplier, synchronous**
 

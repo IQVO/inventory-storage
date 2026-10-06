@@ -66,9 +66,10 @@ that is not a valid CloudEvent.
 
 `sku` is enriched onto reservation-lifecycle events (`ReservationExpired`,
 `ReservationRevoked`) by the publisher via a `ReservationRepo` lookup, since
-those domain events carry only a reservation id. `LocationRecorded` is published
-to the topic but does not move this report; the projector acknowledges it
-without projecting.
+those domain events carry only a reservation id. `LocationRecorded` and
+`ProductClassified` are never published to this topic — the analytics
+publisher's `analyticsEventFor` returns "not part of the contract" for them,
+so no outbox row or Kafka message is produced.
 
 ## Interface
 

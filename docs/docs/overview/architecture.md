@@ -59,8 +59,8 @@ web/                         inventory_mfe Module Federation remote
 flowchart TB
   HTTP["inbound/http<br/>chi handlers, DTOs"]
   UC["application/usecases<br/>ReceiveStock, StowStock, ReserveStock, …"]
-  P["application/ports<br/>StockRepo · LocationRepo · ReservationRepo<br/>ProductClassificationRepo · LocationClassificationLookup<br/>EventPublisher · ReservationMetrics · Clock"]
-  D["domain<br/>stock · location · reservation · shared"]
+  P["application/ports<br/>StockRepo · LocationRepo · ReservationRepo<br/>ProductClassificationRepo · LocationClassificationLookup<br/>EventPublisher · UnitOfWork · ReservationMetrics · Clock"]
+  D["domain<br/>stock · location · reservation · product · shared"]
   PG["outbound/postgres"]
   MEM["outbound/memory"]
   EV["outbound/events"]
@@ -97,10 +97,21 @@ normal Go test, and CI runs it as a blocking `arch-test` job. The rules it
 encodes:
 
 1. `internal/domain/...` must not import any other `internal/...` package.
-2. `internal/application/...` must not import `internal/adapters/...`.
+2. `internal/application/...` may import only `internal/domain/...` and
+   itself — never `internal/adapters/...`.
 3. `internal/adapters/inbound/...` must not import
    `internal/adapters/outbound/...` (and vice versa).
-4. Only `cmd/...` may import adapters *and* application together.
+4. Nothing under `internal/...` may import `cmd/...` — `cmd` stays the leaf
+   composition root.
+5. `internal/application/ports` may contain only interfaces.
+6. `internal/analytics/...` imports nothing internal except itself, and the
+   OLTP domain must not import the analytics store (ADR 0011).
+
+Further fitness tests in the same package (ADR 0029) guard the MCP adapter's
+dependency rule, forbid reintroducing auth middleware, keep Kafka consumer
+groups out of inline literals, require testcontainers for Kafka integration
+tests, pin the event catalogue to `apis/asyncapi.yaml`, enforce
+CloudEvents-only encoding, and require `CommitInterval` on replay consumers.
 
 If someone reaches from a use case into `pgx` for a "quick fix," the build goes
 red. See [ADR 0006](/docs/adr/0006-arch-go-fitness-tests).
@@ -114,7 +125,8 @@ red. See [ADR 0006](/docs/adr/0006-arch-go-fitness-tests).
 | `ReservationRepo` | Persist/retrieve `Reservation`; mint IDs | `postgres`, `memory` |
 | `ProductClassificationRepo` | Persist/retrieve `ProductClassification` by SKU | `postgres`, `memory` |
 | `LocationClassificationLookup` | Zone attributes (hazmat, temperature class) for a bin, for stow placement rules | `facilitycache` (Kafka-fed cache), `facilitylayout` (sync HTTP client, permissive stub) |
-| `EventPublisher` | Publish a `shared.DomainEvent` | `events` (log/buffered/multi fan-out), `postgres` (append-only `events` table), `kafka` (integration + analytics) |
+| `EventPublisher` | Publish a `shared.DomainEvent` | `events` (log/buffered/multi fan-out), `postgres.OutboxPublisher` (one `outbox_events` row per event × topic inside the caller's transaction, ADR 0017), `kafka` (integration + analytics, direct publish when there is no database) |
+| `UnitOfWork` | Bracket a use case's `Save`(s) and `Publish`(es) in one atomic scope | `postgres.UnitOfWork` (joins a transaction already on the context, e.g. the idempotency middleware's); `nil` in in-memory mode |
 | `ReservationMetrics` | Count reservations created/revoked (`inventory.reservations`) | `telemetry` |
 | `Clock` | `Now()` — makes reservation timeouts deterministic in tests | `memory.SystemClock`, fixed clocks in tests |
 
@@ -134,7 +146,10 @@ the telemetry adapter):
 | `HTTP_ADDR` | `:8080` | Listen address |
 | `DATABASE_URL` | *(unset)* | If unset, the in-memory adapters are used and no database is required. If set, migrations run and the Postgres adapters are wired. |
 | `MIGRATIONS_PATH` | `migrations` | Where golang-migrate looks for SQL files |
-| `EVENT_PUBLISHER` | `log` | `kafka` swaps in the integration + analytics publishers (fan-out) |
+| `MIGRATIONS_DATABASE_URL` | `DATABASE_URL` | Direct (non-PgBouncer) DSN used only for the migration step (ADR 0023) |
+| `EVENT_PUBLISHER` | `log` | `kafka` swaps in the integration + analytics publishers; with `DATABASE_URL` set they are reached through the transactional outbox and a background relay (ADR 0017) |
+| `OUTBOX_RELAY_INTERVAL` | `1s` | Poll interval of the outbox relay (`EVENT_PUBLISHER=kafka` with Postgres only) |
+| `HOUSEKEEPING_INTERVAL` / `IDEMPOTENCY_KEY_TTL` / `OUTBOX_RETENTION` | `1h` / `24h` / `168h` | Housekeeping sweeper (ADR 0026); `0` disables the sweeper or keeps that table's rows forever |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated broker list |
 | `LOCATION_LOOKUP_MODE` | `permissive` | `kafka` (Kafka-fed facility-layout cache; requires `KAFKA_BROKERS`), `http` (sync call), or `permissive` (no lookup) |
 | `FACILITY_LAYOUT_BASE_URL` | *(unset)* | facility-layout base URL for `LOCATION_LOOKUP_MODE=http` |
@@ -152,6 +167,7 @@ request:
 | Job | What it enforces |
 | --- | --- |
 | `lint` | `golangci-lint` against the committed `.golangci.yml` |
+| `guide-lint` | The harness guide/repo linters and hook self-tests (`scripts/harness/*.py`) |
 | `complexity` | `golangci-lint` with `gocyclo,gocognit,cyclop,funlen,nestif` only; informational `gocyclo` report in the job summary |
 | `test` | Unit tests with `-race`; coverage gate on domain + application |
 | `bdd` | godog acceptance suite over the Gherkin specs in `features/` |
@@ -168,7 +184,7 @@ request:
 | `arch-test` | The hexagonal fitness tests above |
 | `web` | Lint, typecheck, test and build of the `web/` remote |
 | `trivy-scan` | Container image scan, blocking on fixable CRITICAL/HIGH (pull requests) |
-| `docker-publish` | Gated on `lint`, `test`, `bdd`, `integration`, `mutation-fast`, `vuln`, `api-lint`, `arch-test`; pushes to GHCR on `main` only |
+| `docker-publish` | Gated on `lint`, `complexity`, `test`, `bdd`, `contract`, `integration`, `mutation-fast`, `vuln`, `api-lint`, `arch-test`, `evals-tests`; pushes to GHCR on `main` only |
 | `release` | `main`-only, gated on `docker-publish`: computes the next `vMAJOR.MINOR.PATCH` tag and cuts the GitHub release |
 
 This documentation site is built and deployed by a separate workflow,

@@ -1,36 +1,42 @@
 ---
 title: Use Cases
 sidebar_label: Use Cases
-description: The nine application-layer use cases, their collaborators, and their failure modes.
+description: The eleven application-layer use cases, their collaborators, and their failure modes.
 ---
 
 # Use Cases
 
-Nine use cases, one struct each, in `internal/application/usecases`. Each
+Eleven use cases, one struct each, in `internal/application/usecases`. Each
 depends only on the domain and on `application/ports` — never on an adapter.
-Dependencies are plain struct fields, wired once in
-`cmd/inventory/main.go`.
+Dependencies are plain struct fields, wired once per binary in
+`cmd/inventory/main.go` (REST) and `cmd/mcp/main.go` (MCP, which wires
+`GetUsable` and `RevokeReservation` only).
 
-| # | Use case | HTTP | Emits |
-| --- | --- | --- | --- |
-| 1 | `ReceiveStock` | `POST /stock/receive` | `StockReceived` |
-| 2 | `StowStock` | `POST /stock/stow` | `ItemStowed`, `LocationRecorded` |
-| 3 | `ReserveStock` | `POST /reservations` | `StockReserved` |
-| 4 | `RevokeReservation` | `DELETE /reservations/{id}` | `ReservationRevoked` |
-| 5 | `ConfirmPick` | `POST /reservations/{id}/confirm-pick` | `StockPicked` |
-| 6 | `GetUsable` | `GET /inventory/{sku}/usable` | — (read model) |
-| 7 | `RunCycleCount` | `POST /bins/{binId}/cycle-count` | `CycleCountCompleted`, `DiscrepancyDetected`, `ItemUnlocated` |
-| 8 | `ClassifyProduct` | `PUT /products/{sku}/classification` | `ProductClassified` |
-| 9 | `GetReservationsByDemandRef` | `GET /reservations?demandRef=` | — (read) |
+| # | Use case | HTTP | MCP tool | Emits |
+| --- | --- | --- | --- | --- |
+| 1 | `ReceiveStock` | `POST /stock/receive` | — | `StockReceived` |
+| 2 | `StowStock` | `POST /stock/stow` | — | `ItemStowed`, `LocationRecorded` |
+| 3 | `ReserveStock` | `POST /reservations` | — | `StockReserved` (+ `ReservationExpired` via lazy expiry) |
+| 4 | `RevokeReservation` | `DELETE /reservations/{id}` | `revoke_reservation` | `ReservationRevoked` (+ `ReservationExpired` via lazy expiry) |
+| 5 | `ConfirmPick` | `POST /reservations/{id}/confirm-pick` | — | `StockPicked` (+ `ReservationExpired` via lazy expiry) |
+| 6 | `GetUsable` | `GET /inventory/{sku}/usable` | `check_availability`, resource `inventory://{sku}/usable` | — (read model) |
+| 7 | `RunCycleCount` | `POST /bins/{binId}/cycle-count` | — | `CycleCountCompleted`, `DiscrepancyDetected`, `ItemUnlocated` |
+| 8 | `ClassifyProduct` | `PUT /products/{sku}/classification` | — | `ProductClassified` |
+| 9 | `GetReservationsByDemandRef` | `GET /reservations?demandRef=` | — | `ReservationExpired` via lazy expiry only |
+| 10 | `RegisterBin` | `PUT /bins/{binId}` | — | — (local topology master data, ADR 0025) |
+| 11 | `GetBin` | `GET /bins/{binId}` | — | — (read) |
 
 `GET /products/{sku}/classification` has no use case of its own: the HTTP
 adapter reads `ProductClassificationRepo` directly for that single lookup.
+The MCP `get_bin_occupancy` tool likewise reads `StockRepo.FindByBin`
+directly, without a use case.
 
 ## 1. ReceiveStock(sku, qty)
 
 Acknowledges that goods arrived against a SKU and are staged, awaiting stow.
 
-**Collaborators:** `EventPublisher`, `Clock`. Notably **no repository** — a
+**Collaborators:** `EventPublisher`, `Clock`, `UnitOfWork`. Notably **no
+repository** — a
 receipt creates no `StockUnit`, because nothing has been located yet. Under
 chaotic storage, un-located stock is not yet part of the ledger.
 
@@ -46,7 +52,9 @@ addressable resource to point a `Location` header at. The addressable resource
 The operation that brings a `StockUnit` into existence. Validates item-scan +
 location-scan and respects bin capacity.
 
-**Collaborators:** `StockRepo`, `LocationRepo`, `EventPublisher`, `Clock`.
+**Collaborators:** `StockRepo`, `LocationRepo`, `EventPublisher`, `Clock`,
+`UnitOfWork`, and the optional `ProductClassificationRepo` +
+`LocationClassificationLookup` (placement and segregation checks below).
 
 ```mermaid
 sequenceDiagram
@@ -66,26 +74,33 @@ sequenceDiagram
         U-->>H: ErrBinNotFound
         H-->>C: 404 problem+json
     else bin exists
+        U->>U: checkPlacement + checkSegregation
+        Note over U: hazmat zone, temperature class, DOT segregation → 409
         U->>S: NextID()
         U->>U: stock.NewStockUnit(id, sku, binId, qty)
         Note over U: rejects if either scan is missing
         U->>U: bin.Occupy(qty)
         Note over U: rejects if capacity exceeded → 409
+        rect rgb(240, 240, 240)
+        Note over U,E: one UnitOfWork scope (ADR 0017)
         U->>L: Save(bin)
         U->>S: Save(unit)
         U->>E: Publish(ItemStowed)
         U->>E: Publish(LocationRecorded)
+        end
         U-->>H: *StockUnit
         H-->>C: 201 Created + Location: /stock/{id}
     end
 ```
 
-**Ordering matters:** the aggregate is constructed *before* the bin is
-occupied, so an invalid stow never mutates bin occupancy. Bin and unit are then
-saved together, bin first.
+**Ordering matters:** the placement and segregation checks run first, then
+the aggregate is constructed *before* the bin is occupied, so an invalid stow
+never mutates bin occupancy. Bin and unit are then saved together, bin first,
+in the same transaction as the two events' outbox rows.
 
 **Fails when:** bin unknown (404), missing scan (400), quantity ≤ 0 (422), bin
-full (409).
+full (409), placement or segregation rule violated (409), a concurrent writer
+changed the bin first (409 `concurrent-modification`, ADR 0019).
 
 **Placement check (ADR 0009, ADR 0013):** if the SKU has a registered
 `ProductClassification`, and it carries `Hazmat` or `TemperatureSensitive`,
@@ -132,37 +147,56 @@ Creates a revocable `Reservation` against **usable** inventory, drawing
 first-fit across the SKU's `StockUnit`s.
 
 **Collaborators:** `StockRepo`, `ReservationRepo`, `EventPublisher`, `Clock`,
-plus a `Timeout` (defaults to `DefaultReservationTimeout`, 30 minutes).
+`ReservationMetrics`, `UnitOfWork`, plus a `Timeout` (defaults to
+`DefaultReservationTimeout`, 30 minutes).
 
 The algorithm:
 
-1. Load every `StockUnit` for the SKU.
-2. Sum `Usable()` across them; if the request exceeds the sum, fail early with
+1. **Replay guard.** Load every reservation for the `demandRef`, lazily
+   expire any timed-out `ACTIVE` one (see #9), and if an `ACTIVE`
+   reservation for the *same* `(sku, quantity)` remains, return it unchanged —
+   a client retry never double-reserves. A different SKU or quantity under
+   the same `demandRef` is another order line, never a retry
+   (`isReplayOf`). This guard is best-effort: two concurrent first attempts
+   can both pass it (see the code comment in `reserve_stock.go`).
+2. Load every `StockUnit` for the SKU.
+3. Sum `Usable()` across them; if the request exceeds the sum, fail early with
    `ErrInsufficientUsable` — **before** mutating anything.
-3. Walk the units, taking `min(remaining, unit.Usable())` from each, recording
-   an `Allocation{StockUnitID, Quantity}` per unit touched.
-4. Save every touched unit, mint a reservation id, construct the
-   `Reservation` with `expiresAt = now + timeout`, save it.
-5. Publish `StockReserved`.
+4. Walk the units, taking `min(remaining, unit.Usable())` from each, recording
+   an `Allocation{StockUnitID, BinID, Quantity}` per unit touched — `BinID`
+   is the pick location (ADR 0025).
+5. Save every touched unit, mint a reservation id, construct the
+   `Reservation` with `expiresAt = now + timeout`, then save it and publish
+   `StockReserved` inside one `UnitOfWork` scope. The touched units are saved
+   *before* that scope opens, so on the REST path they are atomic with the
+   reservation only because the idempotency middleware's transaction is
+   already on the context and the repos join it.
 
 A single reservation therefore **may span multiple bins** — covered by
 `TestReserveStock_SpansMultipleStockUnits`. That is the point: SKU-scoped
 allocation is what makes a later revoke re-satisfiable from a different
 holding.
 
-**Fails when:** quantity ≤ 0 (422), usable insufficient (409), SKU has no stock
-at all (409).
+**Fails when:** quantity ≤ 0 (422), empty `demandRef` (400
+`missing-demand-ref`, in the handler), usable insufficient (409), SKU has no
+stock at all (409), concurrent modification of a touched unit (409).
 
 ## 4. RevokeReservation(reservationId)
 
 Cancels a reservation and returns its quantity to usable.
 
-**Collaborators:** `StockRepo`, `ReservationRepo`, `EventPublisher`, `Clock`.
+**Collaborators:** `StockRepo`, `ReservationRepo`, `EventPublisher`, `Clock`,
+`ReservationMetrics`, `UnitOfWork`. Reached over REST and through the MCP
+`revoke_reservation` tool (same use case, same collaborators).
 
-It calls `Reservation.Revoke()` (which refuses anything not `ACTIVE`), then
-walks the recorded `Allocation`s and calls `StockUnit.ReleaseReservation(qty)`
-on each — exact, per-unit restitution — saving each unit and finally the
-reservation, then publishes `ReservationRevoked`.
+It first runs lazy expiry on the loaded reservation (a timed-out `ACTIVE` one
+becomes `EXPIRED`, its quantity is released and `ReservationExpired` is
+raised — the revoke then fails with `ErrAlreadyResolved`). Otherwise it calls
+`Reservation.Revoke()` (which refuses anything not `ACTIVE`), then, inside one
+`UnitOfWork` scope, walks the recorded `Allocation`s and calls
+`StockUnit.ReleaseReservation(qty)` on each — exact, per-unit restitution —
+saving each unit and finally the reservation, then publishes
+`ReservationRevoked`.
 
 **Fails when:** reservation unknown (404), already confirmed/revoked/expired
 (409 `ErrAlreadyResolved`), a referenced stock unit is missing (404).
@@ -172,14 +206,15 @@ reservation, then publishes `ReservationRevoked`.
 Consumes the reservation: the stock physically left the bin.
 
 **Collaborators:** `StockRepo`, `LocationRepo`, `ReservationRepo`,
-`EventPublisher`, `Clock`.
+`EventPublisher`, `Clock`, `UnitOfWork`.
 
-Unlike revoke, this touches **three** aggregates. For each allocation it calls
-`StockUnit.Pick(qty)` — which decrements both reserved and on-hand quantity and
-transitions the unit to `PICKED` or `REMOVED` — and it also calls
+Unlike revoke, this touches **three** aggregates. After lazy expiry, it calls
+`Reservation.Confirm(now)` (refusing an already-resolved or expired
+reservation) and then, inside one `UnitOfWork` scope, for each allocation
+calls `StockUnit.Pick(qty)` — which decrements both reserved and on-hand
+quantity and transitions the unit to `PICKED` or `REMOVED` — and
 `Bin.Release(qty)`, because units that left the bin free up physical capacity
-for a future stow. Then `Reservation.Confirm(now)` (refusing an expired
-reservation) and `StockPicked`.
+for a future stow. It then saves the reservation and publishes `StockPicked`.
 
 **Fails when:** reservation unknown (404), already resolved (409), expired
 (409 `ErrExpired`), a referenced stock unit or bin is missing (404).
@@ -197,16 +232,16 @@ true and useful answer, not an error.
 
 Reconciles a bin's physical contents against system records.
 
-**Collaborators:** `StockRepo`, `EventPublisher`, `Clock`.
+**Collaborators:** `StockRepo`, `EventPublisher`, `Clock`, `UnitOfWork`.
 
 ```mermaid
 flowchart TD
     A["Load StockUnits in bin"] --> B["systemQty = Σ qty<br/>of units not UNLOCATED/REMOVED"]
     B --> C{"counted vs system"}
     C -->|equal| D["CycleCountCompleted<br/>discrepancy: false"]
-    C -->|counted &gt; system<br/>overage| E["DiscrepancyDetected"]
+    C -->|counted above system<br/>overage| E["DiscrepancyDetected"]
     E --> F["CycleCountCompleted<br/>discrepancy: true<br/><i>no upward reconciliation</i>"]
-    C -->|counted &lt; system<br/>shortfall| G["DiscrepancyDetected"]
+    C -->|counted below system<br/>shortfall| G["DiscrepancyDetected"]
     G --> H["mark affected units UNLOCATED<br/>+ ItemUnlocated per unit"]
     H --> I["CycleCountCompleted<br/>discrepancy: true"]
 ```
@@ -230,7 +265,8 @@ Registers or replaces a SKU's `ProductClassification` — SKU-level master
 data this service owns as source of truth (ADR 0009), extended in ADR 0010
 with an optional DOT hazard class.
 
-**Collaborators:** `ProductClassificationRepo`, `EventPublisher`, `Clock`.
+**Collaborators:** `ProductClassificationRepo`, `EventPublisher`, `Clock`,
+`UnitOfWork`.
 
 **Idempotent by SKU:** classifying an already-classified SKU replaces its
 prior classification rather than erroring — re-classification (e.g. an item
@@ -257,13 +293,52 @@ Returns every `Reservation` ever created against a caller-supplied
 `demandRef` — the read side of the fleet's Order Lifecycle console
 ([ADR 0012](/docs/adr/0012-adopt-mfe-console-architecture)).
 
-**Collaborators:** `ReservationRepo` only.
+**Collaborators:** `ReservationRepo`, plus `StockRepo`, `EventPublisher`,
+`Clock` and `UnitOfWork` for lazy expiry.
 
 A `demandRef` can have several reservations over its lifetime (a revoke
 followed by a retry), so the result is always an array; an unknown
 `demandRef` returns `200` with an empty array, never `404`.
 
+**Lazy expiry happens here.** Before returning, every `ACTIVE` result past
+its `expiresAt` is transitioned to `EXPIRED`, its allocations are released
+back to usable and `ReservationExpired` is published — each expired
+reservation in its own `UnitOfWork` scope (`expireAllIfDue`), so one
+failure never rolls back an earlier, already-committed expiry. The same
+helper runs inside `ReserveStock`'s replay guard, `RevokeReservation` and
+`ConfirmPick`; there is no background sweeper.
+
 **Fails when:** `demandRef` is missing (400 `missing-demand-ref`).
+
+## 10. RegisterBin(binId, capacity)
+
+Declaratively brings a coded slot under this service's management
+([ADR 0025](/docs/adr/0025-bin-registration-endpoint-and-pick-location)).
+
+**Collaborators:** `LocationRepo`, `UnitOfWork`.
+
+Inside one `UnitOfWork` scope it reads the bin and converges it to the
+requested capacity: an absent bin is created with `location.NewBin`
+(`BinCreated` → `201`), the same capacity is a no-op (`BinUnchanged` →
+`200`), a different capacity calls `Bin.Resize` (`BinResized` → `200`). No
+domain event is raised — bin registration is local topology master data and
+the AsyncAPI contract is unchanged.
+
+**Fails when:** empty bin id (400), capacity missing (400
+`capacity-required`), capacity ≤ 0 (422 `invalid-bin-capacity`), capacity
+above `int32` (422 `capacity-out-of-range`), capacity below current occupancy
+(409 `capacity-below-occupancy`), a racing stow changed the bin first (409
+`concurrent-modification`).
+
+## 11. GetBin(binId)
+
+Side-effect-free read of a bin's capacity and occupancy; the HTTP adapter
+adds `available = capacity - occupied`.
+
+**Collaborators:** `LocationRepo` only.
+
+**Fails when:** empty bin id (400), unknown bin (404 `bin-not-found`) —
+unlike `GetUsable`, there is no meaningful "empty" bin to return.
 
 ## Cross-cutting patterns
 
@@ -274,6 +349,17 @@ status codes. See [ADR 0005](/docs/adr/0005-rfc-7807-problem-details).
 
 **Time is injected.** Every `occurredAt` and every `expiresAt` comes from the
 `Clock` port, so tests pin time rather than sleeping.
+
+**State change and events commit together.** Every writing use case brackets
+its `Save`(s) and `Publish`(es) in `ports.UnitOfWork` via the `atomically`
+helper (ADR 0017). With Postgres and `EVENT_PUBLISHER=kafka`, `Publish`
+inserts `outbox_events` rows in that same transaction; a relay delivers them
+later. A nil `UnitOfWork` (in-memory mode) simply runs the function.
+
+**Writes are version-guarded.** `StockRepo`, `LocationRepo` and
+`ReservationRepo` `Save` only when the row's `version` still matches what was
+loaded; a lost race surfaces as `ErrConcurrentModification` → `409`
+(ADR 0019).
 
 **Publish failures propagate.** If `EventPublisher.Publish` returns an error,
 the use case returns it — there is a dedicated

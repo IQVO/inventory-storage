@@ -134,19 +134,20 @@ currently cross the service boundary via Kafka — see `integration-events.md`.
   reported as a `DiscrepancyDetected`/`CycleCountCompleted(discrepancy=true)`
   pair for a separate receiving/audit process to reconcile.
 
-## One honest gap: nothing sweeps expirations yet
+## Reservation expiry is lazy: no background sweeper
 
-`ReservationExpired` and `Reservation.Expire()` exist in the domain and are
-unit-tested, but **no use case calls `Expire()` and nothing publishes
-`ReservationExpired` today** — there is no background sweeper. The timeout
-is still enforced, just lazily and at a different point:
+`Reservation.Expire()` IS driven today, but lazily, not on a schedule:
+`expireIfDue` / `expireAllIfDue` (`usecases/reservation_expiry.go`) run on
+every read of a reservation — `GetReservationsByDemandRef`, `ReserveStock`'s
+replay-guard lookup, `RevokeReservation` and `ConfirmPick`. A timed-out
+`ACTIVE` reservation found there is, in one UnitOfWork scope, released back
+to usable (`releaseAllocations`), transitioned to `EXPIRED`, saved, and
+`ReservationExpired` is published (analytics topic only).
 
-- `Reservation.Confirm(now)` returns `ErrExpired` past `expiresAt`, so a
-  timed-out reservation can never be confirmed into a pick;
-- a timed-out reservation's status remains `ACTIVE` in storage, so
-  `RevokeReservation` still accepts it and returns its quantity to usable.
-
-The practical consequence is that a reservation nobody revokes keeps holding
-quantity out of usable until someone calls `DELETE /reservations/{id}`. A
-sweeper that periodically expires and releases them is a real gap, listed
-here rather than papered over.
+- `Reservation.Confirm(now)` still returns `ErrExpired` past `expiresAt` as a
+  second line of defence;
+- a timed-out reservation that nobody ever reads again stays `ACTIVE` in
+  storage and keeps holding quantity out of usable until it is read or
+  revoked — the remaining, documented gap. The housekeeping sweeper
+  (ADR-0026) only prunes `idempotency_keys` and published `outbox_events`;
+  it does not touch reservations.

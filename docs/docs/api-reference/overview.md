@@ -132,6 +132,7 @@ Mapping is one-for-one with the typed domain and application errors, in
 | `temperature-class-mismatch` | 409 | `usecases.ErrTemperatureClassMismatch` |
 | `location-classification-unavailable` | 409 | `usecases.ErrLocationClassificationUnavailable` |
 | `hazmat-class-incompatible` | 409 | `usecases.ErrHazmatClassIncompatible` |
+| `concurrent-modification` | 409 | `usecases.ErrConcurrentModification` — a version-guarded `Save` lost an optimistic-concurrency race (ADR 0019); re-fetch and retry |
 | `counted-quantity-required` | 400 | written directly by the `POST /bins/{binId}/cycle-count` handler when `countedQuantity` is omitted |
 | `idempotency-key-required` | 400 | written by the `RequireIdempotencyKey` middleware (ADR 0018) |
 | `idempotency-key-reused` | 422 | written by the `RequireIdempotencyKey` middleware (ADR 0018) |
