@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -50,7 +51,20 @@ func (r *LocationRepo) FindByID(ctx context.Context, id shared.BinId) (*location
 	if err != nil {
 		return nil, err
 	}
-	cap, _ := shared.NewQuantity(capacity)
-	occ, _ := shared.NewQuantity(occupied)
+	return rehydrateBin(id, capacity, occupied, version)
+}
+
+// rehydrateBin rebuilds a Bin from its row, returning a wrapped error (not a
+// zero-value Quantity inside the aggregate) when a column violates a domain
+// invariant.
+func rehydrateBin(id shared.BinId, capacity, occupied, version int) (*location.Bin, error) {
+	cap, err := rehydrateQuantity("bin capacity", capacity)
+	if err != nil {
+		return nil, fmt.Errorf("bin %q: %w", id, err)
+	}
+	occ, err := rehydrateQuantity("bin occupied", occupied)
+	if err != nil {
+		return nil, fmt.Errorf("bin %q: %w", id, err)
+	}
 	return location.RehydrateBin(id, cap, occ, version), nil
 }
