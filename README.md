@@ -494,7 +494,7 @@ make check        # fast pre-commit loop: fmt-check, vet, build, lint, test (-ra
 make check-all    # before pushing: check + coverage gate (90%), arch-test, bdd
 make vuln         # govulncheck ./... — known CVEs in deps and the Go stdlib
 make mutation     # fast gremlins subset (blocks in CI); mutation-full = exhaustive
-make integration  # Postgres tests need DATABASE_URL; Kafka tests need Docker (testcontainers)
+make integration  # needs Docker: Postgres and Kafka tests boot their own containers (testcontainers)
 ```
 
 Git hooks are managed with [lefthook](https://github.com/evilmartians/lefthook)
@@ -523,10 +523,9 @@ go vet ./...
 go test ./...
 go test -race ./...
 
-# Postgres integration test (build-tagged, skipped without DATABASE_URL)
-docker compose up -d postgres
-DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable' \
-  go test -tags integration ./internal/adapters/outbound/postgres/...
+# Postgres integration tests (build-tagged): each test boots its own Postgres
+# via testcontainers, so they need Docker but no DATABASE_URL / compose service
+go test -tags integration ./internal/adapters/outbound/postgres/...
 
 # Kafka integration test for the facility-layout cache: starts its own
 # broker via testcontainers, so it needs Docker but no external Kafka

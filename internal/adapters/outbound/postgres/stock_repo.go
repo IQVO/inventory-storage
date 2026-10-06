@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -97,10 +98,22 @@ func scanStockUnit(row rowScanner) (*stock.StockUnit, error) {
 	if err := row.Scan(&id, &skuStr, &binStr, &quantity, &reserved, &state, &version); err != nil {
 		return nil, err
 	}
-	sku, _ := shared.NewSKU(skuStr)
-	binID, _ := shared.NewBinId(binStr)
-	qty, _ := shared.NewQuantity(quantity)
-	res, _ := shared.NewQuantity(reserved)
+	sku, err := rehydrateSKU(skuStr)
+	if err != nil {
+		return nil, fmt.Errorf("stock unit %q: %w", id, err)
+	}
+	binID, err := rehydrateBinID(binStr)
+	if err != nil {
+		return nil, fmt.Errorf("stock unit %q: %w", id, err)
+	}
+	qty, err := rehydrateQuantity("quantity", quantity)
+	if err != nil {
+		return nil, fmt.Errorf("stock unit %q: %w", id, err)
+	}
+	res, err := rehydrateQuantity("reserved", reserved)
+	if err != nil {
+		return nil, fmt.Errorf("stock unit %q: %w", id, err)
+	}
 	return stock.RehydrateStockUnit(id, sku, binID, qty, res, stock.State(state), version), nil
 }
 

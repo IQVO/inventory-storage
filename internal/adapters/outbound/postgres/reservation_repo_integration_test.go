@@ -15,7 +15,7 @@ import (
 )
 
 func TestPostgres_ReservationRoundTrip(t *testing.T) {
-	databaseURL := requireDatabaseURL(t)
+	databaseURL := postgresURL(t)
 	if err := postgres.RunMigrations(databaseURL, migrationsDir(t)); err != nil {
 		t.Fatalf("unexpected error running migrations: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestPostgres_ReservationRoundTrip(t *testing.T) {
 }
 
 func TestPostgres_Reservation_FindByID_UnknownReturnsNil(t *testing.T) {
-	databaseURL := requireDatabaseURL(t)
+	databaseURL := postgresURL(t)
 	if err := postgres.RunMigrations(databaseURL, migrationsDir(t)); err != nil {
 		t.Fatalf("unexpected error running migrations: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestPostgres_Reservation_FindByID_UnknownReturnsNil(t *testing.T) {
 // the new indexed query. A demandRef can have MULTIPLE reservations across
 // its lifetime (revoke + retry), so this asserts both are returned.
 func TestPostgres_Reservation_FindByDemandRef(t *testing.T) {
-	databaseURL := requireDatabaseURL(t)
+	databaseURL := postgresURL(t)
 	if err := postgres.RunMigrations(databaseURL, migrationsDir(t)); err != nil {
 		t.Fatalf("unexpected error running migrations: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestPostgres_Reservation_FindByDemandRef(t *testing.T) {
 }
 
 func TestPostgres_Reservation_FindByDemandRef_UnknownReturnsEmpty(t *testing.T) {
-	databaseURL := requireDatabaseURL(t)
+	databaseURL := postgresURL(t)
 	if err := postgres.RunMigrations(databaseURL, migrationsDir(t)); err != nil {
 		t.Fatalf("unexpected error running migrations: %v", err)
 	}

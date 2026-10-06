@@ -13,7 +13,7 @@ import (
 )
 
 func TestPostgres_StockUnitRoundTrip(t *testing.T) {
-	databaseURL := requireDatabaseURL(t)
+	databaseURL := postgresURL(t)
 	if err := postgres.RunMigrations(databaseURL, migrationsDir(t)); err != nil {
 		t.Fatalf("unexpected error running migrations: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestPostgres_StockUnitRoundTrip(t *testing.T) {
 }
 
 func TestPostgres_StockUnit_FindByID_UnknownReturnsNil(t *testing.T) {
-	databaseURL := requireDatabaseURL(t)
+	databaseURL := postgresURL(t)
 	if err := postgres.RunMigrations(databaseURL, migrationsDir(t)); err != nil {
 		t.Fatalf("unexpected error running migrations: %v", err)
 	}
