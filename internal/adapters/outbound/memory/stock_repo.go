@@ -51,6 +51,20 @@ func (r *StockRepo) FindBySKU(_ context.Context, sku shared.SKU) ([]*stock.Stock
 	return result, nil
 }
 
+// FindBySKUAtSite returns sku's units whose recorded site custody is
+// originSiteID. Legacy site-less units (empty SiteID) are never included.
+func (r *StockRepo) FindBySKUAtSite(_ context.Context, sku shared.SKU, originSiteID shared.SiteID) ([]*stock.StockUnit, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var result []*stock.StockUnit
+	for _, unit := range r.units {
+		if unit.SKU() == sku && unit.SiteID() == originSiteID && originSiteID != "" {
+			result = append(result, unit)
+		}
+	}
+	return result, nil
+}
+
 func (r *StockRepo) FindByBin(_ context.Context, binID shared.BinId) ([]*stock.StockUnit, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

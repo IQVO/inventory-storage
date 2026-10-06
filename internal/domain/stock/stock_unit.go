@@ -14,9 +14,13 @@ var (
 	// item-scan (SKU) and a location-scan (BinId). Skipping either is
 	// precisely how inventory gets lost.
 	ErrStowRequiresItemAndLocation = errors.New("stow requires both an item scan (sku) and a location scan (bin)")
-	ErrInsufficientUsable          = errors.New("reserve quantity exceeds usable quantity")
-	ErrInsufficientReserved        = errors.New("pick quantity exceeds reserved quantity")
-	ErrUnitUnlocated               = errors.New("stock unit is unlocated")
+	// ErrSiteCustodyRequired: a site-scoped operation (a transfer
+	// allocation) was attempted against a unit with no recorded site
+	// custody. Site custody is a validated fact, never a guess.
+	ErrSiteCustodyRequired  = errors.New("stock unit has no recorded site custody")
+	ErrInsufficientUsable   = errors.New("reserve quantity exceeds usable quantity")
+	ErrInsufficientReserved = errors.New("pick quantity exceeds reserved quantity")
+	ErrUnitUnlocated        = errors.New("stock unit is unlocated")
 )
 
 // StockUnit is the aggregate root binding a SKU to a Bin with a quantity and
@@ -28,6 +32,11 @@ type StockUnit struct {
 	quantity shared.Quantity
 	reserved shared.Quantity
 	state    State
+	// siteID is the custody fact: the warehouse site this unit physically
+	// sits at. It is empty only for rows persisted before site custody
+	// existed (rehydrated legacy units); such units remain allocatable for
+	// ordinary demand but are NEVER allocatable for site-scoped transfers.
+	siteID shared.SiteID
 	// version is optimistic-concurrency infrastructure metadata (ADR
 	// 0019): inert, unexported, carried by the aggregate but never read
 	// or reasoned about by business logic. It exists solely so the repo
@@ -57,11 +66,37 @@ func NewStockUnit(id string, sku shared.SKU, binID shared.BinId, qty shared.Quan
 	}, nil
 }
 
+// NewStockUnitAtSite stows a quantity of a SKU into a bin AT a named
+// warehouse site, recording the custody fact. The site must itself be a
+// valid, non-empty SiteID — site custody is a validated fact, never a
+// defaulted one, so the wrong-facility-donates-stock failure mode is
+// unrepresentable on the creation path.
+func NewStockUnitAtSite(id string, sku shared.SKU, binID shared.BinId, qty shared.Quantity, siteID shared.SiteID) (*StockUnit, error) {
+	if _, err := shared.NewSiteID(siteID.String()); err != nil {
+		return nil, err
+	}
+	unit, err := NewStockUnit(id, sku, binID, qty)
+	if err != nil {
+		return nil, err
+	}
+	unit.siteID = siteID
+	return unit, nil
+}
+
 // RehydrateStockUnit reconstructs a StockUnit from persisted state,
 // including the row's current version (ADR 0019) so a later Save can be
-// version-guarded against a concurrent modification.
+// version-guarded against a concurrent modification. The rehydrated unit
+// carries NO site custody (empty SiteID): rows persisted before the site
+// column existed hydrate exactly like this.
 func RehydrateStockUnit(id string, sku shared.SKU, binID shared.BinId, qty, reserved shared.Quantity, state State, version int) *StockUnit {
 	return &StockUnit{id: id, sku: sku, binID: binID, quantity: qty, reserved: reserved, state: state, version: version}
+}
+
+// RehydrateStockUnitAtSite is RehydrateStockUnit with the site custody
+// fact read back from the row's site_id column (NULL for legacy rows,
+// which keep using RehydrateStockUnit).
+func RehydrateStockUnitAtSite(id string, sku shared.SKU, binID shared.BinId, qty, reserved shared.Quantity, state State, siteID shared.SiteID, version int) *StockUnit {
+	return &StockUnit{id: id, sku: sku, binID: binID, quantity: qty, reserved: reserved, state: state, siteID: siteID, version: version}
 }
 
 func (u *StockUnit) ID() string                { return u.id }
@@ -70,6 +105,20 @@ func (u *StockUnit) BinID() shared.BinId       { return u.binID }
 func (u *StockUnit) Quantity() shared.Quantity { return u.quantity }
 func (u *StockUnit) Reserved() shared.Quantity { return u.reserved }
 func (u *StockUnit) State() State              { return u.state }
+
+// SiteID reports this unit's site custody. Empty means "not recorded"
+// (a legacy row persisted before site custody existed).
+func (u *StockUnit) SiteID() shared.SiteID { return u.siteID }
+
+// IsAtSite reports whether this unit is in site's custody. A unit with
+// no recorded site (legacy) is at NO site — the wrong-facility failure
+// mode fails closed.
+func (u *StockUnit) IsAtSite(site shared.SiteID) bool {
+	if site == "" {
+		return false
+	}
+	return u.siteID == site
+}
 
 // Version reports the optimistic-concurrency version this aggregate was
 // loaded at (or 1 for a freshly constructed one). Infrastructure-only —

@@ -170,6 +170,15 @@ config:
   housekeepingInterval: "1h"
   idempotencyKeyTtl: "24h"
   outboxRetention: "168h"
+  # Site-scoped transfer allocation command consumer (ADR-0030). "kafka"
+  # enables consuming network-inventory-planning's
+  # TransferAllocationRequested commands; requires database.* and
+  # kafka.enabled (the decision is only atomic through the Postgres
+  # UnitOfWork/outbox). transferConsumerGroup overrides the consumer
+  # group id (default inventory-storage-transfer-allocation) so a
+  # locally-run process can never steal the live Deployment's partitions.
+  transferAllocationConsumerMode: "off"
+  transferAllocationConsumerGroup: ""
 
 database:
   url: ""
@@ -189,8 +198,11 @@ database:
   # order-management's ADR-0029).
   migrationsExistingSecretKey: "MIGRATIONS_DATABASE_URL"
 
-# This service only PUBLISHES to Kafka (StockReserved / ReservationRevoked);
-# it has no inbound consumer. kafka.enabled gates EVENT_PUBLISHER=kafka.
+# Kafka wiring. This service PUBLISHES (StockReserved /
+# ReservationRevoked / the ADR-0030 transfer replies) and, when
+# config.transferAllocationConsumerMode=kafka, CONSUMES
+# network-inventory-planning's transfer allocation commands.
+# kafka.enabled gates EVENT_PUBLISHER=kafka.
 kafka:
   enabled: false
   brokers: "kafka:9092"

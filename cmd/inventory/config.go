@@ -42,6 +42,13 @@ type config struct {
 	locationLookupMode    string
 	facilityLayoutBaseURL string
 	kafkaBrokers          []string // KAFKA_BROKERS split on ","; nil when unset
+
+	// transferConsumerMode is TRANSFER_ALLOCATION_CONSUMER_MODE: "off"
+	// (default) or "kafka" — see buildTransferAllocationConsumer.
+	transferConsumerMode string
+	// transferConsumerGroup is TRANSFER_ALLOCATION_CONSUMER_GROUP; empty
+	// means inboundkafka.DefaultConsumerGroup.
+	transferConsumerGroup string
 }
 
 // loadConfig reads the process environment.
@@ -59,6 +66,8 @@ func loadConfig() config {
 		eventPublisher:        getenv("EVENT_PUBLISHER", "log"),
 		locationLookupMode:    getenv("LOCATION_LOOKUP_MODE", "permissive"),
 		facilityLayoutBaseURL: os.Getenv("FACILITY_LAYOUT_BASE_URL"),
+		transferConsumerMode:  getenv("TRANSFER_ALLOCATION_CONSUMER_MODE", "off"),
+		transferConsumerGroup: os.Getenv("TRANSFER_ALLOCATION_CONSUMER_GROUP"),
 	}
 	if raw := os.Getenv("KAFKA_BROKERS"); raw != "" {
 		cfg.kafkaBrokers = strings.Split(raw, ",")

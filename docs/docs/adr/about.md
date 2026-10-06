@@ -87,6 +87,7 @@ Typos, broken links and formatting are of course fair game.
 | [0027](./0027-mcp-eval-and-governance-suite.md) | MCP governance gate and eval suite (E1–E3) | Accepted |
 | [0028](./0028-bootretry-boot-time-dial-retry.md) | Boot-time dial retry (bootretry) | Accepted |
 | [0029](./0029-extra-architecture-fitness-tests.md) | Additional architecture fitness tests beyond the dependency rule | Accepted |
+| [0030](./0030-site-scoped-transfer-allocation.md) | Site-scoped transfer allocation as a command/reply consumer | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic
