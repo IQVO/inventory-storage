@@ -16,7 +16,8 @@ shared-broker reality has already caused a real incident once.
 
 Not every domain event this service raises belongs on the wire. Check
 `internal/adapters/outbound/kafka/publisher.go`'s doc comment — this repo
-forwards only `StockReserved`/`ReservationRevoked`; everything else is a
+forwards only `StockReserved`/`ReservationRevoked`, the two transfer replies and
+`ProductClassified` (ADR-0031); everything else is a
 local concern (with `EVENT_PUBLISHER=kafka` most of them also go to the
 separate `warehouse.inventory.analytics` topic, ADR-0011 — that is not the
 integration contract). Note that publishing goes through the transactional
