@@ -46,7 +46,7 @@ const FeatureList: FeatureItem[] = [
   },
   {
     title: 'Bin-Accurate Truth',
-    to: '/docs/ddd/aggregates-and-invariants',
+    to: '/docs/ddd/aggregate-design-canvas',
     description: (
       <>
         Every physical item has exactly one known bin, or is explicitly flagged

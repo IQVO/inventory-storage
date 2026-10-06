@@ -55,8 +55,10 @@ Naming the boundary is as important as naming the capability. This service:
   level, position) — that is `facility-layout`, a separate Generic subdomain;
 - **does not decide what to buy or forecast demand** — that is upstream of the
   whole platform;
-- **does not create bins over HTTP** — bin provisioning is seed-data /
-  infrastructure today, not an exposed operation.
+- **does not decide what a bin physically is** — `PUT /bins/{binId}`
+  (ADR 0025) only registers a bin id and its capacity so this service can
+  enforce occupancy; the slot's place in the building stays
+  `facility-layout`'s.
 
 Per `warehouse-systems-ddd.md`, keeping worker identity, real-time floor
 conditions and task sequencing *out* of the inventory system of record is what
@@ -95,7 +97,9 @@ flowchart LR
 ```
 
 Solid edges are Kafka topics; the dotted edge is a synchronous REST call
-into this service. This service consumes exactly one topic —
+into this service (`order-management` is the only command caller among the
+sibling contexts; `wes-work-planning`, `fulfillment-execution`,
+`network-fulfillment` and `warehouse-ops-agent` only read). This service consumes exactly one topic —
 `facility-layout`'s — and only to cache zone classifications for its stow
 placement rules (ADR 0013). See [the context map](/docs/ecosystem/context-map)
 for every wire, including the other synchronous callers.
@@ -110,4 +114,7 @@ for every wire, including the other synchronous callers.
   exists in this shape.
 - **[API Reference](/docs/api-reference)** — generated from the real,
   Spectral-linted `apis/openapi.yaml`.
+- **[DDD artifacts (ddd-crew)](/docs/ddd/ddd-artifacts)** — core domain
+  chart, bounded context canvas, aggregate design canvas, EventStorming,
+  message flows, UML/ER/sequence diagrams, all derived from the code.
 - **[ADRs](/docs/adr)** — the consequential decisions, in Nygard format.

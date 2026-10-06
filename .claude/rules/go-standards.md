@@ -13,11 +13,13 @@ Moved here from CLAUDE.md; the gate commands and the testcontainers rule stay th
 
 - Go 1.26, modules. chi (`go-chi/chi/v5`), pgx/v5 + pgxpool, golang-migrate.
 - Config via env (`DATABASE_URL`, `HTTP_ADDR`, `ANALYTICS_DATABASE_URL`,
-  `MIGRATIONS_DATABASE_URL`, `EVENT_PUBLISHER`, `OUTBOX_RELAY_INTERVAL`,
+  `MIGRATIONS_DATABASE_URL`, `MIGRATIONS_PATH`, `ANALYTICS_MIGRATIONS_PATH`,
+  `ADMIN_ADDR`, `EVENT_PUBLISHER`, `OUTBOX_RELAY_INTERVAL`,
   `KAFKA_BROKERS`, `CORS_ALLOWED_ORIGINS`, `LOCATION_LOOKUP_MODE`,
   `FACILITY_LAYOUT_BASE_URL`, `REPORTS_BASE_URL`, `MCP_ADDR`,
-  `HOUSEKEEPING_INTERVAL`, `IDEMPOTENCY_KEY_TTL`, `OUTBOX_RETENTION`). No
-  hardcoded config.
+  `HOUSEKEEPING_INTERVAL`, `IDEMPOTENCY_KEY_TTL`, `OUTBOX_RETENTION`,
+  `LOG_LEVEL`, `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
+  `SERVICE_VERSION`, `ENVIRONMENT`). No hardcoded config.
 - Typed domain errors mapped to HTTP status (RFC 7807 problem details) in the
   adapter. gofmt/go vet clean; every package has a doc comment.
 - Table-driven tests: domain + application (in-memory adapter); one httptest

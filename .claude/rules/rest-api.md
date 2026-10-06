@@ -22,6 +22,8 @@ paths:
 - `PUT  /products/{sku}/classification`        -> ClassifyProduct
 - `GET  /products/{sku}/classification`        -> current ProductClassification
 - `GET  /healthz`
+- `GET  /readyz`                               -> 200 ready / 503 not_ready during
+                                                  graceful shutdown (ADR-0020)
 
 JSON DTOs live in the http adapter; never leak domain structs.
 

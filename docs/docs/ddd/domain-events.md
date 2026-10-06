@@ -1,6 +1,7 @@
 ---
 title: Domain Events
 sidebar_label: Domain Events
+sidebar_position: 5
 description: The eleven past-tense domain events this context raises, which aggregate raises each, and which reach the broker.
 ---
 
@@ -54,8 +55,9 @@ flowchart LR
   EXP["lazy read"] --> E10["ReservationExpired"]
   CLS["ClassifyProduct"] --> E11["ProductClassified"]
 
-  E1 & E2 & E3 & E6 & E7 & E8 & E9 & E10 & E11 --> LOG["ports.EventPublisher<br/>in-process only"]
-  E4 & E5 --> KAF["Kafka<br/>warehouse.inventory.events"]
+  E4 & E5 --> KAF["warehouse.inventory.events<br/>integration topic"]
+  E1 & E2 & E4 & E5 & E6 & E7 & E8 & E9 & E10 --> ANA["warehouse.inventory.analytics<br/>internal analytics topic"]
+  E3 & E11 --> LOG["in-process only<br/>never leaves the service"]
 
   classDef wired fill:#0f766e,stroke:#134e4a,color:#fff;
   classDef local fill:#94a3b8,stroke:#475569,color:#0f172a;
@@ -64,12 +66,57 @@ flowchart LR
 ```
 
 **Only `StockReserved` and `ReservationRevoked` cross the service boundary
-today.** The Kafka adapter's `switch` has a `default: return nil` branch that
-silently drops everything else — that is deliberate, not an oversight: those
-two are the published integration contract, and the other nine (including
-`ProductClassified`) are local concerns. `apis/asyncapi.yaml` documents the
-full catalog and marks each catalog-only message as such, so a downstream
-team cannot mistake a documented event for a wired one.
+on the integration topic.** The integration publisher's `Encode` returns
+nothing for every other event — deliberate, not an oversight: those two are
+the published integration contract. Nine of the eleven events also go to the
+internal analytics topic for this service's own projector;
+`LocationRecorded` and `ProductClassified` go nowhere (no outbox row, no
+Kafka message). `apis/asyncapi.yaml` documents both channels, so a
+downstream team cannot mistake a documented analytics event for a wired
+integration one.
+
+## Wire catalogue
+
+Every published event, from the publishers' `Encode` methods
+(`internal/adapters/outbound/kafka/publisher.go`,
+`analytics_publisher.go`). All messages are CloudEvents 1.0 structured mode,
+`source=/warehouse/inventory-storage`, routed with the `Hash` balancer on the
+Kafka key (ADR 0021), and — with Postgres and `EVENT_PUBLISHER=kafka` —
+enqueued in `outbox_events` by the producing use case's transaction and
+relayed by `cmd/inventory`.
+
+| Event | Full CloudEvents `type` | Topic | Kafka key / `subject` | `data` fields | Producer use case | Known consumers |
+| --- | --- | --- | --- | --- | --- | --- |
+| StockReserved | `com.warehouse.wms.inventory-storage.reservation.StockReserved` | `warehouse.inventory.events` | reservation id / reservation id | `sku`, `quantity`, `demand_ref` | `ReserveStock` | `wes-work-planning` (decrements its observed usable) |
+| StockReserved | same `type` | `warehouse.inventory.analytics` | reservation id / reservation id | `sku`, `reservation_id`, `quantity` | `ReserveStock` | `cmd/inventory-projector` |
+| ReservationRevoked | `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | `warehouse.inventory.events` | reservation id / reservation id | `sku`, `quantity`, `demand_ref` (enriched by repo lookup) | `RevokeReservation` (REST and MCP) | `wes-work-planning` (increments its observed usable) |
+| ReservationRevoked | same `type` | `warehouse.inventory.analytics` | reservation id / reservation id | `reservation_id`, `sku` (enriched) | `RevokeReservation` | `cmd/inventory-projector` |
+| ReservationExpired | `com.warehouse.wms.inventory-storage.reservation.ReservationExpired` | `warehouse.inventory.analytics` | reservation id / reservation id | `reservation_id`, `sku` (enriched) | lazy expiry in `GetReservationsByDemandRef`, `ReserveStock`, `RevokeReservation`, `ConfirmPick` | `cmd/inventory-projector` |
+| StockPicked | `com.warehouse.wms.inventory-storage.reservation.StockPicked` | `warehouse.inventory.analytics` | reservation id / reservation id | `sku`, `reservation_id`, `quantity` | `ConfirmPick` | `cmd/inventory-projector` |
+| StockReceived | `com.warehouse.wms.inventory-storage.stock.StockReceived` | `warehouse.inventory.analytics` | SKU / SKU | `sku`, `quantity` | `ReceiveStock` | `cmd/inventory-projector` |
+| ItemStowed | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | `warehouse.inventory.analytics` | SKU / SKU | `sku`, `bin_id`, `quantity` | `StowStock` | `cmd/inventory-projector` |
+| ItemUnlocated | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | `warehouse.inventory.analytics` | SKU / stock unit id | `sku`, `bin_id`, `stock_unit_id`, `quantity` | `RunCycleCount` | `cmd/inventory-projector` |
+| CycleCountCompleted | `com.warehouse.wms.inventory-storage.bin.CycleCountCompleted` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system`, `discrepancy` | `RunCycleCount` | `cmd/inventory-projector` |
+| DiscrepancyDetected | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system` | `RunCycleCount` | `cmd/inventory-projector` |
+| LocationRecorded | — (not published) | — | — | — | `StowStock` | none |
+| ProductClassified | — (not published; would be `com.warehouse.wms.inventory-storage.product.ProductClassified`) | — | — | — | `ClassifyProduct` | none — siblings read `GET /products/{sku}/classification` instead |
+
+`dataschema` is `urn:warehouse:inventory-storage:events:<EventName>:v1` on
+the integration topic and `urn:warehouse:inventory-storage:analytics:<EventName>:v1`
+on the analytics topic.
+
+### Consumed events
+
+| Event | Full CloudEvents `type` | Topic | Consumer (group) | Effect |
+| --- | --- | --- | --- | --- |
+| ZoneRegistered | `com.warehouse.wms.facility-layout.zone.ZoneRegistered` | `warehouse.facility.events` | `facilitycache.Consumer` (per-process group `inventory-storage-facility-location-cache-<host>-<pid>-<ns>`, FirstOffset replay) | caches zone `hazmat` + `temperatureClass` by `zoneId` |
+| LocationSlotRegistered | `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | `warehouse.facility.events` | same | maps `locationCode` → `zoneId` (derived from the code when absent) |
+| LocationSlotDecommissioned | `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `warehouse.facility.events` | same | drops the slot, so it answers `Known=false` |
+| all nine analytics types above | `com.warehouse.wms.inventory-storage.*` | `warehouse.inventory.analytics` | `cmd/inventory-projector` (group `inventory-analytics`, FirstOffset) | upserts `flow_accuracy_rollup`, dedupes on the CloudEvents `id` |
+
+Any other `type` on `warehouse.facility.events` is ignored; a message that
+is not a valid CloudEvent is dead-lettered to `warehouse.facility.events.dlq`.
+The projector WARN-logs and skips invalid messages instead.
 
 ## Lazy expiry: no sweeper, resolved at the next read
 
