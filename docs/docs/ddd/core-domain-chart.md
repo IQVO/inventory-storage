@@ -21,16 +21,16 @@ quadrantChart
     x-axis Low model complexity --> High model complexity
     y-axis Low differentiation --> High differentiation
     quadrant-1 Core
-    quadrant-2 Decisive / Short-term Core
-    quadrant-3 Generic
-    quadrant-4 Supporting
+    quadrant-2 Decisive - Short-term Core
+    quadrant-3 Supporting
+    quadrant-4 Generic
     inventory-storage: [0.78, 0.84]
     Revocable reservations: [0.74, 0.9]
     Chaotic stow ledger: [0.62, 0.86]
     Usable inventory read: [0.3, 0.78]
-    Hazmat placement and DOT segregation: [0.72, 0.44]
-    Flow and Accuracy report: [0.4, 0.3]
-    Bin registration: [0.18, 0.2]
+    Hazmat placement and DOT segregation: [0.46, 0.46]
+    Flow and Accuracy report: [0.62, 0.24]
+    Bin registration: [0.56, 0.14]
 ```
 
 Source: classification from `docs/docs/ddd/subdomain-classification.md`;
@@ -70,11 +70,15 @@ contexts (each repository charts itself).
 - **Usable inventory** is high-value but computationally simple (a sum over
   `StockUnit.Usable()`), so it sits in the Decisive quadrant: a short-term
   core that is valuable precisely because the ledger under it is right.
-- **Hazmat placement and DOT segregation** is complex (regulation-grounded,
-  fail-open/fail-closed asymmetry) but supports rather than defines the
-  business — Supporting, edging towards Core.
+- **Hazmat placement and DOT segregation** is genuinely intricate
+  (regulation-grounded, fail-open/fail-closed asymmetry) but supports rather
+  than defines the business — Supporting, on the border towards Core.
 - **Flow and Accuracy report** (ADR 0011) and **bin registration**
-  (ADR 0025) are Generic: necessary plumbing any WMS needs.
+  (ADR 0025) are Generic: necessary plumbing any WMS needs and could buy.
+
+Quadrant layout follows the ddd-crew template used across the fleet:
+top-right Core, top-left Decisive (short-term core), bottom-left Supporting,
+bottom-right Generic.
 
 ## Evolution
 
