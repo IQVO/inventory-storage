@@ -34,7 +34,7 @@ info:
     `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`.
 
 
-    **Aggregates and entity groupings.** Four aggregates raise every event
+    **Aggregates and entity groupings.** Three aggregates raise every event
     documented here. The **StockUnit** aggregate (entity segment `stock`)
     raises `StockReceived`, `ItemStowed`, `LocationRecorded` and
     `ItemUnlocated`. The **Reservation** aggregate (entity segment
@@ -43,22 +43,19 @@ info:
     reservation because it is emitted by ConfirmPick when a reservation is
     consumed, and reservation id is the only identity it carries. The
     **Bin/Location** aggregate (entity segment `bin`) raises
-    `CycleCountCompleted` and `DiscrepancyDetected`. The
-    **ProductClassification** aggregate (entity segment `product`) raises
-    `ProductClassified`.
+    `CycleCountCompleted` and `DiscrepancyDetected`.
 
 
     **What reaches Kafka.** This document is the complete domain-event
     catalog for the bounded context. Two topics carry a subset of it:
-    `warehouse.inventory.events` (the integration contract — `StockReserved`,
-    `ReservationRevoked`, the two transfer replies, and `ProductClassified`
-    (SKU master data, ADR 0031), from
+    `warehouse.inventory.events` (the integration contract — exactly
+    **`StockReserved` and `ReservationRevoked`**, from
     `internal/adapters/outbound/kafka/publisher.go`) and
     `warehouse.inventory.analytics` (the analytics data product — every
     message below except `LocationRecorded`, from
     `internal/adapters/outbound/kafka/analytics_publisher.go`). Each message
-    says which topics it reaches. `LocationRecorded` is in-process only (no
-    consumer; decided 2026-10-06).
+    says which topics it reaches. `LocationRecorded` (and `ProductClassified`,
+    entity `product`, not listed) is in-process only.
 
 
     **CloudEvents is mandatory (ADR-0024).** Every message on both topics is
@@ -96,10 +93,6 @@ tags:
     description: >
       Events raised by the Bin/Location aggregate: cycle counts verifying a
       bin's contents and the discrepancies they reveal.
-  - name: product
-    description: >
-      Events raised by the ProductClassification aggregate: SKU-level handling
-      master data (hazmat, fragile, temperature, ...) this service owns.
 
 servers:
   production:
@@ -118,10 +111,9 @@ channels:
   warehouse.inventory.events:
     description: >
       The outbound integration topic for this bounded context (the `Topic`
-      constant in `internal/adapters/outbound/kafka/publisher.go`). Reaching
-      it: `StockReserved` and `ReservationRevoked` (keyed by reservation
-      id), the two transfer replies, and `ProductClassified` (keyed by
-      SKU, ADR 0031). The primary downstream consumer is
+      constant in `internal/adapters/outbound/kafka/publisher.go`). Exactly
+      two messages reach it: `StockReserved` and `ReservationRevoked`, keyed
+      by reservation id. The primary downstream consumer is
       wes-work-planning, which dispatches on their full `type` strings and
       projects them into its `UsableInventoryObserved` read model, keyed by
       SKU.
@@ -143,7 +135,8 @@ channels:
           - $ref: "#/components/messages/ReservationRevoked"
           - $ref: "#/components/messages/TransferStockAllocated"
           - $ref: "#/components/messages/TransferStockAllocationRejected"
-          - $ref: "#/components/messages/ProductClassified"
+          - $ref: "#/components/messages/TransferReceiptStaged"
+          - $ref: "#/components/messages/TransferStockStowed"
 
   warehouse.inventory.analytics:
     description: >
@@ -156,8 +149,7 @@ channels:
       for reservation-lifecycle events). Consumed only by this service's own
       projector (`cmd/inventory-projector`), which dispatches on the full
       `type`, dedupes on `id`, and skips (WARN) anything that is not a valid
-      CloudEvent. `ProductClassified` (ADR 0031) shares this topic and is
-      acknowledged without touching the read model.
+      CloudEvent.
     subscribe:
       operationId: consumeInventoryStorageAnalytics
       summary: Consume inventory-storage analytics events (internal).
@@ -179,7 +171,6 @@ channels:
           - $ref: "#/components/messages/ReservationRevoked"
           - $ref: "#/components/messages/CycleCountCompleted"
           - $ref: "#/components/messages/DiscrepancyDetected"
-          - $ref: "#/components/messages/ProductClassified"
 
 components:
   messages:
@@ -286,71 +277,6 @@ components:
             data:
               stock_unit_id: su-7781
               bin_id: A-12-3
-
-    ProductClassified:
-      name: ProductClassified
-      title: Product Classified
-      summary: A SKU's handling classification (master data) was registered or replaced.
-      description: >
-        Raised by the ClassifyProduct use case when a SKU's
-        ProductClassification is registered or replaced (ADR 0009). The
-        classification is SKU-level master data this service owns; publishing
-        it lets siblings keep a local copy instead of polling
-        `GET /products/{sku}/classification` (ADR 0031, which supersedes only
-        the "in-process only" clause of ADR 0024 for this event).
-
-
-        **Published to both topics**, through the transactional outbox in the
-        same transaction as the classification save. CloudEvents `subject` and
-        the Kafka key are the SKU, so reclassifications of one SKU stay
-        ordered on one partition. `data` is `{sku, handling_tags,
-        temperature_class?, dot_hazard_class?}` on both topics (dataschema
-        `urn:warehouse:inventory-storage:events:ProductClassified:v1` on
-        `warehouse.inventory.events`, `...:analytics:ProductClassified:v1` on
-        `warehouse.inventory.analytics`). It is a **full-state replacement**:
-        overwrite your local row; an absent optional field means "none".
-        `handling_tags` is in the aggregate's stable enum order. No PII. This
-        service's own analytics projector ignores it.
-      contentType: application/cloudevents+json
-      tags:
-        - name: product
-          description: Raised by the ProductClassification aggregate.
-      payload:
-        $ref: "#/components/schemas/ProductClassifiedEvent"
-      examples:
-        - name: hazmatFrozenSku
-          summary: SKU-9 classified as Hazmat + TemperatureSensitive (Frozen), DOT class 3.
-          payload:
-            specversion: "1.0"
-            id: 7e2f5d18-0a9c-4b34-9d61-4c8a3e7b1f05
-            source: /warehouse/inventory-storage
-            type: com.warehouse.wms.inventory-storage.product.ProductClassified
-            subject: SKU-9
-            time: "2026-10-06T12:00:00Z"
-            datacontenttype: application/json
-            dataschema: urn:warehouse:inventory-storage:events:ProductClassified:v1
-            data:
-              sku: SKU-9
-              handling_tags:
-                - Hazmat
-                - TemperatureSensitive
-              temperature_class: Frozen
-              dot_hazard_class: 3
-        - name: fragileSku
-          summary: SKU-1 classified as Fragile only (no optional fields).
-          payload:
-            specversion: "1.0"
-            id: 9a4c1e66-3d57-4f20-b8e9-2a6d0c5f7b13
-            source: /warehouse/inventory-storage
-            type: com.warehouse.wms.inventory-storage.product.ProductClassified
-            subject: SKU-1
-            time: "2026-10-06T12:01:00Z"
-            datacontenttype: application/json
-            dataschema: urn:warehouse:inventory-storage:analytics:ProductClassified:v1
-            data:
-              sku: SKU-1
-              handling_tags:
-                - Fragile
 
     StockReserved:
       name: StockReserved
@@ -493,6 +419,115 @@ components:
               sku: SKU-T2
               requested_quantity: 9
               reason: INSUFFICIENT_USABLE
+
+    TransferReceiptStaged:
+      name: TransferReceiptStaged
+      title: Transfer Receipt Staged
+      summary: A destination site counted goods against a recognized ALLOCATED transfer line.
+      description: >-
+        Raised by the StageTransferReceipt use case (ADR 0033,
+        destination receipt custody — POST /transfers/{transferLineId}/receipt).
+        The transfer_line_id was found in the transfer_allocations ledger
+        with outcome ALLOCATED: a transfer_receipts row (state STAGED,
+        DB-unique on transfer_line_id) now records expected_quantity from
+        the ledger, received_quantity as counted, and the SIGNED variance
+        (received - expected; positive = over, negative = short).
+        Over/short is explicit on the wire, never silently absorbed.
+
+
+        NO usable stock moves at this step — the destination site's
+        usable rises only when the stow completes (TransferStockStowed).
+        An unrecognized scan is NOT this event: it is quarantined as an
+        inventory_exceptions row and publishes nothing that raises
+        availability.
+
+
+        **Integration topic only** (no analytics variant: the Inventory
+        Flow & Accuracy projection has no transfer dimension). Kafka key
+        and CloudEvents `subject` are the transfer_line_id, so a line's
+        stage-then-stow facts stay ordered on one partition (ADR 0021).
+      contentType: application/cloudevents+json
+      tags:
+        - name: stock
+          description: Raised on the destination receipt custody path (ADR 0033).
+      payload:
+        $ref: "#/components/schemas/TransferReceiptStagedEvent"
+      examples:
+        - name: shortReceiptStaged
+          summary: Five of six expected units of SKU-T1 counted at SITE-DEST (short by one).
+          payload:
+            specversion: "1.0"
+            id: 8c2f4e71-a5b3-4c68-d9e0-1f4a7b8c9d21
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged
+            subject: tl-77-1
+            time: "2026-10-06T12:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:TransferReceiptStaged:v1
+            data:
+              transfer_id: tr-77
+              transfer_line_id: tl-77-1
+              destination_site_id: SITE-DEST
+              sku: SKU-T1
+              expected_quantity: 6
+              received_quantity: 5
+              variance: -1
+
+    TransferStockStowed:
+      name: TransferStockStowed
+      title: Transfer Stock Stowed
+      summary: A staged transfer receipt was placed into destination bins — destination usable rose, exactly once.
+      description: >-
+        Raised by the StowTransferStock use case (ADR 0033 — POST
+        /transfers/{transferLineId}/stow): the ONLY path that raises the
+        destination site's usable stock for a transfer. One StockUnit per
+        bin leg was created AT the destination site
+        (NewStockUnitAtSite), every bin verified to belong to that
+        site's custody, the quantities summed exactly to the receipt's
+        received_quantity, and the receipt moved STAGED -> STOWED.
+
+
+        Idempotent at the database level: a replayed stow for a STOWED
+        receipt returns the original outcome and republishes NOTHING —
+        exactly one of these events exists per transfer_line_id.
+
+
+        **Integration topic only** (no analytics variant). Kafka key and
+        CloudEvents `subject` are the transfer_line_id, matching
+        TransferReceiptStaged so a line's facts stay per-line ordered
+        (ADR 0021).
+      contentType: application/cloudevents+json
+      tags:
+        - name: stock
+          description: Raised on the destination stow custody path (ADR 0033).
+      payload:
+        $ref: "#/components/schemas/TransferStockStowedEvent"
+      examples:
+        - name: stowedIntoTwoBins
+          summary: Five units of SKU-T1 placed into two SITE-DEST bins.
+          payload:
+            specversion: "1.0"
+            id: 9d3a5f82-b6c4-4d79-e0f1-2a5b8c9d0e32
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.TransferStockStowed
+            subject: tl-77-1
+            time: "2026-10-06T12:05:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:TransferStockStowed:v1
+            data:
+              transfer_id: tr-77
+              transfer_line_id: tl-77-1
+              destination_site_id: SITE-DEST
+              sku: SKU-T1
+              received_quantity: 5
+              stowed_quantity: 5
+              allocations:
+                - stock_unit_id: su-dest-1
+                  bin_id: BIN-DEST-1
+                  quantity: 3
+                - stock_unit_id: su-dest-2
+                  bin_id: BIN-DEST-2
+                  quantity: 2
 
     ReservationExpired:
       name: ReservationExpired
@@ -896,55 +931,6 @@ components:
                 bin_id:
                   type: string
                   description: The bin that authoritatively holds that StockUnit.
-
-    ProductClassifiedEvent:
-      description: >
-        CloudEvents envelope for a ProductClassified domain event, on both
-        topics; `dataschema` selects the topic variant, the `data` shape is the
-        same on both.
-      allOf:
-        - $ref: "#/components/schemas/CloudEventBase"
-        - type: object
-          required:
-            - type
-            - data
-          properties:
-            type:
-              type: string
-              description: Fixed event type for ProductClassified.
-              const: "com.warehouse.wms.inventory-storage.product.ProductClassified"
-            dataschema:
-              type: string
-              description: urn:warehouse:inventory-storage:events:ProductClassified:v1 on the integration topic, ...:analytics:ProductClassified:v1 on the analytics topic.
-              pattern: "^urn:warehouse:inventory-storage:(events|analytics):ProductClassified:v1$"
-            data:
-              type: object
-              description: >
-                Full-state replacement of the SKU's classification. Optional
-                fields are omitted when unset.
-              required:
-                - sku
-                - handling_tags
-              properties:
-                sku:
-                  type: string
-                  description: The classified SKU (also the CloudEvents subject and Kafka key).
-                handling_tags:
-                  type: array
-                  minItems: 1
-                  description: Non-empty, duplicate-free set of handling tags, in the aggregate's stable enum order.
-                  items:
-                    type: string
-                    enum: [Hazmat, Fragile, TemperatureSensitive, Oversized, HighValue]
-                temperature_class:
-                  type: string
-                  enum: [Ambient, Chilled, Frozen]
-                  description: Present if and only if handling_tags includes TemperatureSensitive.
-                dot_hazard_class:
-                  type: integer
-                  minimum: 1
-                  maximum: 9
-                  description: Top-level US DOT hazard class; present only for a Hazmat classification with one recorded (ADR 0010).
 
     StockReservedEvent:
       description: >
@@ -1394,3 +1380,129 @@ components:
                     holds the SKU but not enough usable quantity.
                     IDEMPOTENCY_CONFLICT: the line id was replayed with a
                     different payload; the original decision stands.
+
+    TransferReceiptStagedEvent:
+      description: CloudEvents envelope for a TransferReceiptStaged domain event (ADR 0033).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for TransferReceiptStaged.
+              const: "com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:TransferReceiptStaged:v1
+              pattern: "^urn:warehouse:inventory-storage:events:TransferReceiptStaged:v1$"
+            data:
+              type: object
+              description: >-
+                Business payload for TransferReceiptStaged. The receipt is
+                STAGED: counted, not yet placed; no usable stock moved.
+              required:
+                - transfer_id
+                - transfer_line_id
+                - destination_site_id
+                - sku
+                - expected_quantity
+                - received_quantity
+                - variance
+              properties:
+                transfer_id:
+                  type: string
+                  description: The planning context's transfer (saga) id.
+                transfer_line_id:
+                  type: string
+                  description: The transfer line this receipt stages; DB-unique in transfer_receipts.
+                destination_site_id:
+                  type: string
+                  description: The receiving site whose dock counted the goods.
+                sku:
+                  type: string
+                  description: The stock keeping unit counted.
+                expected_quantity:
+                  type: integer
+                  minimum: 1
+                  description: What the transfer_allocations ledger promised (requested_quantity).
+                received_quantity:
+                  type: integer
+                  minimum: 1
+                  description: What was physically counted at the dock.
+                variance:
+                  type: integer
+                  description: >-
+                    SIGNED received - expected. Positive = over-receipt,
+                    negative = short-receipt, 0 = exact. Explicit, never
+                    silently absorbed.
+
+    TransferStockStowedEvent:
+      description: CloudEvents envelope for a TransferStockStowed domain event (ADR 0033).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for TransferStockStowed.
+              const: "com.warehouse.wms.inventory-storage.stock.TransferStockStowed"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:TransferStockStowed:v1
+              pattern: "^urn:warehouse:inventory-storage:events:TransferStockStowed:v1$"
+            data:
+              type: object
+              description: >-
+                Business payload for TransferStockStowed. The destination
+                site's usable stock rose by exactly received_quantity,
+                once, through the StockUnits listed in allocations.
+              required:
+                - transfer_id
+                - transfer_line_id
+                - destination_site_id
+                - sku
+                - received_quantity
+                - stowed_quantity
+                - allocations
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                destination_site_id:
+                  type: string
+                  description: The site whose custody the new StockUnits were created in.
+                sku:
+                  type: string
+                received_quantity:
+                  type: integer
+                  minimum: 1
+                  description: The receipt's counted quantity.
+                stowed_quantity:
+                  type: integer
+                  minimum: 1
+                  description: Total quantity placed (equals received_quantity).
+                allocations:
+                  type: array
+                  minItems: 1
+                  description: The destination StockUnits created, with the bin each was placed into.
+                  items:
+                    type: object
+                    required:
+                      - stock_unit_id
+                      - bin_id
+                      - quantity
+                    properties:
+                      stock_unit_id:
+                        type: string
+                      bin_id:
+                        type: string
+                      quantity:
+                        type: integer
+                        minimum: 1

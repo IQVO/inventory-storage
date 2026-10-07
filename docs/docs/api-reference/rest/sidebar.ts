@@ -152,6 +152,28 @@ const sidebar: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Transfers",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/transfers",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/stage-transfer-receipt",
+          label: "Stage a destination transfer receipt (count an arrival)",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/stow-transfer-stock",
+          label: "Stow a staged transfer receipt into destination bins",
+          className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
       label: "Reports",
       link: {
         type: "doc",

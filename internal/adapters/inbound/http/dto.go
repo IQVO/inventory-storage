@@ -60,6 +60,50 @@ type usableInventoryResponse struct {
 	Usable int    `json:"usable"`
 }
 
+// --- transfer destination receipt/stow (ADR 0031) ---------------------------
+
+type stageTransferReceiptRequest struct {
+	TransferID        string `json:"transferId"`
+	DestinationSiteID string `json:"destinationSiteId"`
+	SKU               string `json:"sku"`
+	ReceivedQuantity  int    `json:"receivedQuantity"`
+}
+
+type transferReceiptResponse struct {
+	TransferID        string `json:"transferId"`
+	TransferLineID    string `json:"transferLineId"`
+	DestinationSiteID string `json:"destinationSiteId"`
+	SKU               string `json:"sku"`
+	ExpectedQuantity  int    `json:"expectedQuantity"`
+	ReceivedQuantity  int    `json:"receivedQuantity"`
+	Variance          int    `json:"variance"`
+	State             string `json:"state"`
+	StagedAt          string `json:"stagedAt"`
+	StowedAt          string `json:"stowedAt,omitempty"`
+	Replay            bool   `json:"replay"`
+}
+
+type stowTransferRequest struct {
+	Bins []stowBinRequest `json:"bins"`
+}
+
+type stowBinRequest struct {
+	BinID    string `json:"binId"`
+	Quantity int    `json:"quantity"`
+}
+
+type stowedAllocationResponse struct {
+	StockUnitID string `json:"stockUnitId"`
+	BinID       string `json:"binId"`
+	Quantity    int    `json:"quantity"`
+}
+
+type stowTransferResponse struct {
+	transferReceiptResponse
+	StowedQuantity int                        `json:"stowedQuantity"`
+	Allocations    []stowedAllocationResponse `json:"allocations"`
+}
+
 type cycleCountRequest struct {
 	// CountedQuantity is a pointer so an omitted field is distinguishable
 	// from an explicit zero count (zero is a valid "empty bin" count;

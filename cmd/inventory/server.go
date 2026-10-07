@@ -33,7 +33,23 @@ func buildServer(
 		ClassifyProduct:            &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
 		RegisterBin:                &usecases.RegisterBin{Locations: locationRepo, UnitOfWork: uow},
 		GetBin:                     &usecases.GetBin{Locations: locationRepo},
-		Classifications:            classificationRepo,
+		StageTransferReceipt: &usecases.StageTransferReceipt{
+			Transfers:  a.transfers,
+			Receipts:   a.transferReceipts,
+			Exceptions: a.inventoryExceptions,
+			Events:     publisher,
+			Clock:      clock,
+			UnitOfWork: uow,
+		},
+		StowTransferStock: &usecases.StowTransferStock{
+			Receipts:   a.transferReceipts,
+			Stock:      stockRepo,
+			Locations:  locationRepo,
+			Events:     publisher,
+			Clock:      clock,
+			UnitOfWork: uow,
+		},
+		Classifications: classificationRepo,
 		// IdempotencyPool wires RequireIdempotencyKey onto POST
 		// /stock/receive and POST /reservations (see
 		// inboundhttp.NewRouter). nil (in-memory/no-DATABASE_URL

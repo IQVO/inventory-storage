@@ -110,6 +110,7 @@ const sidebars: SidebarsConfig = {
         'adr/0030-site-scoped-transfer-allocation',
         'adr/0031-publish-product-classified',
         'adr/0032-confirm-pick-event-driven',
+        'adr/0033-destination-transfer-receipt-custody',
       ],
     },
   ],
