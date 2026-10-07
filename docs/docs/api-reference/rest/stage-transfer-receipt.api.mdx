@@ -1,0 +1,74 @@
+---
+id: stage-transfer-receipt
+title: "Stage a destination transfer receipt (count an arrival)"
+description: "A destination site counted received goods against a transfer line (ADR 0031). The transfer_line_id is looked up in the transfer_allocations ledger: a recognized ALLOCATED line answers 201 with a STAGED transfer receipt (expected_quantity from the ledger, received_quantity as counted, variance = received - expected, SIGNED: positive is over, negative is short) and publishes TransferReceiptStaged through the transactional outbox. NO usable stock moves at this step."
+sidebar_label: "Stage a destination transfer receipt (count an arrival)"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Stage a destination transfer receipt (count an arrival)"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/transfers/{transferLineId}/receipt"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+A destination site counted received goods against a transfer line (ADR 0031). The transfer_line_id is looked up in the transfer_allocations ledger: a recognized ALLOCATED line answers 201 with a STAGED transfer receipt (expected_quantity from the ledger, received_quantity as counted, variance = received - expected, SIGNED: positive is over, negative is short) and publishes TransferReceiptStaged through the transactional outbox. NO usable stock moves at this step.
+
+An UNRECOGNIZED scan — no ledger row for the line (this service never allocated it), a row that was REJECTED, a transfer_id mismatch, or a destination equal to the transfer's own origin site — is QUARANTINED: an inventory_exceptions row is written (kind UNKNOWN_TRANSFER or UNRECOGNIZED_TRANSFER), nothing that could raise usable stock is published, and the 422 problem body carries the exception's coordinates in its `exception` extension member so an operator can resolve it.
+
+Idempotent on transfer_line_id at the database level: an identical replay answers 200 with the ORIGINAL receipt (replay: true) and republishes nothing; the same line id with a DIFFERENT payload is a 409 transfer-receipt-conflict (the original receipt is immutable).
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./stage-transfer-receipt.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./stage-transfer-receipt.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./stage-transfer-receipt.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

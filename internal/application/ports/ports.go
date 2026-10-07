@@ -139,6 +139,36 @@ type TransferAllocationRepo interface {
 	Save(ctx context.Context, a *transfer.Allocation) error
 }
 
+// TransferReceiptRepo persists and retrieves destination transfer
+// receipts (ADR 0031): one row per arrived transfer line, DB-unique on
+// transfer_line_id — the idempotency anchor for BOTH the stage and the
+// stow step.
+type TransferReceiptRepo interface {
+	// FindByTransferLineID returns the receipt for that line, or nil
+	// when no receipt has ever been staged for it.
+	FindByTransferLineID(ctx context.Context, transferLineID string) (*transfer.Receipt, error)
+	// Save inserts a STAGED receipt. A second Save for an already-
+	// staged transfer_line_id must fail with
+	// ErrTransferReceiptAlreadyStaged (the DB unique constraint).
+	Save(ctx context.Context, r *transfer.Receipt) error
+	// SaveStowed updates the receipt to its STOWED terminal state,
+	// recording the stow legs. Saving a receipt that is not in STAGED
+	// state must fail with ErrTransferReceiptAlreadyStowed.
+	SaveStowed(ctx context.Context, r *transfer.Receipt) error
+}
+
+// InventoryExceptionRepo persists quarantined destination scans (ADR
+// 0031). Writing an exception changes NO stock; it exists so an
+// unrecognized arrival is auditable and resolvable by a human.
+type InventoryExceptionRepo interface {
+	// FindByScan returns the quarantine record for the exact same scan
+	// (line, destination, sku, quantity), or nil when this scan was
+	// never quarantined — the replay check that keeps a repeated
+	// identical scan from writing a second exception.
+	FindByScan(ctx context.Context, transferLineID string, destinationSiteID shared.SiteID, sku shared.SKU, receivedQty shared.Quantity) (*transfer.Exception, error)
+	Save(ctx context.Context, e *transfer.Exception) error
+}
+
 // LocationClassificationLookup is the outbound port for the synchronous
 // cross-context read from facility-layout's location-classification
 // endpoint, used by StowStock to enforce hazmat/temperature placement

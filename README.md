@@ -153,6 +153,8 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | PUT    | `/bins/{binId}` | RegisterBin — idempotent: 201 created / 200 unchanged or resized / 409 below occupancy (ADR-0025) |
 | GET    | `/bins/{binId}` | GetBin — capacity, occupied, available |
 | POST   | `/bins/{binId}/cycle-count` | RunCycleCount |
+| POST   | `/transfers/{transferLineId}/receipt` | StageTransferReceipt — requires `Idempotency-Key`; 201 staged / 200 replay / 422 quarantined / 409 conflicting scan (ADR-0033) |
+| POST   | `/transfers/{transferLineId}/stow` | StowTransferStock — requires `Idempotency-Key`; 200 stowed with allocations / 409 not staged, wrong-site bin, or quantity mismatch (ADR-0033) |
 | PUT    | `/products/{sku}/classification` | 410 `classification-moved` (ADR-0034: classify in product-master) |
 | GET    | `/products/{sku}/classification` | deprecated: local copy of product-master's classification |
 | GET    | `/healthz` | liveness |
@@ -407,6 +409,45 @@ running pod's relay publishes; safe to re-run:
 ```sh
 kubectl -n warehouse-systems exec deploy/inventory-storage -- ./inventory republish-product-classifications
 ```
+
+### Destination transfer receiving: stage → quarantine → stow (ADR-0033)
+
+When the truck arrives, custody at the destination is taken by a SCAN,
+not by an event: `POST /transfers/{transferLineId}/receipt` records what
+was physically counted against the transfer line the operator claims,
+and `POST /transfers/{transferLineId}/stow` places it into
+destination-site bins. Both require an `Idempotency-Key`.
+
+- **Stage** looks the line up in the `transfer_allocations` ledger. A
+  recognized `ALLOCATED` row answers `201` with a `STAGED`
+  `transfer_receipts` row — `expected_quantity` from the ledger,
+  `received_quantity` as counted, `variance = received − expected`
+  (SIGNED: over positive, short negative, never silently absorbed) — and
+  publishes
+  `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged`
+  (key/subject = transfer line id) through the same transactional
+  outbox. **No usable stock moves at stage.**
+- **Quarantine** — the line was never allocated here, was `REJECTED`,
+  the `transferId` mismatches, or the destination IS the transfer's own
+  origin site: an `inventory_exceptions` row is written, NOTHING that
+  could raise availability is published, and the `422` problem body
+  carries the exception's coordinates in its `exception` member for an
+  operator to resolve.
+- **Stow** verifies every bin belongs to the receipt's
+  `destination_site_id` (site custody fails closed — another site's bin
+  or a legacy site-less bin is a `409`), requires the bin quantities to
+  sum exactly to `receivedQuantity`, creates one `StockUnit` per leg AT
+  the destination site, moves the receipt `STAGED → STOWED`, and
+  publishes
+  `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` — the
+  **only** event that raises destination usable. A replayed stow returns
+  the original allocations, creates no second StockUnit, republishes
+  nothing (DB-unique receipt + guarded state transition).
+
+`TransferArrived` from fulfillment-execution
+(`warehouse.fulfillment.events`) is deliberately NOT consumed here: it
+is a work-execution fact, not a custody fact — custody is taken by the
+physical count behind a scan. See ADR-0033.
 
 ## Consumed: facility-layout's location classifications
 

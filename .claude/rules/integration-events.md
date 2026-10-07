@@ -122,7 +122,7 @@ Wire `type`s: `com.warehouse.wms.inventory-storage.reservation.StockReserved`
 and `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`
 (wes-work-planning dispatches on these exact strings). The analytics topic
 carries ten types (entity `stock`/`reservation`/`bin`/`product`, see ADR-0024
-and ADR-0031).
+and ADR-0033).
 
 Consumers should ignore unknown `type` values (the catalog will grow),
 deduplicate on `(source, id)` (Kafka delivery is at-least-once). Every

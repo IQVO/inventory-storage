@@ -72,6 +72,13 @@ tags:
       deprecated.
   - name: Health
     description: Liveness and readiness probes.
+  - name: Transfers
+    description: >-
+      Destination transfer receiving custody (ADR 0031): stage a counted
+      arrival against a recognized ALLOCATED transfer line (or quarantine
+      an unrecognized scan as an inventory exception), then stow the
+      received goods into destination-site bins — the only path that
+      raises the destination site's usable stock.
   - name: Reports
     description: >
       The read-only "Inventory Flow & Accuracy" analytical data product
@@ -1166,6 +1173,286 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /transfers/{transferLineId}/receipt:
+    post:
+      operationId: stageTransferReceipt
+      summary: Stage a destination transfer receipt (count an arrival)
+      description: >-
+        A destination site counted received goods against a transfer line
+        (ADR 0031). The transfer_line_id is looked up in the
+        transfer_allocations ledger: a recognized ALLOCATED line answers
+        201 with a STAGED transfer receipt (expected_quantity from the
+        ledger, received_quantity as counted, variance = received -
+        expected, SIGNED: positive is over, negative is short) and
+        publishes TransferReceiptStaged through the transactional outbox.
+        NO usable stock moves at this step.
+
+
+        An UNRECOGNIZED scan — no ledger row for the line (this service
+        never allocated it), a row that was REJECTED, a transfer_id
+        mismatch, or a destination equal to the transfer's own origin
+        site — is QUARANTINED: an inventory_exceptions row is written
+        (kind UNKNOWN_TRANSFER or UNRECOGNIZED_TRANSFER), nothing that
+        could raise usable stock is published, and the 422 problem body
+        carries the exception's coordinates in its `exception` extension
+        member so an operator can resolve it.
+
+
+        Idempotent on transfer_line_id at the database level: an
+        identical replay answers 200 with the ORIGINAL receipt (replay:
+        true) and republishes nothing; the same line id with a DIFFERENT
+        payload is a 409 transfer-receipt-conflict (the original receipt
+        is immutable).
+      tags: [Transfers]
+      parameters:
+        - $ref: "#/components/parameters/TransferLineId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StageTransferReceiptRequest"
+            example:
+              transferId: tr-77
+              destinationSiteId: SITE-DEST
+              sku: SKU-T1
+              receivedQuantity: 5
+      responses:
+        "201":
+          description: >-
+            The receipt was staged against a recognized ALLOCATED line.
+            No usable stock moved — stow first raises it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferReceipt"
+              example:
+                transferId: tr-77
+                transferLineId: tl-77-1
+                destinationSiteId: SITE-DEST
+                sku: SKU-T1
+                expectedQuantity: 6
+                receivedQuantity: 5
+                variance: -1
+                state: STAGED
+                stagedAt: "2026-10-06T12:00:00Z"
+                replay: false
+        "200":
+          description: >-
+            Idempotent replay: this exact scan was already staged; the
+            ORIGINAL receipt is returned (replay: true) and nothing was
+            republished.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferReceipt"
+        "400":
+          description: >-
+            Malformed JSON body, transferId/sku/destinationSiteId missing
+            or empty, receivedQuantity not positive, or the
+            Idempotency-Key header is absent (ADR 0018).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                transferIdRequired:
+                  summary: transferId missing
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/transfer-id-required
+                    title: transferId is required
+                    status: 400
+                    detail: transferId must not be empty
+                    instance: /transfers/tl-77-1/receipt
+                emptySku:
+                  summary: SKU missing or empty
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/empty-sku
+                    title: SKU must not be empty
+                    status: 400
+                    detail: sku must not be empty
+                    instance: /transfers/tl-77-1/receipt
+        "409":
+          description: >-
+            This transfer_line_id already has a receipt staged with a
+            DIFFERENT payload; the original receipt stands immutable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/transfer-receipt-conflict
+                title: This transfer line already has a receipt for a different scan
+                status: 409
+                detail: transfer line already has a receipt for a different scan
+                instance: /transfers/tl-77-1/receipt
+        "422":
+          description: >-
+            The scan could NOT be matched to a recognized ALLOCATED
+            transfer line and was QUARANTINED as an inventory exception.
+            No stock changed. The `exception` extension member carries
+            the quarantine row's coordinates.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/QuarantinedScanProblem"
+              examples:
+                unknownTransfer:
+                  summary: The line was never allocated by this service
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/transfer-scan-quarantined
+                    title: Destination scan quarantined
+                    status: 422
+                    detail: transfer line was never allocated by this service
+                    instance: /transfers/tl-ghost/receipt
+                    exception:
+                      kind: UNKNOWN_TRANSFER
+                      transferId: tr-ghost
+                      transferLineId: tl-ghost
+                      destinationSiteId: SITE-DEST
+                      sku: SKU-T1
+                      receivedQuantity: 5
+                unrecognizedTransfer:
+                  summary: The line was REJECTED at allocation time
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/transfer-scan-quarantined
+                    title: Destination scan quarantined
+                    status: 422
+                    detail: "transfer line is not in ALLOCATED state for this scan: line \"tl-rej\" was decided REJECTED (INSUFFICIENT_USABLE), not ALLOCATED"
+                    instance: /transfers/tl-rej/receipt
+                    exception:
+                      kind: UNRECOGNIZED_TRANSFER
+                      transferId: tr-r
+                      transferLineId: tl-rej
+                      destinationSiteId: SITE-DEST
+                      sku: SKU-T1
+                      receivedQuantity: 5
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /transfers/{transferLineId}/stow:
+    post:
+      operationId: stowTransferStock
+      summary: Stow a staged transfer receipt into destination bins
+      description: >-
+        Places a STAGED transfer receipt's goods into destination-site
+        bins (ADR 0031) — the ONLY path that raises the destination
+        site's usable stock for a transfer, exactly once per
+        transfer_line_id. Every requested bin must be registered at the
+        receipt's destination site (the site-custody fact fails closed:
+        another site's bin or a legacy site-less bin is a 409), and the
+        bin quantities must sum EXACTLY to the receipt's
+        receivedQuantity. One StockUnit per bin leg is created AT the
+        destination site, the receipt moves STAGED -> STOWED, and
+        TransferStockStowed is published through the same transactional
+        outbox.
+
+
+        Idempotent at the database level: a replayed stow for an
+        already-STOWED receipt answers 200 with the ORIGINAL outcome
+        (replay: true, the original allocations), creates NO second
+        StockUnit and publishes nothing new. Stowing a line with no
+        staged receipt (stow-before-stage) is a 409 receipt-not-staged.
+      tags: [Transfers]
+      parameters:
+        - $ref: "#/components/parameters/TransferLineId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StowTransferRequest"
+            example:
+              bins:
+                - binId: BIN-DEST-1
+                  quantity: 3
+                - binId: BIN-DEST-2
+                  quantity: 2
+      responses:
+        "200":
+          description: >-
+            The receipt is STOWED; the destination site's usable stock
+            rose by exactly receivedQuantity, once. `allocations` names
+            the StockUnits created and the bin each went into.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StowedTransfer"
+              example:
+                transferId: tr-77
+                transferLineId: tl-77-1
+                destinationSiteId: SITE-DEST
+                sku: SKU-T1
+                expectedQuantity: 6
+                receivedQuantity: 5
+                variance: -1
+                state: STOWED
+                stagedAt: "2026-10-06T12:00:00Z"
+                stowedAt: "2026-10-06T12:05:00Z"
+                replay: false
+                stowedQuantity: 5
+                allocations:
+                  - stockUnitId: su-dest-1
+                    binId: BIN-DEST-1
+                    quantity: 3
+                  - stockUnitId: su-dest-2
+                    binId: BIN-DEST-2
+                    quantity: 2
+        "400":
+          description: >-
+            Malformed JSON body, bins missing/empty, a binId missing or
+            empty, a quantity not positive, or the Idempotency-Key
+            header absent (ADR 0018).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/bins-required
+                title: bins is required
+                status: 400
+                detail: bins must contain at least one placement
+                instance: /transfers/tl-77-1/stow
+        "409":
+          description: >-
+            No STAGED receipt for this line (stow-before-stage, or the
+            line is unknown), a bin outside the destination site's
+            custody, a bin quantity sum mismatch, or the receipt already
+            has a DIFFERENT staged scan.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                receiptNotStaged:
+                  summary: Stow before stage
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/receipt-not-staged
+                    title: Transfer receipt is not in STAGED state; stage the receipt before stowing
+                    status: 409
+                    detail: transfer receipt is not in STAGED state; stage the receipt before stowing
+                    instance: /transfers/tl-77-1/stow
+                binWrongSite:
+                  summary: Bin at another site (or a legacy site-less bin)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/bin-wrong-site
+                    title: Bin does not belong to the transfer's destination site
+                    status: 409
+                    detail: "bin does not belong to the transfer's destination site: bin \"BIN-OTHER\" is not in destination site \"SITE-DEST\"'s custody"
+                    instance: /transfers/tl-77-1/stow
+                stowQuantityMismatch:
+                  summary: Bin quantities do not sum to receivedQuantity
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/stow-quantity-mismatch
+                    title: Stow quantities must sum exactly to the receipt's received quantity
+                    status: 409
+                    detail: "stow quantities must sum exactly to the receipt's received quantity: bins sum to 3 but the receipt received 5"
+                    instance: /transfers/tl-77-1/stow
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /reports/flow-accuracy:
     get:
       operationId: getFlowAccuracyReport
@@ -1361,6 +1648,18 @@ components:
       schema:
         type: string
         example: A-1-1
+    TransferLineId:
+      name: transferLineId
+      in: path
+      required: true
+      description: >-
+        The planning context's transfer line id (`<transfer_id>:<line>`),
+        the DB-unique key both the origin-side transfer_allocations
+        ledger and the destination-side transfer_receipts row are
+        anchored on (ADR 0031).
+      schema:
+        type: string
+        example: tr-77:1
 
   responses:
     InternalError:
@@ -1517,6 +1816,191 @@ components:
           minLength: 1
           description: Caller-supplied reference identifying the demand this reservation satisfies (e.g. an order id).
           example: order-42
+
+    StageTransferReceiptRequest:
+      type: object
+      required: [transferId, destinationSiteId, sku, receivedQuantity]
+      description: >-
+        One destination scan (ADR 0031): what line the operator claims
+        the goods belong to, which site received them, and how many were
+        counted.
+      properties:
+        transferId:
+          type: string
+          minLength: 1
+          description: The planning context's transfer (saga) id; must match the ledger row for transferLineId.
+          example: tr-77
+        destinationSiteId:
+          type: string
+          minLength: 1
+          description: The receiving site; may not equal the transfer's own origin site.
+          example: SITE-DEST
+        sku:
+          type: string
+          minLength: 1
+          example: SKU-T1
+        receivedQuantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Quantity physically counted at the dock. May differ from expectedQuantity — the signed variance is recorded, never absorbed.
+          example: 5
+
+    TransferReceipt:
+      type: object
+      description: >-
+        The destination-side custody record for one transfer line (ADR
+        0031), keyed DB-unique on transferLineId. STAGED means counted
+        but not yet placed (no usable stock); STOWED means placed — the
+        destination site's usable rose exactly once.
+      properties:
+        transferId:
+          type: string
+          example: tr-77
+        transferLineId:
+          type: string
+          example: tr-77:1
+        destinationSiteId:
+          type: string
+          example: SITE-DEST
+        sku:
+          type: string
+          example: SKU-T1
+        expectedQuantity:
+          type: integer
+          format: int32
+          description: What the transfer_allocations ledger promised (its requested_quantity).
+          example: 6
+        receivedQuantity:
+          type: integer
+          format: int32
+          description: What was physically counted at the dock.
+          example: 5
+        variance:
+          type: integer
+          format: int32
+          description: SIGNED received - expected. Positive = over-receipt, negative = short-receipt, 0 = exact. Explicit, never silently absorbed.
+          example: -1
+        state:
+          type: string
+          enum: [STAGED, STOWED]
+          example: STAGED
+        stagedAt:
+          type: string
+          format: date-time
+          example: "2026-10-06T12:00:00Z"
+        stowedAt:
+          type: string
+          format: date-time
+          description: Present only once STOWED.
+          example: "2026-10-06T12:05:00Z"
+        replay:
+          type: boolean
+          description: True when this response is the ORIGINAL outcome of an idempotent replay, with nothing new written or published.
+          example: false
+
+    StowTransferRequest:
+      type: object
+      required: [bins]
+      description: >-
+        The destination placements for a STAGED transfer receipt (ADR
+        0031). The quantities must sum exactly to the receipt's
+        receivedQuantity; every bin must belong to the receipt's
+        destination site.
+      properties:
+        bins:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [binId, quantity]
+            properties:
+              binId:
+                type: string
+                minLength: 1
+                example: BIN-DEST-1
+              quantity:
+                type: integer
+                format: int32
+                minimum: 1
+                example: 3
+
+    StowedTransfer:
+      type: object
+      description: The STOWED receipt plus the destination StockUnits the stow created.
+      allOf:
+        - $ref: "#/components/schemas/TransferReceipt"
+        - type: object
+          properties:
+            stowedQuantity:
+              type: integer
+              format: int32
+              description: Total quantity placed (equals receivedQuantity).
+              example: 5
+            allocations:
+              type: array
+              description: One entry per destination StockUnit created, with its bin.
+              items:
+                type: object
+                properties:
+                  stockUnitId:
+                    type: string
+                    example: su-dest-1
+                  binId:
+                    type: string
+                    example: BIN-DEST-1
+                  quantity:
+                    type: integer
+                    format: int32
+                    example: 3
+
+    QuarantinedScanProblem:
+      type: object
+      description: >-
+        RFC 7807 problem for a QUARANTINED destination scan (ADR 0031):
+        the standard members plus an `exception` extension object
+        carrying the inventory_exceptions row's coordinates. The scan
+        raised no stock; a human resolves the exception.
+      properties:
+        type:
+          type: string
+          example: https://errors.inventory-storage.warehouse-systems.dev/transfer-scan-quarantined
+        title:
+          type: string
+          example: Destination scan quarantined
+        status:
+          type: integer
+          example: 422
+        detail:
+          type: string
+          description: The explicit problem (why the scan could not be matched).
+          example: transfer line was never allocated by this service
+        instance:
+          type: string
+          example: /transfers/tl-ghost/receipt
+        exception:
+          type: object
+          properties:
+            kind:
+              type: string
+              enum: [UNKNOWN_TRANSFER, UNRECOGNIZED_TRANSFER]
+              example: UNKNOWN_TRANSFER
+            transferId:
+              type: string
+              example: tr-ghost
+            transferLineId:
+              type: string
+              example: tl-ghost
+            destinationSiteId:
+              type: string
+              example: SITE-DEST
+            sku:
+              type: string
+              example: SKU-T1
+            receivedQuantity:
+              type: integer
+              format: int32
+              example: 5
 
     Allocation:
       type: object

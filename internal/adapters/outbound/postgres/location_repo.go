@@ -24,15 +24,18 @@ func NewLocationRepo(pool *pgxpool.Pool) *LocationRepo {
 // Save is version-guarded (ADR 0019, optimistic concurrency) — see
 // StockRepo.Save's doc comment for the verified single-statement
 // ON CONFLICT ... WHERE RowsAffected() semantics this relies on.
+// site_id is COALESCEd so a rehydrated LEGACY bin (no site) keeps its
+// NULL when saved by a path that never learned a site (ADR 0031).
 func (r *LocationRepo) Save(ctx context.Context, bin *location.Bin) error {
 	tag, err := querierFrom(ctx, r.pool).Exec(ctx, `
-		INSERT INTO bins (id, capacity, occupied, version)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO bins (id, capacity, occupied, version, site_id)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''))
 		ON CONFLICT (id) DO UPDATE SET
 			capacity = EXCLUDED.capacity, occupied = EXCLUDED.occupied,
-			version = bins.version + 1
-		WHERE bins.version = $5
-	`, bin.ID().String(), bin.Capacity().Int(), bin.Occupied().Int(), bin.Version(), bin.Version())
+			version = bins.version + 1,
+			site_id = COALESCE(EXCLUDED.site_id, bins.site_id)
+		WHERE bins.version = $6
+	`, bin.ID().String(), bin.Capacity().Int(), bin.Occupied().Int(), bin.Version(), bin.SiteID().String(), bin.Version())
 	if err != nil {
 		return err
 	}
@@ -44,12 +47,24 @@ func (r *LocationRepo) Save(ctx context.Context, bin *location.Bin) error {
 
 func (r *LocationRepo) FindByID(ctx context.Context, id shared.BinId) (*location.Bin, error) {
 	var capacity, occupied, version int
-	err := querierFrom(ctx, r.pool).QueryRow(ctx, `SELECT capacity, occupied, version FROM bins WHERE id = $1`, id.String()).Scan(&capacity, &occupied, &version)
+	var site *string
+	err := querierFrom(ctx, r.pool).QueryRow(ctx, `SELECT capacity, occupied, version, site_id FROM bins WHERE id = $1`, id.String()).Scan(&capacity, &occupied, &version, &site)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if site != nil {
+		siteID, err := shared.NewSiteID(*site)
+		if err != nil {
+			return nil, err
+		}
+		bin, err := rehydrateBin(id, capacity, occupied, version)
+		if err != nil {
+			return nil, err
+		}
+		return location.RehydrateBinAtSite(id, bin.Capacity(), bin.Occupied(), siteID, version), nil
 	}
 	return rehydrateBin(id, capacity, occupied, version)
 }

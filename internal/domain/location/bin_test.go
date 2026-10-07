@@ -188,3 +188,38 @@ func TestBin_Resize(t *testing.T) {
 		})
 	}
 }
+
+// --- site custody (ADR 0031) -------------------------------------------------
+
+func TestBinSiteCustody(t *testing.T) {
+	id, _ := shared.NewBinId("BIN-S")
+	siteA, _ := shared.NewSiteID("SITE-A")
+
+	// A rehydrated-with-site bin reports its custody and matches only
+	// that site; an empty site is never matched.
+	bin := RehydrateBinAtSite(id, shared.Quantity(10), shared.Quantity(0), siteA, 1)
+	if bin.SiteID() != siteA {
+		t.Fatalf("SiteID = %q, want SITE-A", bin.SiteID())
+	}
+	if !bin.IsAtSite(siteA) {
+		t.Fatal("bin must be at its own site")
+	}
+	siteB, _ := shared.NewSiteID("SITE-B")
+	if bin.IsAtSite(siteB) {
+		t.Fatal("bin must not be at another site")
+	}
+	if bin.IsAtSite("") {
+		t.Fatal("an empty site must never match")
+	}
+
+	// A legacy rehydrated bin has no site and is at NO site.
+	legacy := RehydrateBin(id, shared.Quantity(10), shared.Quantity(0), 1)
+	if legacy.SiteID() != "" {
+		t.Fatalf("legacy SiteID = %q, want empty", legacy.SiteID())
+	}
+	for _, probe := range []shared.SiteID{siteA, siteB, ""} {
+		if legacy.IsAtSite(probe) {
+			t.Fatalf("legacy bin must be at no site, matched %q", probe)
+		}
+	}
+}

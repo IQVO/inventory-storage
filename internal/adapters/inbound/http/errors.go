@@ -53,7 +53,11 @@ func statusFor(err error) int {
 		errors.Is(err, usecases.ErrTemperatureClassMismatch),
 		errors.Is(err, usecases.ErrLocationClassificationUnavailable),
 		errors.Is(err, usecases.ErrHazmatClassIncompatible),
-		errors.Is(err, usecases.ErrConcurrentModification):
+		errors.Is(err, usecases.ErrConcurrentModification),
+		errors.Is(err, usecases.ErrTransferReceiptConflict),
+		errors.Is(err, usecases.ErrReceiptNotStaged),
+		errors.Is(err, usecases.ErrBinWrongSite),
+		errors.Is(err, usecases.ErrStowQuantityMismatch):
 		return http.StatusConflict
 
 	default:
@@ -123,6 +127,10 @@ func problemCatalog() []struct {
 		{usecases.ErrLocationClassificationUnavailable, problemInfo{"location-classification-unavailable", "Location classification lookup unavailable"}},
 		{usecases.ErrHazmatClassIncompatible, problemInfo{"hazmat-class-incompatible", "DOT hazard class incompatible with another SKU already stowed in this bin"}},
 		{usecases.ErrConcurrentModification, problemInfo{"concurrent-modification", "The resource was modified by another request; re-fetch the latest version and retry"}},
+		{usecases.ErrTransferReceiptConflict, problemInfo{"transfer-receipt-conflict", "This transfer line already has a receipt for a different scan"}},
+		{usecases.ErrReceiptNotStaged, problemInfo{"receipt-not-staged", "Transfer receipt is not in STAGED state; stage the receipt before stowing"}},
+		{usecases.ErrBinWrongSite, problemInfo{"bin-wrong-site", "Bin does not belong to the transfer's destination site"}},
+		{usecases.ErrStowQuantityMismatch, problemInfo{"stow-quantity-mismatch", "Stow quantities must sum exactly to the receipt's received quantity"}},
 	}
 }
 
