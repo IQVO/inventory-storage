@@ -47,10 +47,9 @@ flowchart LR
     CACHE["Facility location cache"]:::readmodel
     RB["RegisterBin"]:::command
     BIN["Bin"]:::aggregate
-    CP["ClassifyProduct"]:::command
+    PM["product-master<br/>ProductClassified, ADR 0033"]:::external
+    CP["ApplyProductClassification"]:::command
     PC["ProductClassification"]:::aggregate
-    PCE["ProductClassified"]:::event
-    OUT["Outbox rows, both topics<br/>warehouse.inventory.events<br/>warehouse.inventory.analytics<br/>ADR 0031"]:::external
     RS["ReceiveStock"]:::command
     SRE["StockReceived"]:::event
     SS["StowStock"]:::command
@@ -65,7 +64,7 @@ flowchart LR
 
     FL --> ZE --> CACHE
     IC --> RB --> BIN
-    IC --> CP --> PC --> PCE --> OUT
+    PM --> CP --> PC --> PLC
     IC --> RS --> SRE
     IC --> SS --> PLC
     CACHE --> PLC
@@ -88,7 +87,7 @@ flowchart LR
     classDef decided fill:#a9dfbf,stroke:#1e8449,color:#000
 ```
 
-Source: `internal/application/usecases/register_bin.go`, `classify_product.go`,
+Source: `internal/application/usecases/register_bin.go`, `apply_product_classification.go`,
 `receive_stock.go`, `stow_stock.go`, `internal/adapters/outbound/facilitycache/consumer.go`,
 `internal/domain/product/segregation.go`,
 `internal/adapters/outbound/kafka/publisher.go` and `analytics_publisher.go`
@@ -207,7 +206,7 @@ Omitted: the clean-count branch (only `CycleCountCompleted` with
 | Sticky | Kind | Code evidence |
 | --- | --- | --- |
 | Inventory control, Picker or simulator, MCP host / agent | Actor | REST callers of `PUT /bins/{binId}`, `POST /stock/*`, `POST /bins/{binId}/cycle-count`, `POST /reservations/{id}/confirm-pick`; MCP `revoke_reservation` |
-| RegisterBin, ClassifyProduct, ReceiveStock, StowStock, ReserveStock, RevokeReservation, ConfirmPick, RunCycleCount | Command | `internal/application/usecases/*.go`, routed in `internal/adapters/inbound/http/server.go` |
+| RegisterBin, ApplyProductClassification (Kafka, ADR 0033), ReceiveStock, StowStock, ReserveStock, RevokeReservation, ConfirmPick, RunCycleCount | Command | `internal/application/usecases/*.go`, routed in `internal/adapters/inbound/http/server.go` |
 | StockUnit, Bin, Reservation, ProductClassification | Aggregate | `internal/domain/stock`, `location`, `reservation`, `product` |
 | StockReceived, ItemStowed, LocationRecorded, StockReserved, ReservationRevoked, ReservationExpired, StockPicked, ItemUnlocated, CycleCountCompleted, DiscrepancyDetected | Domain Event | `internal/domain/shared/events.go` |
 | ProductClassified | Domain Event | `internal/domain/product/classification.go` |

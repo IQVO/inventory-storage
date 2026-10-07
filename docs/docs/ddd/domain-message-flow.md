@@ -91,12 +91,13 @@ sequenceDiagram
     participant IC as Inventory control
     participant INV as inventory-storage
     participant PJ as inventory-projector
+    participant PM as product-master
     FL-)INV: evt: com.warehouse.wms.facility-layout.zone.ZoneRegistered on warehouse.facility.events
     FL-)INV: evt: com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered on warehouse.facility.events
     Note over INV: facility location cache maps slot to zone, hazmat and temperature class
     IC->>INV: cmd: RegisterBin PUT /bins/{binId}
-    IC->>INV: cmd: ClassifyProduct PUT /products/{sku}/classification
-    Note over INV: evt: com.warehouse.wms.inventory-storage.product.ProductClassified on warehouse.inventory.events and warehouse.inventory.analytics (ADR 0031), no consumer yet, the projector ignores it
+    PM-)INV: evt: com.warehouse.wms.product-master.product.ProductClassified on warehouse.product-master.events
+    Note over INV: local classification copy, version-guarded (ADR 0033), PUT /products/{sku}/classification answers 410
     IC->>INV: cmd: ReceiveStock POST /stock/receive
     INV-)PJ: evt: com.warehouse.wms.inventory-storage.stock.StockReceived on warehouse.inventory.analytics
     IC->>INV: cmd: StowStock POST /stock/stow
@@ -105,7 +106,7 @@ sequenceDiagram
 ```
 
 Source: `internal/adapters/outbound/facilitycache/consumer.go`,
-`internal/application/usecases/register_bin.go`, `classify_product.go`,
+`internal/application/usecases/register_bin.go`, `apply_product_classification.go`,
 `receive_stock.go`, `stow_stock.go`, `internal/adapters/outbound/kafka/analytics_publisher.go`.
 "Inventory control" is whoever drives these routes — an operator or the
 `e2e-tests` warehouse-day simulator; no sibling context does.

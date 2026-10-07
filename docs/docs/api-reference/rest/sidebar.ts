@@ -117,14 +117,14 @@ const sidebar: SidebarsConfig = {
         {
           type: "doc",
           id: "api-reference/rest/classify-product",
-          label: "Register or replace a SKU's product classification",
-          className: "api-method put",
+          label: "Retired - classify the SKU in product-master instead (410)",
+          className: "menu__list-item--deprecated api-method put",
         },
         {
           type: "doc",
           id: "api-reference/rest/get-product-classification",
-          label: "Get a SKU's current product classification",
-          className: "api-method get",
+          label: "Get a SKU's product classification (deprecated local copy)",
+          className: "menu__list-item--deprecated api-method get",
         },
       ],
     },

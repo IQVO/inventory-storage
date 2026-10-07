@@ -315,44 +315,40 @@ Source: `internal/application/usecases/run_cycle_count.go`.
 Omitted: an unknown bin is not an error here — it simply has system
 quantity 0.
 
-## 7. ClassifyProduct — `PUT /products/{sku}/classification`
+## 7. ApplyProductClassification — product-master's `ProductClassified` (ADR 0033)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
-    participant H as HTTP handler
-    participant PCR as ProductClassificationRepo
-    participant UC as ClassifyProduct
-    participant PC as ProductClassification
-    participant OB as Outbox
-    C->>H: PUT /products/sku/classification handlingTags, temperatureClass, dotHazardClass
-    H->>H: parse tags, temperature class, DOT class
-    alt unknown tag, class or DOT value
-        H-->>C: 400 problem
-    else parsed
-        H->>PCR: FindBySKU(sku), to choose 201 or 200
-        H->>UC: Execute(sku, tags, temperatureClass, dotHazardClass)
-        UC->>PC: product.New(...)
-        alt invariant violated
-            H-->>C: 400 no-handling-tags, temperature-class-required and similar
-        else valid
-            rect rgb(235, 235, 235)
-                UC->>PCR: Save(classification), upsert by SKU
-                UC->>OB: Publish ProductClassified, 2 outbox rows<br/>events + analytics topic, same transaction
-            end
-            H-->>C: 201 first time or 200 replaced
+    participant K as warehouse.product-master.events
+    participant CON as ProductMasterConsumer
+    participant UC as ApplyProductClassification
+    participant PE as processed_events
+    participant PCR as product_classifications
+    K->>CON: FetchMessage
+    alt not a CloudEvent, other type, bad payload or invariant
+        CON->>K: CommitMessages, skip
+    else ProductClassified
+        CON->>UC: Execute(eventId, sku, tags, classes, source, version)
+        rect rgb(235, 235, 235)
+            UC->>PE: Claim(consumer, eventId)
+            UC->>PCR: upsert WHERE stored version < version
+        end
+        alt transient DB error
+            CON->>CON: capped backoff, retry same message
+        else applied or no-op
+            CON->>K: CommitMessages
         end
     end
 ```
 
-Source: `internal/adapters/inbound/http/server.go` (`handleClassifyProduct`),
-`internal/application/usecases/classify_product.go`,
-`internal/domain/product/classification.go`,
-`internal/adapters/outbound/kafka/publisher.go` and `analytics_publisher.go`
-(both encoders map `ProductClassified`, [ADR 0031](/docs/adr/0031)).
-Omitted: the read `GET /products/{sku}/classification`, a direct repository
-lookup with no use case.
+`PUT /products/{sku}/classification` answers `410 classification-moved`
+without reading the body. Source:
+`internal/adapters/inbound/kafka/product_master_consumer.go`,
+`internal/application/usecases/apply_product_classification.go`,
+`internal/adapters/outbound/postgres/product_classification_repo.go`.
+Omitted: the deprecated read `GET /products/{sku}/classification`, a direct
+repository lookup on the local copy with no use case.
 
 ## 8. RegisterBin — `PUT /bins/{binId}`
 
