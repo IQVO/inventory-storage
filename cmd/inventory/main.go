@@ -11,7 +11,7 @@
 //	housekeeping.go idempotency-key / outbox retention sweeper
 //	lookup.go       LocationClassificationLookup adapter selection
 //	transfer.go     transfer allocation command consumer (Phase 2)
-//	productmaster.go product-master classification consumer (ADR 0033)
+//	productmaster.go product-master classification consumer (ADR 0034)
 //	republish.go    republish-product-classifications one-shot subcommand
 //	server.go       use-case + HTTP server wiring
 //	shutdown.go     signal handling and graceful drain
@@ -30,7 +30,7 @@ import (
 )
 
 func main() {
-	// A subcommand (e.g. republish-product-classifications, ADR 0033) runs
+	// A subcommand (e.g. republish-product-classifications, ADR 0034) runs
 	// once and exits instead of starting the service.
 	if len(os.Args) > 1 {
 		os.Exit(runCommand(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
@@ -104,7 +104,7 @@ func run() error {
 		return err
 	}
 
-	// product-master classification consumer (ADR 0033): keeps the local
+	// product-master classification consumer (ADR 0034): keeps the local
 	// product_classifications copy StowStock reads in step with
 	// product-master. Same lookupCtx, so shutdown drains it with the rest.
 	// Not started unless PRODUCT_MASTER_CONSUMER_GROUP is set.

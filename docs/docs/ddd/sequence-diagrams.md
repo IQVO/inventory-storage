@@ -315,7 +315,7 @@ Source: `internal/application/usecases/run_cycle_count.go`.
 Omitted: an unknown bin is not an error here — it simply has system
 quantity 0.
 
-## 7. ApplyProductClassification — product-master's `ProductClassified` (ADR 0033)
+## 7. ApplyProductClassification — product-master's `ProductClassified` (ADR 0034)
 
 ```mermaid
 sequenceDiagram

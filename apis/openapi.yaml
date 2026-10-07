@@ -64,7 +64,7 @@ tags:
   - name: Products
     description: >
       SKU-level product classification (Hazmat/Fragile/TemperatureSensitive/
-      Oversized/HighValue). Owned by product-master since ADR 0033: this
+      Oversized/HighValue). Owned by product-master since ADR 0034: this
       service keeps a read-only local copy, fed by product-master's
       `ProductClassified` events, that StowStock reads to enforce
       hazmat/temperature placement (ADR 0009) and same-bin DOT segregation
@@ -1096,7 +1096,7 @@ paths:
       deprecated: true
       summary: Retired - classify the SKU in product-master instead (410)
       description: >
-        Retired by ADR 0033 (product-master ADR 0003 stage C). product-master
+        Retired by ADR 0034 (product-master ADR 0003 stage C). product-master
         owns product classification; this service keeps a read-only local
         copy fed by product-master's `ProductClassified` events. Every call
         returns `410 Gone` with problem type `classification-moved`, naming
@@ -1129,7 +1129,7 @@ paths:
       deprecated: true
       summary: Get a SKU's product classification (deprecated local copy)
       description: >
-        DEPRECATED (ADR 0033): product-master owns product classification;
+        DEPRECATED (ADR 0034): product-master owns product classification;
         read it from product-master's `GET /products/{sku}/classification`
         (same response shape). This endpoint stays until product-master
         ADR 0003 stage E and is served from this service's local copy of
@@ -1661,7 +1661,7 @@ components:
       description: >
         SKU-level master data describing how an item must be handled,
         independent of any StockUnit or bin. Owned by product-master
-        (ADR 0033); this is this service's local copy. dotHazardClass adds a
+        (ADR 0034); this is this service's local copy. dotHazardClass adds a
         same-bin DOT segregation check enforced at stow time (ADR 0010).
       properties:
         sku:

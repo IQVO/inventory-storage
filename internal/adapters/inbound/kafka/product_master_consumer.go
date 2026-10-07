@@ -15,7 +15,7 @@ import (
 
 // ProductMasterTopic is product-master's integration topic, its Published
 // Language for SKU master data (product-master ADR 0001, this repo's
-// ADR 0033).
+// ADR 0034).
 const ProductMasterTopic = "warehouse.product-master.events"
 
 // typeProductMasterClassified is the FULL CloudEvents type this consumer
@@ -44,7 +44,7 @@ type ProductClassificationApplier interface {
 }
 
 // ProductMasterConsumer keeps the local product_classifications copy in step
-// with product-master (ADR 0033). Fixed consumer group from configuration
+// with product-master (ADR 0034). Fixed consumer group from configuration
 // (PRODUCT_MASTER_CONSUMER_GROUP), state-mutating, at-least-once:
 // FetchMessage, handler, then CommitMessages; a transient handler error
 // retries the SAME message with capped backoff; deterministic poison is

@@ -65,7 +65,7 @@ truth for SKU handling classification (hazmat, temperature, DOT class).
 | Inbound dock (operator, simulator) | ReceiveStock | Command | REST `POST /stock/receive` (header `Idempotency-Key`) | OHS |
 | Inbound dock (operator, simulator) | StowStock | Command | REST `POST /stock/stow` | OHS |
 | Inventory control (operator, simulator) | RunCycleCount | Command | REST `POST /bins/{binId}/cycle-count` | OHS |
-| product-master | ProductClassified (local copy, ADR 0033) | Event | Kafka `warehouse.product-master.events` → `ApplyProductClassification` | Conformist (product-master's Published Language); `PUT /products/{sku}/classification` answers 410 |
+| product-master | ProductClassified (local copy, ADR 0034) | Event | Kafka `warehouse.product-master.events` → `ApplyProductClassification` | Conformist (product-master's Published Language); `PUT /products/{sku}/classification` answers 410 |
 | Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/confirm-pick` | OHS — no sibling context calls it; **decided 2026-10-06**: production confirmation will come from fulfillment-execution's pick-completion event, consumed here (ADR 0032, *Proposed*, blocked on the event's fields) |
 | Operator, `inventory-mfe` | GetBin, GetUsable | Query | REST `GET /bins/{binId}`, `GET /inventory/{sku}/usable` | OHS |
 | Kubernetes | liveness / readiness | Query | REST `GET /healthz`, `GET /readyz` | — |

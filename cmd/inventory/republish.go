@@ -18,7 +18,7 @@ import (
 )
 
 // republishCommand is the one-shot backfill of product-master ADR 0003
-// stage B (ADR 0033):
+// stage B (ADR 0034):
 //
 //	kubectl exec deploy/inventory-storage -- ./inventory republish-product-classifications
 //

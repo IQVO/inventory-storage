@@ -37,7 +37,7 @@ table, Kafka) is a composition-root decision.
 | `ItemUnlocated` | StockUnit | A cycle-count shortfall cannot account for stock | `stockUnitId`, `sku`, `binId`, `quantity` |
 | `CycleCountCompleted` | Bin | Any cycle count finishes, clean or not | `binId`, `countedQty`, `systemQty`, `discrepancy` |
 | `DiscrepancyDetected` | Bin | A cycle count finds counted ≠ system | `binId`, `countedQty`, `systemQty` |
-| `ProductClassified` | ProductClassification | Legacy since [ADR 0033](/docs/adr/0033): raised by no write path; re-emitted only by the one-shot `republish-product-classifications` backfill | `sku`, `handlingTags`, `temperatureClass`, `dotHazardClass`; wire fields below |
+| `ProductClassified` | ProductClassification | Legacy since [ADR 0034](/docs/adr/0034): raised by no write path; re-emitted only by the one-shot `republish-product-classifications` backfill | `sku`, `handlingTags`, `temperatureClass`, `dotHazardClass`; wire fields below |
 
 ## Which events flow where
 
@@ -53,7 +53,7 @@ flowchart LR
   CC --> E8["DiscrepancyDetected"]
   CC --> E9["ItemUnlocated"]
   EXP["lazy read"] --> E10["ReservationExpired"]
-  BF["republish-product-classifications<br/>(backfill, ADR 0033)"] --> E11["ProductClassified"]
+  BF["republish-product-classifications<br/>(backfill, ADR 0034)"] --> E11["ProductClassified"]
 
   E4 & E5 & E11 --> KAF["warehouse.inventory.events<br/>integration topic"]
   E1 & E2 & E4 & E5 & E6 & E7 & E8 & E9 & E10 --> ANA["warehouse.inventory.analytics<br/>internal analytics topic"]
@@ -68,7 +68,7 @@ flowchart LR
 **`StockReserved`, `ReservationRevoked` and the legacy `ProductClassified`
 are the integration events on the reservation and master-data paths** (plus
 the two transfer replies, [ADR 0030](/docs/adr/0030)); since
-[ADR 0033](/docs/adr/0033) `ProductClassified` comes only from the one-shot
+[ADR 0034](/docs/adr/0034) `ProductClassified` comes only from the one-shot
 backfill command, for product-master's legacy importer. The integration
 publisher's `Encode` returns nothing for every other event — deliberate, not
 an oversight: those are the published integration contract. Nine of the
@@ -102,11 +102,11 @@ relayed by `cmd/inventory`.
 | CycleCountCompleted | `com.warehouse.wms.inventory-storage.bin.CycleCountCompleted` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system`, `discrepancy` | `RunCycleCount` | `cmd/inventory-projector` |
 | DiscrepancyDetected | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system` | `RunCycleCount` | `cmd/inventory-projector` |
 | LocationRecorded | — (not published; **decided 2026-10-06: stays in-process**, no consumer) | — | — | — | `StowStock` | none |
-| ProductClassified | `com.warehouse.wms.inventory-storage.product.ProductClassified` | `warehouse.inventory.events` | SKU / SKU | `sku`, `handling_tags`, `temperature_class?`, `dot_hazard_class?` (full-state replacement) | `RepublishProductClassifications` (one-shot backfill via the outbox, [ADR 0033](/docs/adr/0033)) | product-master's legacy importer |
+| ProductClassified | `com.warehouse.wms.inventory-storage.product.ProductClassified` | `warehouse.inventory.events` | SKU / SKU | `sku`, `handling_tags`, `temperature_class?`, `dot_hazard_class?` (full-state replacement) | `RepublishProductClassifications` (one-shot backfill via the outbox, [ADR 0034](/docs/adr/0034)) | product-master's legacy importer |
 
 Consumed (not produced): `com.warehouse.wms.product-master.product.ProductClassified`
 on `warehouse.product-master.events` feeds the local classification copy via
-`ApplyProductClassification` ([ADR 0033](/docs/adr/0033)).
+`ApplyProductClassification` ([ADR 0034](/docs/adr/0034)).
 
 `dataschema` is `urn:warehouse:inventory-storage:events:<EventName>:v1` on
 the integration topic and `urn:warehouse:inventory-storage:analytics:<EventName>:v1`

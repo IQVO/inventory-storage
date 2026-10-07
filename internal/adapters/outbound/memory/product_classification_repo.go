@@ -10,7 +10,7 @@ import (
 )
 
 // legacySource is the classification_source of a row written by this
-// service before product-master took ownership (ADR 0033).
+// service before product-master took ownership (ADR 0034).
 const legacySource = "inventory-storage"
 
 type classificationRow struct {
@@ -32,7 +32,7 @@ func NewProductClassificationRepo() *ProductClassificationRepo {
 }
 
 // Save seeds a legacy row (version 0, source inventory-storage), the state
-// every classification written before ADR 0033 is in. Test/fixture helper:
+// every classification written before ADR 0034 is in. Test/fixture helper:
 // no port exposes it any more.
 func (r *ProductClassificationRepo) Save(_ context.Context, c *product.ProductClassification) error {
 	r.mu.Lock()

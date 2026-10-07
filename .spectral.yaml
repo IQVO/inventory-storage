@@ -6,7 +6,7 @@ rules:
   info-description: error
   oas3-api-servers: error
 overrides:
-  # PUT /products/{sku}/classification is retired (ADR 0033): it only ever
+  # PUT /products/{sku}/classification is retired (ADR 0034): it only ever
   # answers 410 classification-moved, so it has no 2xx response by design.
   # Removed at product-master ADR 0003 stage E, together with this override.
   - files:

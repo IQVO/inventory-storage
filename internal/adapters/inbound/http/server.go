@@ -41,7 +41,7 @@ type Server struct {
 	// GetBin backs GET /bins/{binId}: capacity/occupancy read.
 	GetBin *usecases.GetBin
 	// Classifications backs the deprecated read-only GET endpoint: the
-	// local copy of product-master's classifications (ADR 0033). There is
+	// local copy of product-master's classifications (ADR 0034). There is
 	// no dedicated use case because the read is a direct, no-invariant
 	// repo lookup.
 	Classifications ports.ProductClassificationRepo
@@ -445,11 +445,11 @@ func (s *Server) handleGetBin(w http.ResponseWriter, r *http.Request) {
 }
 
 // productMasterClassificationEndpoint is where SKU classifications are
-// written since ADR 0033: product-master's REST API.
+// written since ADR 0034: product-master's REST API.
 const productMasterClassificationEndpoint = "product-master's PUT /products/{sku}/classification"
 
 // handleClassificationMoved backs the retired PUT /products/{sku}/classification:
-// product-master owns product classification (ADR 0033, product-master ADR
+// product-master owns product classification (ADR 0034, product-master ADR
 // 0003 stage C), so every write here is a 410 Gone pointing at the new
 // owner. The body is not read and nothing is written.
 func (s *Server) handleClassificationMoved(w http.ResponseWriter, r *http.Request) {
@@ -461,7 +461,7 @@ func (s *Server) handleClassificationMoved(w http.ResponseWriter, r *http.Reques
 
 // handleGetProductClassification backs the DEPRECATED
 // GET /products/{sku}/classification, served from the local copy of
-// product-master's classifications (ADR 0033). Removed at product-master
+// product-master's classifications (ADR 0034). Removed at product-master
 // ADR 0003 stage E.
 func (s *Server) handleGetProductClassification(w http.ResponseWriter, r *http.Request) {
 	skuParam := chi.URLParam(r, "sku")

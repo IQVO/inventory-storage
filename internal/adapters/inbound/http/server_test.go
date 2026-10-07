@@ -52,7 +52,7 @@ func newTestServer() testServer {
 }
 
 // seedClassification writes a classification into the local copy, the way
-// the product-master consumer does (ADR 0033).
+// the product-master consumer does (ADR 0034).
 func seedClassification(t *testing.T, repo *memory.ProductClassificationRepo, sku string, tags []product.HandlingTag, temp product.TemperatureClass, dot product.DOTHazardClass) {
 	t.Helper()
 	c, err := product.New(shared.SKU(sku), tags, temp, dot)
@@ -552,7 +552,7 @@ func TestRunCycleCount_Endpoint_ExplicitZeroCount_Accepted(t *testing.T) {
 	}
 }
 
-// PUT /products/{sku}/classification is retired (ADR 0033): every call is a
+// PUT /products/{sku}/classification is retired (ADR 0034): every call is a
 // 410 classification-moved naming product-master's endpoint, whatever the
 // body, and nothing is written to the local copy.
 func TestClassifyProduct_Endpoint_Returns410ClassificationMoved(t *testing.T) {

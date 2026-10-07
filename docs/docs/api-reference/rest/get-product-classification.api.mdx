@@ -1,7 +1,7 @@
 ---
 id: get-product-classification
 title: "Get a SKU's product classification (deprecated local copy)"
-description: "DEPRECATED (ADR 0033): product-master owns product classification; read it from product-master's `GET /products/{sku}/classification` (same response shape). This endpoint stays until product-master ADR 0003 stage E and is served from this service's local copy of product-master's `ProductClassified` events (the copy StowStock reads), so it can lag product-master briefly. Side-effect-free. Unlike GetUsableInventory, an unclassified SKU is a 404, not a zero-value response — there is no meaningful 'empty' classification to return."
+description: "DEPRECATED (ADR 0034): product-master owns product classification; read it from product-master's `GET /products/{sku}/classification` (same response shape). This endpoint stays until product-master ADR 0003 stage E and is served from this service's local copy of product-master's `ProductClassified` events (the copy StowStock reads), so it can lag product-master briefly. Side-effect-free. Unlike GetUsableInventory, an unclassified SKU is a 404, not a zero-value response — there is no meaningful 'empty' classification to return."
 sidebar_label: "Get a SKU's product classification (deprecated local copy)"
 hide_title: true
 hide_table_of_contents: true
@@ -42,7 +42,7 @@ This endpoint has been deprecated and may be replaced or removed in future versi
 
 :::
 
-DEPRECATED (ADR 0033): product-master owns product classification; read it from product-master's `GET /products/{sku}/classification` (same response shape). This endpoint stays until product-master ADR 0003 stage E and is served from this service's local copy of product-master's `ProductClassified` events (the copy StowStock reads), so it can lag product-master briefly. Side-effect-free. Unlike GetUsableInventory, an unclassified SKU is a 404, not a zero-value response — there is no meaningful "empty" classification to return.
+DEPRECATED (ADR 0034): product-master owns product classification; read it from product-master's `GET /products/{sku}/classification` (same response shape). This endpoint stays until product-master ADR 0003 stage E and is served from this service's local copy of product-master's `ProductClassified` events (the copy StowStock reads), so it can lag product-master briefly. Side-effect-free. Unlike GetUsableInventory, an unclassified SKU is a 404, not a zero-value response — there is no meaningful "empty" classification to return.
 
 
 <Heading

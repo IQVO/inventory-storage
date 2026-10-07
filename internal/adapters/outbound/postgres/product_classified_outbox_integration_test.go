@@ -17,7 +17,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 )
 
-// ADR 0033: the normal write path no longer raises ProductClassified. The
+// ADR 0034: the normal write path no longer raises ProductClassified. The
 // ONLY emitter left is the one-shot republish-product-classifications
 // backfill (stage B), which enqueues the legacy event through the outbox
 // for the integration topic. The product-master consumer's use case
@@ -57,7 +57,7 @@ func classifiedOutboxRows(t *testing.T, pool *pgxpool.Pool) []classifiedOutboxRo
 }
 
 // seedLegacyRow inserts a row the way the retired PUT endpoint left it:
-// no version or source given, so migration 0032's defaults apply.
+// no version or source given, so migration 0033's defaults apply.
 func seedLegacyRow(t *testing.T, pool *pgxpool.Pool, sku string, tags []string, temp string, dot *int) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),

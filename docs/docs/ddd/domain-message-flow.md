@@ -97,7 +97,7 @@ sequenceDiagram
     Note over INV: facility location cache maps slot to zone, hazmat and temperature class
     IC->>INV: cmd: RegisterBin PUT /bins/{binId}
     PM-)INV: evt: com.warehouse.wms.product-master.product.ProductClassified on warehouse.product-master.events
-    Note over INV: local classification copy, version-guarded (ADR 0033), PUT /products/{sku}/classification answers 410
+    Note over INV: local classification copy, version-guarded (ADR 0034), PUT /products/{sku}/classification answers 410
     IC->>INV: cmd: ReceiveStock POST /stock/receive
     INV-)PJ: evt: com.warehouse.wms.inventory-storage.stock.StockReceived on warehouse.inventory.analytics
     IC->>INV: cmd: StowStock POST /stock/stow

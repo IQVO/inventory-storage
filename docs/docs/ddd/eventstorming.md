@@ -47,7 +47,7 @@ flowchart LR
     CACHE["Facility location cache"]:::readmodel
     RB["RegisterBin"]:::command
     BIN["Bin"]:::aggregate
-    PM["product-master<br/>ProductClassified, ADR 0033"]:::external
+    PM["product-master<br/>ProductClassified, ADR 0034"]:::external
     CP["ApplyProductClassification"]:::command
     PC["ProductClassification"]:::aggregate
     RS["ReceiveStock"]:::command
@@ -206,7 +206,7 @@ Omitted: the clean-count branch (only `CycleCountCompleted` with
 | Sticky | Kind | Code evidence |
 | --- | --- | --- |
 | Inventory control, Picker or simulator, MCP host / agent | Actor | REST callers of `PUT /bins/{binId}`, `POST /stock/*`, `POST /bins/{binId}/cycle-count`, `POST /reservations/{id}/confirm-pick`; MCP `revoke_reservation` |
-| RegisterBin, ApplyProductClassification (Kafka, ADR 0033), ReceiveStock, StowStock, ReserveStock, RevokeReservation, ConfirmPick, RunCycleCount | Command | `internal/application/usecases/*.go`, routed in `internal/adapters/inbound/http/server.go` |
+| RegisterBin, ApplyProductClassification (Kafka, ADR 0034), ReceiveStock, StowStock, ReserveStock, RevokeReservation, ConfirmPick, RunCycleCount | Command | `internal/application/usecases/*.go`, routed in `internal/adapters/inbound/http/server.go` |
 | StockUnit, Bin, Reservation, ProductClassification | Aggregate | `internal/domain/stock`, `location`, `reservation`, `product` |
 | StockReceived, ItemStowed, LocationRecorded, StockReserved, ReservationRevoked, ReservationExpired, StockPicked, ItemUnlocated, CycleCountCompleted, DiscrepancyDetected | Domain Event | `internal/domain/shared/events.go` |
 | ProductClassified | Domain Event | `internal/domain/product/classification.go` |

@@ -11,7 +11,7 @@ This service PUBLISHES integration events over Kafka to the fleet's shared
 broker. It CONSUMES three sibling topics: `warehouse.facility.events`
 (facility-layout) into a local location-classification cache,
 `warehouse.network-inventory-planning.events` (transfer commands) and
-`warehouse.product-master.events` (product-master, ADR-0033) into the local
+`warehouse.product-master.events` (product-master, ADR-0034) into the local
 copy of product classifications — see "Consumed" below.
 
 ## Envelope: CloudEvents 1.0, mandatory (ADR-0024)
@@ -81,7 +81,7 @@ NO envelope toggle.
 
 **`StockReserved`, `ReservationRevoked`, `TransferStockAllocated`,
 `TransferStockAllocationRejected` and the legacy `ProductClassified` cross
-the service boundary.** Since ADR-0033 `ProductClassified` is raised by no
+the service boundary.** Since ADR-0034 `ProductClassified` is raised by no
 write path: only the one-shot `republish-product-classifications` backfill
 re-emits it (integration topic only, through the outbox); its encoder
 mapping and goldens are kept for that command and removed at product-master
@@ -133,7 +133,7 @@ cross-SKU ordering is still not guaranteed, and the authoritative answer
 for correctness-sensitive reads is always `GET /inventory/{sku}/usable`,
 not the event stream.
 
-## Consumed: `warehouse.product-master.events` (ADR-0033)
+## Consumed: `warehouse.product-master.events` (ADR-0034)
 
 - Adapter: `internal/adapters/inbound/kafka/product_master_consumer.go`
   (`ProductMasterTopic`). Started only when `PRODUCT_MASTER_CONSUMER_GROUP`

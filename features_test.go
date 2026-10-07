@@ -298,7 +298,7 @@ func (w *world) iClassifySKUWithHandlingTags(ctx context.Context, sku, tags stri
 }
 
 // productMasterHasClassifiedSKU applies a product-master ProductClassified
-// to the local copy through the consumer's use case (ADR 0033), as the
+// to the local copy through the consumer's use case (ADR 0034), as the
 // Kafka adapter would after decoding the CloudEvent.
 func (w *world) productMasterHasClassifiedSKU(ctx context.Context, sku, tags string, version int) error {
 	_, err := w.applyClassification.Execute(ctx, usecases.ProductClassificationUpdate{

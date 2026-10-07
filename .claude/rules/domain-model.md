@@ -30,7 +30,7 @@ paths:
   bin): a closed set of `HandlingTag`s (`Hazmat`, `Fragile`,
   `TemperatureSensitive`, `Oversized`, `HighValue`) plus a `TemperatureClass`
   (`Ambient`/`Chilled`/`Frozen`), required only when `TemperatureSensitive`
-  is set. **product-master owns it (ADR-0033)**: this service keeps a
+  is set. **product-master owns it (ADR-0034)**: this service keeps a
   version-guarded LOCAL COPY in `product_classifications`, fed by
   product-master's `ProductClassified` events, and never authors a
   classification. Unclassified SKUs carry no constraints (fail-open).
@@ -81,7 +81,7 @@ ReservationExpired, ReservationRevoked, StockPicked, ItemUnlocated,
 CycleCountCompleted, DiscrepancyDetected, ProductClassified — eleven total.
 **StockReserved**, **ReservationRevoked** and the two transfer replies cross
 the service boundary via Kafka — see `integration-events.md`.
-**ProductClassified** is legacy since ADR-0033: no use case raises it; only
+**ProductClassified** is legacy since ADR-0034: no use case raises it; only
 the one-shot `republish-product-classifications` backfill re-emits it
 (integration topic), and it is retired at product-master ADR 0003 stage E.
 
@@ -102,7 +102,7 @@ the one-shot `republish-product-classifications` backfill re-emits it
    Discrepancy/Unlocated
 8. `ApplyProductClassification(eventId, sku, handlingTags, temperatureClass?,
    dotHazardClass?, classificationSource, version)` -> the product-master
-   consumer's use case (ADR-0033): claims the CloudEvents id in
+   consumer's use case (ADR-0034): claims the CloudEvents id in
    `processed_events` and upserts the local copy in ONE UnitOfWork, applying
    only when `version` > stored version (legacy rows are version 0). Raises
    NO domain event. Invariant violations are

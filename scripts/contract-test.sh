@@ -42,7 +42,7 @@ for _ in $(seq 1 50); do
 done
 curl -sf "${BASE_URL}/healthz" >/dev/null # fail loudly if it never came up
 
-# classifyProduct is excluded: it is retired (ADR 0033) and answers 410
+# classifyProduct is excluded: it is retired (ADR 0034) and answers 410
 # classification-moved to EVERY request, which Schemathesis's
 # positive-data-acceptance check reports as "API rejected a
 # schema-compliant request" by design. The 410 is pinned instead by

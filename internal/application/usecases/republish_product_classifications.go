@@ -13,7 +13,7 @@ import (
 const DefaultRepublishBatchSize = 500
 
 // RepublishProductClassifications is the one-shot backfill of
-// product-master ADR 0003 stage B (this repo's ADR 0033): it re-emits every
+// product-master ADR 0003 stage B (this repo's ADR 0034): it re-emits every
 // stored classification as the legacy ProductClassified event through the
 // event publisher (the transactional outbox in production), so
 // product-master's legacy importer learns the classifications that existed

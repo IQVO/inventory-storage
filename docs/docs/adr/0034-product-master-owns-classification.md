@@ -1,12 +1,12 @@
 ---
-id: 0033-product-master-owns-classification
-slug: /adr/0033
-title: "ADR 0033: product-master owns product classification; this service keeps a local copy"
-sidebar_label: "33. product-master owns classification"
-sidebar_position: 33
+id: 0034-product-master-owns-classification
+slug: /adr/0034
+title: "ADR 0034: product-master owns product classification; this service keeps a local copy"
+sidebar_label: "34. product-master owns classification"
+sidebar_position: 34
 ---
 
-# 0033. product-master owns product classification; this service keeps a local copy
+# 0034. product-master owns product classification; this service keeps a local copy
 
 ## Status
 
@@ -118,7 +118,7 @@ kubectl exec deploy/inventory-storage -- ./inventory republish-product-classific
      with capped backoff; a message that is not a valid CloudEvent, has an
      undecodable payload or breaks the classification invariants is logged
      and committed past.
-3. **Migration `0032_product_master_local_copy`** adds to
+3. **Migration `0033_product_master_local_copy`** adds to
    `product_classifications`: `version BIGINT NOT NULL DEFAULT 0` and
    `classification_source TEXT NOT NULL DEFAULT 'inventory-storage'`. Legacy
    rows keep version 0, so the first product-master version (1 or more)

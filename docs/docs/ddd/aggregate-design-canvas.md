@@ -374,7 +374,7 @@ stateDiagram-v2
 
 Source: `internal/domain/product/classification.go`,
 `internal/application/usecases/apply_product_classification.go`. Since
-[ADR 0033](/docs/adr/0033) the rows are a version-guarded local copy of
+[ADR 0034](/docs/adr/0034) the rows are a version-guarded local copy of
 product-master's classification; this service no longer authors them.
 Omitted: there is no delete or unclassify operation.
 
@@ -406,7 +406,7 @@ Unclassified SKUs, unknown bins and unclassified occupants are **fail-open**.
 ### 5. Corrective Policies
 
 - **Re-classification replaces.** Corrections are made in product-master
-  (ADR 0033); a newer `version` replaces the local copy wholesale.
+  (ADR 0034); a newer `version` replaces the local copy wholesale.
 - None for already-stowed stock: re-classifying a SKU does not re-check
   bins it already occupies.
 

@@ -1,6 +1,6 @@
 //go:build integration
 
-// product-master hand-over (ADR 0033) end-to-end proof on REAL
+// product-master hand-over (ADR 0034) end-to-end proof on REAL
 // infrastructure booted via testcontainers (its own Kafka broker plus the
 // package's shared Postgres; never an external broker, never t.Skip):
 //

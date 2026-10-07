@@ -1,4 +1,4 @@
--- product-master owns product classification (ADR 0033, product-master ADR
+-- product-master owns product classification (ADR 0034, product-master ADR
 -- 0003 stage C). product_classifications becomes a LOCAL COPY fed by
 -- product-master's ProductClassified events on warehouse.product-master.events.
 --

@@ -11,7 +11,7 @@ import (
 )
 
 // buildProductMasterConsumer wires the product-master classification
-// consumer (ADR 0033, product-master ADR 0003 stage C): it consumes
+// consumer (ADR 0034, product-master ADR 0003 stage C): it consumes
 // product-master's ProductClassified on warehouse.product-master.events and
 // keeps product_classifications (the local copy StowStock reads) in step,
 // claiming each CloudEvents id in processed_events in the SAME transaction

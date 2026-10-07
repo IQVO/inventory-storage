@@ -20,7 +20,7 @@ paths:
 - `GET  /bins/{binId}`                         -> GetBin ({binId, capacity, occupied, available})
 - `POST /bins/{binId}/cycle-count`             -> RunCycleCount
 - `PUT  /products/{sku}/classification`        -> 410 `classification-moved` (retired,
-                                                  ADR-0033: classify in product-master)
+                                                  ADR-0034: classify in product-master)
 - `GET  /products/{sku}/classification`        -> DEPRECATED: the local copy of
                                                   product-master's classification
                                                   (removed at product-master ADR 0003 stage E)

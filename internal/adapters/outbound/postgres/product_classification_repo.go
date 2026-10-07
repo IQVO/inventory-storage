@@ -11,7 +11,7 @@ import (
 )
 
 // ProductClassificationRepo is the pgxpool-backed local copy of
-// product-master's classifications (ADR 0033). It implements
+// product-master's classifications (ADR 0034). It implements
 // ports.ProductClassificationRepo (FindBySKU, read by StowStock and the
 // deprecated GET), ports.ProductClassificationLocalCopy (ApplyIfNewer, the
 // product-master consumer) and ports.ProductClassificationCatalogue
@@ -115,7 +115,7 @@ func rehydrateClassification(sku shared.SKU, rawTags []string, temperatureClass 
 }
 
 // ProcessedEventRepo is the pgxpool-backed ports.ProcessedEventRepo over
-// processed_events (migration 0032).
+// processed_events (migration 0033).
 type ProcessedEventRepo struct {
 	pool *pgxpool.Pool
 }

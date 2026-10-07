@@ -52,7 +52,7 @@ type config struct {
 
 	// productMasterConsumerGroup is PRODUCT_MASTER_CONSUMER_GROUP: the
 	// stable consumer group of the product-master classification consumer
-	// (ADR 0033). Empty means the consumer is not started.
+	// (ADR 0034). Empty means the consumer is not started.
 	productMasterConsumerGroup string
 }
 

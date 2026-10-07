@@ -90,7 +90,7 @@ type UnitOfWork interface {
 
 // ProductClassificationRepo reads the local copy of a SKU's handling
 // classification, keyed by SKU. product-master owns this master data
-// (ADR 0033); StowStock and the deprecated GET endpoint read the copy
+// (ADR 0034); StowStock and the deprecated GET endpoint read the copy
 // exactly as they read this service's own rows before the hand-over.
 // FindBySKU returns nil, nil for an unclassified SKU.
 type ProductClassificationRepo interface {
@@ -98,7 +98,7 @@ type ProductClassificationRepo interface {
 }
 
 // ProductClassificationLocalCopy writes the local copy from product-master's
-// ProductClassified events (ADR 0033).
+// ProductClassified events (ADR 0034).
 type ProductClassificationLocalCopy interface {
 	// ApplyIfNewer upserts c for c.SKU() when version is greater than the
 	// stored version (an absent row counts as older than any version), and
@@ -110,7 +110,7 @@ type ProductClassificationLocalCopy interface {
 
 // ProductClassificationCatalogue pages through every stored classification
 // in SKU order. Only the one-shot republish-product-classifications backfill
-// uses it (ADR 0033, stage B).
+// uses it (ADR 0034, stage B).
 type ProductClassificationCatalogue interface {
 	// ListAfter returns up to limit classifications whose SKU sorts
 	// strictly after afterSKU (afterSKU "" starts from the beginning).

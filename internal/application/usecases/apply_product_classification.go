@@ -51,7 +51,7 @@ const (
 
 // ApplyProductClassification keeps this service's local copy of a SKU's
 // handling classification in step with product-master, the owner
-// (ADR 0033). The CloudEvents id claim and the version-guarded upsert run in
+// (ADR 0034). The CloudEvents id claim and the version-guarded upsert run in
 // ONE UnitOfWork, so a failure rolls both back and the redelivery is applied
 // in full. It raises no domain event: product-master -> inventory-storage is
 // one-way, nothing reaches the outbox.

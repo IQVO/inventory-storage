@@ -1,7 +1,7 @@
 ---
 id: classify-product
 title: "Retired - classify the SKU in product-master instead (410)"
-description: "Retired by ADR 0033 (product-master ADR 0003 stage C). product-master owns product classification; this service keeps a read-only local copy fed by product-master's `ProductClassified` events. Every call returns `410 Gone` with problem type `classification-moved`, naming product-master's `PUT /products/{sku}/classification` (same request body). Any request body is ignored and nothing is written. Removed at product-master ADR 0003 stage E."
+description: "Retired by ADR 0034 (product-master ADR 0003 stage C). product-master owns product classification; this service keeps a read-only local copy fed by product-master's `ProductClassified` events. Every call returns `410 Gone` with problem type `classification-moved`, naming product-master's `PUT /products/{sku}/classification` (same request body). Any request body is ignored and nothing is written. Removed at product-master ADR 0003 stage E."
 sidebar_label: "Retired - classify the SKU in product-master instead (410)"
 hide_title: true
 hide_table_of_contents: true
@@ -42,7 +42,7 @@ This endpoint has been deprecated and may be replaced or removed in future versi
 
 :::
 
-Retired by ADR 0033 (product-master ADR 0003 stage C). product-master owns product classification; this service keeps a read-only local copy fed by product-master's `ProductClassified` events. Every call returns `410 Gone` with problem type `classification-moved`, naming product-master's `PUT /products/{sku}/classification` (same request body). Any request body is ignored and nothing is written. Removed at product-master ADR 0003 stage E.
+Retired by ADR 0034 (product-master ADR 0003 stage C). product-master owns product classification; this service keeps a read-only local copy fed by product-master's `ProductClassified` events. Every call returns `410 Gone` with problem type `classification-moved`, naming product-master's `PUT /products/{sku}/classification` (same request body). Any request body is ignored and nothing is written. Removed at product-master ADR 0003 stage E.
 
 
 <Heading

@@ -21,12 +21,12 @@ Dependencies are plain struct fields, wired once per binary in
 | 5 | `ConfirmPick` | `POST /reservations/{id}/confirm-pick` | — | `StockPicked` (+ `ReservationExpired` via lazy expiry) |
 | 6 | `GetUsable` | `GET /inventory/{sku}/usable` | `check_availability`, resource `inventory://{sku}/usable` | — (read model) |
 | 7 | `RunCycleCount` | `POST /bins/{binId}/cycle-count` | — | `CycleCountCompleted`, `DiscrepancyDetected`, `ItemUnlocated` |
-| 8 | `ApplyProductClassification` | — (Kafka: `warehouse.product-master.events`, ADR 0033; `PUT /products/{sku}/classification` is 410) | — | — (local copy; `ProductClassified` only from the backfill command) |
+| 8 | `ApplyProductClassification` | — (Kafka: `warehouse.product-master.events`, ADR 0034; `PUT /products/{sku}/classification` is 410) | — | — (local copy; `ProductClassified` only from the backfill command) |
 | 9 | `GetReservationsByDemandRef` | `GET /reservations?demandRef=` | — | `ReservationExpired` via lazy expiry only |
 | 10 | `RegisterBin` | `PUT /bins/{binId}` | — | — (local topology master data, ADR 0025) |
 | 11 | `GetBin` | `GET /bins/{binId}` | — | — (read) |
 
-`GET /products/{sku}/classification` (deprecated, ADR 0033) has no use case
+`GET /products/{sku}/classification` (deprecated, ADR 0034) has no use case
 of its own: the HTTP adapter reads `ProductClassificationRepo` (the local
 copy) directly for that single lookup.
 The MCP `get_bin_occupancy` tool likewise reads `StockRepo.FindByBin`
@@ -269,10 +269,10 @@ Two deliberate choices are visible here:
 Already-`UNLOCATED` and `REMOVED` units are excluded from `systemQty` — you
 cannot lose the same stock twice.
 
-## 8. ApplyProductClassification (replaces ClassifyProduct, ADR 0033)
+## 8. ApplyProductClassification (replaces ClassifyProduct, ADR 0034)
 
 product-master owns product classification since
-[ADR 0033](/docs/adr/0033); `ClassifyProduct` is removed and
+[ADR 0034](/docs/adr/0034); `ClassifyProduct` is removed and
 `PUT /products/{sku}/classification` answers `410 classification-moved`.
 `ApplyProductClassification` is the use case behind the
 `warehouse.product-master.events` consumer: it keeps this service's local

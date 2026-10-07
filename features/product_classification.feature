@@ -1,5 +1,5 @@
 # Derived from:
-#   - docs/docs/adr/0033-product-master-owns-classification.md (product-master
+#   - docs/docs/adr/0034-product-master-owns-classification.md (product-master
 #     ADR 0003 stage C): product-master owns product classification;
 #     PUT /products/{sku}/classification returns 410 classification-moved;
 #     this service keeps a version-guarded local copy fed by product-master's

@@ -58,7 +58,7 @@ info:
     message below except `LocationRecorded` and `ProductClassified`, from
     `internal/adapters/outbound/kafka/analytics_publisher.go`). Each message
     says which topics it reaches. `LocationRecorded` is in-process only (no
-    consumer; decided 2026-10-06). Since ADR 0033 product-master owns
+    consumer; decided 2026-10-06). Since ADR 0034 product-master owns
     product classification: `ProductClassified` is no longer raised by any
     write path and is emitted only by the one-shot
     `republish-product-classifications` backfill command (product-master ADR
@@ -66,7 +66,7 @@ info:
 
 
     **Consumed.** This service also consumes product-master's
-    `warehouse.product-master.events` (channel below, ADR 0033) into a local
+    `warehouse.product-master.events` (channel below, ADR 0034) into a local
     copy of every SKU's classification that StowStock reads. Applying it
     raises no event here.
 
@@ -109,13 +109,13 @@ tags:
   - name: product
     description: >
       Events about SKU-level handling master data (hazmat, fragile,
-      temperature, ...). Owned by product-master since ADR 0033; this
+      temperature, ...). Owned by product-master since ADR 0034; this
       service only re-emits its legacy `ProductClassified` from the one-shot
       backfill command and consumes product-master's own events.
   - name: product-master
     description: >
       Events consumed from the product-master bounded context (wms
-      subdomain), the owner of SKU master data (ADR 0033).
+      subdomain), the owner of SKU master data (ADR 0034).
 
 servers:
   production:
@@ -137,7 +137,7 @@ channels:
       constant in `internal/adapters/outbound/kafka/publisher.go`). Reaching
       it: `StockReserved` and `ReservationRevoked` (keyed by reservation
       id), the two transfer replies, and the legacy `ProductClassified`
-      (keyed by SKU), which since ADR 0033 only the one-shot
+      (keyed by SKU), which since ADR 0034 only the one-shot
       `republish-product-classifications` backfill emits (product-master's
       legacy importer consumes it). The primary downstream consumer is
       wes-work-planning, which dispatches on their full `type` strings and
@@ -175,7 +175,7 @@ channels:
       projector (`cmd/inventory-projector`), which dispatches on the full
       `type`, dedupes on `id`, and skips (WARN) anything that is not a valid
       CloudEvent. `ProductClassified` no longer reaches this topic (ADR
-      0033: the write path stopped raising it and the backfill writes the
+      0034: the write path stopped raising it and the backfill writes the
       integration topic only); the projector would acknowledge it without
       touching the read model.
     subscribe:
@@ -205,7 +205,7 @@ channels:
       product-master's integration topic, its Published Language for SKU
       master data (product-master ADR 0001; the `ProductMasterTopic`
       constant in `internal/adapters/inbound/kafka/product_master_consumer.go`).
-      CONSUMED by this service (ADR 0033), not published: key = SKU,
+      CONSUMED by this service (ADR 0034), not published: key = SKU,
       `source=/warehouse/product-master`, `subject` = SKU. Only
       `com.warehouse.wms.product-master.product.ProductClassified` is acted
       on; `ProductRegistered`, `ProductDescriptionChanged`,
@@ -344,7 +344,7 @@ components:
       title: Product Classified (legacy, backfill only)
       summary: A SKU's handling classification, re-emitted by the one-shot backfill.
       description: >
-        LEGACY (ADR 0033). product-master owns product classification; no
+        LEGACY (ADR 0034). product-master owns product classification; no
         write path in this service raises this event any more. It is emitted
         only by the one-shot `republish-product-classifications` command
         (product-master ADR 0003 stage B): one message per
@@ -409,7 +409,7 @@ components:
       title: Product Classified (from product-master, consumed)
       summary: product-master's full-state classification of a SKU, with its product version.
       description: >
-        CONSUMED, not produced (ADR 0033). Pinned by product-master's
+        CONSUMED, not produced (ADR 0034). Pinned by product-master's
         `apis/asyncapi.yaml`: type
         `com.warehouse.wms.product-master.product.ProductClassified`,
         `source=/warehouse/product-master`, subject and Kafka key = SKU.
@@ -994,7 +994,7 @@ components:
     ProductClassifiedEvent:
       description: >
         CloudEvents envelope for the legacy ProductClassified event. Since
-        ADR 0033 only the integration-topic (`events`) variant is emitted, by
+        ADR 0034 only the integration-topic (`events`) variant is emitted, by
         the backfill command; the `analytics` dataschema is still accepted by
         the encoder's frozen contract but no longer produced.
       allOf:

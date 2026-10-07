@@ -43,7 +43,7 @@ Schemathesis contract run, which boots only the OLTP binary.
 | `PUT` | `/bins/{binId}` | `registerBin` | Bins | `200` / `201` | `400` `409` `422` `500` |
 | `GET` | `/bins/{binId}` | `getBin` | Bins | `200` | `404` `500` |
 | `POST` | `/bins/{binId}/cycle-count` | `runCycleCount` | Bins | `200` | `400` `404` `422` `500` |
-| `PUT` | `/products/{sku}/classification` | `classifyProduct` (retired, ADR 0033) | Products | — | `410` `500` |
+| `PUT` | `/products/{sku}/classification` | `classifyProduct` (retired, ADR 0034) | Products | — | `410` `500` |
 | `GET` | `/products/{sku}/classification` | `getProductClassification` (deprecated, local copy) | Products | `200` | `404` `500` |
 | `GET` | `/reports/flow-accuracy` | `getFlowAccuracyReport` | Reports | `200` | `400` `500` |
 | `GET` | `/reports/flow-accuracy/freshness` | `getFlowAccuracyFreshness` | Reports | `200` | `500` |

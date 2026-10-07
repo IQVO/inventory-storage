@@ -153,7 +153,7 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | PUT    | `/bins/{binId}` | RegisterBin — idempotent: 201 created / 200 unchanged or resized / 409 below occupancy (ADR-0025) |
 | GET    | `/bins/{binId}` | GetBin — capacity, occupied, available |
 | POST   | `/bins/{binId}/cycle-count` | RunCycleCount |
-| PUT    | `/products/{sku}/classification` | 410 `classification-moved` (ADR-0033: classify in product-master) |
+| PUT    | `/products/{sku}/classification` | 410 `classification-moved` (ADR-0034: classify in product-master) |
 | GET    | `/products/{sku}/classification` | deprecated: local copy of product-master's classification |
 | GET    | `/healthz` | liveness |
 | GET    | `/readyz` | readiness — `503 {"status":"not_ready"}` once graceful shutdown has begun (ADR-0020) |
@@ -324,7 +324,7 @@ of the site-scoped transfer allocation exchange (ADR-0030).
   `reason` is the closed set `ORIGIN_SITE_UNKNOWN | INSUFFICIENT_USABLE |
   IDEMPOTENCY_CONFLICT`.
   And the legacy `com.warehouse.wms.inventory-storage.product.ProductClassified`
-  (key/subject = SKU; a full-state replacement), which since ADR-0033 no
+  (key/subject = SKU; a full-state replacement), which since ADR-0034 no
   write path raises: only the one-shot `republish-product-classifications`
   backfill (below) emits it, through the outbox, for product-master's legacy
   importer. `data`:
@@ -381,7 +381,7 @@ while continuing to serve ordinary demand unchanged.
 | `TRANSFER_ALLOCATION_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`) |
 | `TRANSFER_ALLOCATION_CONSUMER_GROUP` | `inventory-storage-transfer-allocation` | Consumer group id |
 
-### Consumed: product-master's product classifications (ADR-0033)
+### Consumed: product-master's product classifications (ADR-0034)
 
 product-master owns product classification. This service keeps a
 version-guarded local copy in `product_classifications`, which `StowStock`

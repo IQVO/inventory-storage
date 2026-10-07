@@ -172,7 +172,7 @@ func TestApplyProductClassification_DuplicateEventIDIsANoOp(t *testing.T) {
 }
 
 // The use case raises no domain event: product-master -> inventory-storage
-// is one-way, nothing must ever reach the outbox (ADR 0033).
+// is one-way, nothing must ever reach the outbox (ADR 0034).
 func TestApplyProductClassification_RaisesNoDomainEvent(t *testing.T) {
 	e := newEnv()
 	uc, _ := newApply(e)

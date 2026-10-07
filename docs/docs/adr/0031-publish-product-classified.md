@@ -11,7 +11,7 @@ sidebar_position: 31
 ## Status
 
 Accepted; publication part superseded by
-[ADR 0033](./0033-product-master-owns-classification.md) (the write path no
+[ADR 0034](./0034-product-master-owns-classification.md) (the write path no
 longer raises `ProductClassified`; only the one-shot backfill command emits
 it). Supersedes **only** the "in-process only / never published" clause
 of [ADR 0024](./0024-cloudevents-mandatory-envelope.md) **for
