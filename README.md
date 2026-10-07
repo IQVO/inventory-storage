@@ -153,8 +153,8 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | PUT    | `/bins/{binId}` | RegisterBin — idempotent: 201 created / 200 unchanged or resized / 409 below occupancy (ADR-0025) |
 | GET    | `/bins/{binId}` | GetBin — capacity, occupied, available |
 | POST   | `/bins/{binId}/cycle-count` | RunCycleCount |
-| PUT    | `/products/{sku}/classification` | ClassifyProduct |
-| GET    | `/products/{sku}/classification` | current ProductClassification |
+| PUT    | `/products/{sku}/classification` | 410 `classification-moved` (ADR-0033: classify in product-master) |
+| GET    | `/products/{sku}/classification` | deprecated: local copy of product-master's classification |
 | GET    | `/healthz` | liveness |
 | GET    | `/readyz` | readiness — `503 {"status":"not_ready"}` once graceful shutdown has begun (ADR-0020) |
 
@@ -323,10 +323,11 @@ of the site-scoped transfer allocation exchange (ADR-0030).
   ```
   `reason` is the closed set `ORIGIN_SITE_UNKNOWN | INSUFFICIENT_USABLE |
   IDEMPOTENCY_CONFLICT`.
-  And `com.warehouse.wms.inventory-storage.product.ProductClassified`
-  (ADR-0031: SKU master data, published on BOTH topics through the outbox in
-  the same transaction as `ClassifyProduct`'s save; key/subject = SKU; a
-  full-state replacement) with `data`:
+  And the legacy `com.warehouse.wms.inventory-storage.product.ProductClassified`
+  (key/subject = SKU; a full-state replacement), which since ADR-0033 no
+  write path raises: only the one-shot `republish-product-classifications`
+  backfill (below) emits it, through the outbox, for product-master's legacy
+  importer. `data`:
   ```json
   {"sku": "SKU-9", "handling_tags": ["Hazmat", "TemperatureSensitive"], "temperature_class": "Frozen", "dot_hazard_class": 3}
   ```
@@ -379,6 +380,33 @@ while continuing to serve ordinary demand unchanged.
 | --- | --- | --- |
 | `TRANSFER_ALLOCATION_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`) |
 | `TRANSFER_ALLOCATION_CONSUMER_GROUP` | `inventory-storage-transfer-allocation` | Consumer group id |
+
+### Consumed: product-master's product classifications (ADR-0033)
+
+product-master owns product classification. This service keeps a
+version-guarded local copy in `product_classifications`, which `StowStock`
+reads for the ADR-0009/0010 placement rules (unchanged). It is fed by
+`com.warehouse.wms.product-master.product.ProductClassified` on
+`warehouse.product-master.events`; the CloudEvents `id` is claimed in
+`processed_events` in the same transaction as the upsert, and a message
+applies only when its `version` is newer than the stored one. Other
+product-master event types are ignored.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `PRODUCT_MASTER_CONSUMER_GROUP` | unset (consumer off) | Stable consumer group id, e.g. `inventory-storage-product-master`. When set, `DATABASE_URL` and `KAFKA_BROKERS` are required. |
+
+`PUT /products/{sku}/classification` answers `410 classification-moved`;
+`GET /products/{sku}/classification` is deprecated (served from the local
+copy until product-master ADR 0003 stage E).
+
+One-shot backfill (product-master ADR 0003 stage B) — re-emits every stored
+classification as the legacy `ProductClassified` through the outbox, which the
+running pod's relay publishes; safe to re-run:
+
+```sh
+kubectl -n warehouse-systems exec deploy/inventory-storage -- ./inventory republish-product-classifications
+```
 
 ## Consumed: facility-layout's location classifications
 

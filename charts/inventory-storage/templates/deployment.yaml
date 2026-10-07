@@ -68,6 +68,10 @@ spec:
             - name: TRANSFER_ALLOCATION_CONSUMER_GROUP
               value: {{ .Values.config.transferAllocationConsumerGroup | quote }}
             {{- end }}
+            {{- if .Values.config.productMasterConsumerGroup }}
+            - name: PRODUCT_MASTER_CONSUMER_GROUP
+              value: {{ .Values.config.productMasterConsumerGroup | quote }}
+            {{- end }}
             - name: OUTBOX_RELAY_INTERVAL
               value: {{ .Values.config.outboxRelayInterval | quote }}
             - name: HOUSEKEEPING_INTERVAL
