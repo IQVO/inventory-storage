@@ -230,8 +230,16 @@ func TestKafkaConsumerGroupNeverHardcodedInline(t *testing.T) {
 // while testcontainers is the only variant that actually exercises the
 // Kafka assertions on a runner. Scans every _integration_test.go file that
 // imports segmentio/kafka-go (this fleet's Kafka client) or references
-// GroupID/kafka.Reader/kafka.Writer, and requires it to also import
-// testcontainers-go/modules/kafka.
+// GroupID/kafka.Reader/kafka.Writer.
+//
+// The broker MUST be started through the shared test-only helper
+// internal/testsupport/kafkatc (which wraps testcontainers-go/modules/kafka
+// and waits for the group coordinator, so a cold broker's [15]
+// GroupCoordinatorNotAvailable + kafka-go's fixed 5 s JoinGroupBackoff cannot
+// eat a test's wait window). The file itself, or a sibling _test.go helper in
+// the same package directory, must use kafkatc; no integration test may call
+// the testcontainers Kafka module directly, which would reintroduce an
+// un-hardened copy.
 func TestKafkaIntegrationTestsUseTestcontainers(t *testing.T) {
 	for _, path := range goFilesUnder(t, "..", true) {
 		if !strings.HasSuffix(path, "_integration_test.go") {
@@ -250,8 +258,45 @@ func TestKafkaIntegrationTestsUseTestcontainers(t *testing.T) {
 
 		hasSkipGate, hasHardcodedBroker := scanKafkaIntegrationTestRules(t, path)
 
-		assertKafkaIntegrationTestFollowsFleetRules(t, path, content, hasSkipGate, hasHardcodedBroker)
+		for _, v := range kafkaIntegrationViolations(path, content, hasSkipGate, hasHardcodedBroker, siblingUsesKafkaHelper(t, path)) {
+			t.Errorf("%s", v)
+		}
 	}
+}
+
+// kafkaHelperImport is the shared cold-broker-safe Kafka testcontainer helper.
+const kafkaHelperImport = "internal/testsupport/kafkatc"
+
+// usesKafkaHelper reports whether a test file imports the shared helper.
+func usesKafkaHelper(content string) bool {
+	return strings.Contains(content, kafkaHelperImport)
+}
+
+// siblingUsesKafkaHelper reports whether another _test.go file in the same
+// directory (other than path itself) imports the shared Kafka helper — i.e.
+// a package-level helper (startBroker, transferSharedEnv, ...) the file under
+// test reaches its broker through.
+func siblingUsesKafkaHelper(t *testing.T, path string) bool {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("read dir of %s: %v", path, err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		sibling := filepath.Join(filepath.Dir(path), name)
+		if e.IsDir() || sibling == path || !strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(sibling)
+		if err != nil {
+			t.Fatalf("read %s: %v", sibling, err)
+		}
+		if usesKafkaHelper(string(src)) {
+			return true
+		}
+	}
+	return false
 }
 
 // integrationTestTouchesKafka reports whether an integration test's source
@@ -297,21 +342,65 @@ func scanKafkaIntegrationTestRules(t *testing.T, path string) (hasSkipGate, hasH
 	return hasSkipGate, hasHardcodedBroker
 }
 
-// assertKafkaIntegrationTestFollowsFleetRules fails the test when a
-// Kafka-touching integration test violates the testcontainers rule: gating
-// on an env-provided broker, hardcoding localhost:9092, or not importing
-// testcontainers-go/modules/kafka.
-func assertKafkaIntegrationTestFollowsFleetRules(t *testing.T, path, content string, hasSkipGate, hasHardcodedBroker bool) {
-	t.Helper()
-
+// kafkaIntegrationViolations returns one message per breach of the
+// Kafka-testcontainers rule in a Kafka-touching integration test file:
+// gating on an env-provided broker, hardcoding localhost:9092, starting the
+// testcontainers Kafka module directly (instead of the shared kafkatc
+// helper), or reaching no kafkatc broker at all (neither the file nor a
+// sibling _test.go helper uses it). Comment lines are ignored for the direct
+// start check so prose about the rule does not false-positive.
+func kafkaIntegrationViolations(path, content string, hasSkipGate, hasHardcodedBroker, siblingHelper bool) []string {
+	var out []string
 	if hasSkipGate {
-		t.Errorf("%s: gates on os.Getenv(\"KAFKA_BROKERS\") — this fleet's CI integration job provisions Postgres only, so a skip-gated Kafka test silently skips in CI and proves nothing there; start a real broker via testcontainers-go/modules/kafka instead", path)
+		out = append(out, fmt.Sprintf("%s: gates on os.Getenv(\"KAFKA_BROKERS\") — this fleet's CI integration job provisions Postgres only, so a skip-gated Kafka test silently skips in CI and proves nothing there; start a real broker via %s instead", path, kafkaHelperImport))
 	}
 	if hasHardcodedBroker {
-		t.Errorf("%s: hardcodes localhost:9092 — a fresh CI runner has no broker at that address; start one via testcontainers-go/modules/kafka instead", path)
+		out = append(out, fmt.Sprintf("%s: hardcodes localhost:9092 — a fresh CI runner has no broker at that address; start one via %s instead", path, kafkaHelperImport))
 	}
-	if !strings.Contains(content, "testcontainers-go/modules/kafka") {
-		t.Errorf("%s: touches Kafka but does not import github.com/testcontainers/testcontainers-go/modules/kafka — Kafka-touching integration tests in this fleet must start their own broker via testcontainers, never assume/skip on an external one", path)
+	for i, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		if strings.Contains(line, "testcontainers-go/modules/kafka") {
+			out = append(out, fmt.Sprintf("%s:%d imports the testcontainers Kafka module directly — start the broker with %s.Start, which waits for the group coordinator so a cold broker cannot flake the test (JoinGroup [15] + kafka-go's fixed 5 s backoff)", path, i+1, kafkaHelperImport))
+		}
+	}
+	if !usesKafkaHelper(content) && !siblingHelper {
+		out = append(out, fmt.Sprintf("%s: touches Kafka but neither it nor a sibling _test.go helper uses %s — Kafka-touching integration tests in this fleet must start their own broker via that shared testcontainers helper, never assume/skip on an external one", path, kafkaHelperImport))
+	}
+	return out
+}
+
+// The detector itself, so a refactor cannot quietly turn the sensor into a
+// test that always passes: each bad fixture must be flagged, each good one not.
+func TestKafkaIntegrationDetector(t *testing.T) {
+	const viaHelper = "import \"github.com/claudioed/inventory-storage/internal/testsupport/kafkatc\"\nvar _ = kafkatc.Start\n"
+	const directModule = "import tckafka \"github.com/testcontainers/testcontainers-go/modules/kafka\"\nvar _ = tckafka.Run\n"
+	const commentOnly = "// start it via testcontainers-go/modules/kafka? no: use the helper\n" + viaHelper
+	const bare = "import kafkago \"github.com/segmentio/kafka-go\"\n"
+
+	cases := []struct {
+		name                    string
+		content                 string
+		skipGate, hardcoded, sb bool
+		want                    int
+	}{
+		{"file using the helper is clean", viaHelper, false, false, false, 0},
+		{"file reaching the helper through a sibling is clean", bare, false, false, true, 0},
+		{"no helper anywhere is flagged", bare, false, false, false, 1},
+		{"direct testcontainers kafka import is flagged even with the helper", directModule + viaHelper, false, false, false, 1},
+		{"direct import without any helper is flagged twice", directModule, false, false, false, 2},
+		{"env skip-gate is flagged", viaHelper, true, false, false, 1},
+		{"hardcoded localhost:9092 is flagged", viaHelper, false, true, false, 1},
+		{"comment mentions of the module are ignored", commentOnly, false, false, false, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := kafkaIntegrationViolations("fixture_integration_test.go", tc.content, tc.skipGate, tc.hardcoded, tc.sb)
+			if len(got) != tc.want {
+				t.Fatalf("want %d violation(s), got %d: %v", tc.want, len(got), got)
+			}
+		})
 	}
 }
 

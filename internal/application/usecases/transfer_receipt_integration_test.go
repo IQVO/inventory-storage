@@ -23,12 +23,6 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
-	// The Kafka broker this file's assertions consume from is booted by
-	// transferSharedEnv in transfer_allocation_integration_test.go via
-	// the testcontainers kafka module; this blank import keeps the
-	// fleet's kafka-integration-test fitness sensor satisfied (every
-	// Kafka-touching integration test file must reference the module).
-	_ "github.com/testcontainers/testcontainers-go/modules/kafka"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
