@@ -23,12 +23,6 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
-	// The Kafka broker this file's assertions consume from is booted by
-	// transferSharedEnv in transfer_allocation_integration_test.go via
-	// the testcontainers kafka module; this blank import keeps the
-	// fleet's kafka-integration-test fitness sensor satisfied (every
-	// Kafka-touching integration test file must reference the module).
-	_ "github.com/testcontainers/testcontainers-go/modules/kafka"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
@@ -82,8 +76,33 @@ func seedDestinationBin(t *testing.T, env *transferTestEnv, binID, site string, 
 	}
 }
 
-// outboxCountFor counts outbox rows of the given event type.
-func outboxCountFor(t *testing.T, env *transferTestEnv, eventType string) int {
+// runSuffix makes every id a test seeds unique per test INVOCATION. The
+// Postgres and Kafka containers are shared for the whole test binary, so
+// fixed ids ("tl-recv-1", "SKU-RECV", ...) collide the second time a test runs
+// in the same binary (-count=N): the allocation ledger answers "transfer line
+// already decided" and the global outbox counts the tests asserted on were
+// off by the previous iterations' rows.
+func runSuffix() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+// outboxCountFor counts outbox rows of the given event type for ONE
+// transfer line (the outbox key is the transfer_line_id), so the count is
+// the test's own regardless of what earlier tests/iterations left behind.
+func outboxCountFor(t *testing.T, env *transferTestEnv, eventType, lineID string) int {
+	t.Helper()
+	var n int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM outbox_events WHERE event_type = $1 AND key = $2`, eventType, []byte(lineID),
+	).Scan(&n); err != nil {
+		t.Fatalf("count outbox %s for %s: %v", eventType, lineID, err)
+	}
+	return n
+}
+
+// outboxCountForType counts outbox rows of the given event type across ALL
+// lines, for before/after "nothing was published" comparisons.
+func outboxCountForType(t *testing.T, env *transferTestEnv, eventType string) int {
 	t.Helper()
 	var n int
 	if err := env.pool.QueryRow(context.Background(),
@@ -124,9 +143,10 @@ func relayOnce(t *testing.T, env *transferTestEnv, brokers []string) {
 }
 
 // readEventFromTopic consumes messages from topic until one of the
-// wanted CloudEvents type arrives, returning its raw value. A fresh
+// wanted CloudEvents type AND key (the transfer line id) arrives,
+// returning its raw value. A fresh
 // unique group replay-reads the topic from the beginning.
-func readEventFromTopic(t *testing.T, brokers []string, topic, wantType string) string {
+func readEventFromTopic(t *testing.T, brokers []string, topic, wantType, lineID string) string {
 	t.Helper()
 	r := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:     brokers,
@@ -152,7 +172,7 @@ func readEventFromTopic(t *testing.T, brokers []string, topic, wantType string) 
 		if err != nil {
 			continue
 		}
-		if containsEventType(msg.Value, wantType) && string(msg.Key) == "tl-recv-1" {
+		if containsEventType(msg.Value, wantType) && string(msg.Key) == lineID {
 			return string(msg.Value)
 		}
 	}
@@ -165,17 +185,22 @@ func TestIntegration_TransferReceipt_StageThenStow_RaisesDestinationUsableOnce(t
 	ctx := context.Background()
 	stage, stow := wireReceiptHarness(t, env)
 
-	site := mustSiteID(t, "SITE-RECV-A")
-	sku := mustSKU(t, "SKU-RECV")
-	seedAllocatedLineForReceipt(t, env, "tr-recv", "tl-recv-1", site, sku, 6)
-	seedDestinationBin(t, env, "BIN-RECV-1", "SITE-RECV-DEST", 20)
-	seedDestinationBin(t, env, "BIN-RECV-2", "SITE-RECV-DEST", 20)
+	sfx := runSuffix()
+	transferID, lineID := "tr-recv-"+sfx, "tl-recv-"+sfx
+	skuRaw, destRaw := "SKU-RECV-"+sfx, "SITE-RECV-DEST-"+sfx
+	bin1, bin2 := "BIN-RECV-1-"+sfx, "BIN-RECV-2-"+sfx
 
-	dest := mustSiteID(t, "SITE-RECV-DEST")
+	site := mustSiteID(t, "SITE-RECV-A-"+sfx)
+	sku := mustSKU(t, skuRaw)
+	seedAllocatedLineForReceipt(t, env, transferID, lineID, site, sku, 6)
+	seedDestinationBin(t, env, bin1, destRaw, 20)
+	seedDestinationBin(t, env, bin2, destRaw, 20)
+
+	dest := mustSiteID(t, destRaw)
 
 	// Stage: counted 5 of the promised 6 — a SHORT receipt, variance -1.
 	res, err := stage.Execute(ctx, usecases.ReceiptCommand{
-		TransferID: "tr-recv", TransferLineID: "tl-recv-1", DestinationSiteID: dest, SKU: sku, ReceivedQuantity: mustQty(t, 5),
+		TransferID: transferID, TransferLineID: lineID, DestinationSiteID: dest, SKU: sku, ReceivedQuantity: mustQty(t, 5),
 	})
 	if err != nil || res.Quarantined() {
 		t.Fatalf("stage: res=%v err=%v", res, err)
@@ -183,7 +208,7 @@ func TestIntegration_TransferReceipt_StageThenStow_RaisesDestinationUsableOnce(t
 	if res.Receipt.Variance() != -1 {
 		t.Fatalf("variance = %d, want -1 (short by one, signed)", res.Receipt.Variance())
 	}
-	if got := outboxCountFor(t, env, stagedEventType); got != 1 {
+	if got := outboxCountFor(t, env, stagedEventType, lineID); got != 1 {
 		t.Fatalf("staged outbox rows = %d, want exactly 1", got)
 	}
 
@@ -194,7 +219,7 @@ func TestIntegration_TransferReceipt_StageThenStow_RaisesDestinationUsableOnce(t
 	// transfer line id.
 	var stagedValue []byte
 	if err := env.pool.QueryRow(ctx,
-		`SELECT value FROM outbox_events WHERE event_type = $1 LIMIT 1`, stagedEventType,
+		`SELECT value FROM outbox_events WHERE event_type = $1 AND key = $2 LIMIT 1`, stagedEventType, []byte(lineID),
 	).Scan(&stagedValue); err != nil {
 		t.Fatalf("read staged outbox value: %v", err)
 	}
@@ -208,15 +233,15 @@ func TestIntegration_TransferReceipt_StageThenStow_RaisesDestinationUsableOnce(t
 	eventsTopic := "warehouse.inventory.events"
 	createTransferTopic(t, env.brokers[0], eventsTopic, 4)
 	relayOnce(t, env, env.brokers)
-	consumed := readEventFromTopic(t, env.brokers, eventsTopic, stagedEventType)
-	if !stringContains(consumed, `"transfer_line_id":"tl-recv-1"`) || !stringContains(consumed, `"variance":-1`) {
+	consumed := readEventFromTopic(t, env.brokers, eventsTopic, stagedEventType, lineID)
+	if !stringContains(consumed, `"transfer_line_id":"`+lineID+`"`) || !stringContains(consumed, `"variance":-1`) {
 		t.Fatalf("staged event on the broker must carry the line id and signed variance: %s", consumed)
 	}
 
 	// Stow the RECEIVED 5 across two destination bins.
-	stowRes, err := stow.Execute(ctx, "tl-recv-1", []usecases.StowBin{
-		{BinID: mustBinIDForReceipt(t, "BIN-RECV-1"), Quantity: mustQty(t, 3)},
-		{BinID: mustBinIDForReceipt(t, "BIN-RECV-2"), Quantity: mustQty(t, 2)},
+	stowRes, err := stow.Execute(ctx, lineID, []usecases.StowBin{
+		{BinID: mustBinIDForReceipt(t, bin1), Quantity: mustQty(t, 3)},
+		{BinID: mustBinIDForReceipt(t, bin2), Quantity: mustQty(t, 2)},
 	})
 	if err != nil {
 		t.Fatalf("stow: %v", err)
@@ -230,27 +255,27 @@ func TestIntegration_TransferReceipt_StageThenStow_RaisesDestinationUsableOnce(t
 	var usable int
 	if err := env.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(quantity - reserved), 0) FROM stock_units WHERE site_id = $1 AND sku = $2
-	`, "SITE-RECV-DEST", "SKU-RECV").Scan(&usable); err != nil {
+	`, destRaw, skuRaw).Scan(&usable); err != nil {
 		t.Fatalf("sum destination usable: %v", err)
 	}
 	if usable != 5 {
 		t.Fatalf("destination usable = %d, want exactly 5", usable)
 	}
 
-	if got := outboxCountFor(t, env, stowedEventType); got != 1 {
+	if got := outboxCountFor(t, env, stowedEventType, lineID); got != 1 {
 		t.Fatalf("stowed outbox rows = %d, want exactly 1", got)
 	}
 
 	// REPLAY both steps: identical stage, identical stow.
 	replayStage, err := stage.Execute(ctx, usecases.ReceiptCommand{
-		TransferID: "tr-recv", TransferLineID: "tl-recv-1", DestinationSiteID: dest, SKU: sku, ReceivedQuantity: mustQty(t, 5),
+		TransferID: transferID, TransferLineID: lineID, DestinationSiteID: dest, SKU: sku, ReceivedQuantity: mustQty(t, 5),
 	})
 	if err != nil || !replayStage.Replay {
 		t.Fatalf("replay stage must return the original: res=%v err=%v", replayStage, err)
 	}
-	replayStow, err := stow.Execute(ctx, "tl-recv-1", []usecases.StowBin{
-		{BinID: mustBinIDForReceipt(t, "BIN-RECV-1"), Quantity: mustQty(t, 3)},
-		{BinID: mustBinIDForReceipt(t, "BIN-RECV-2"), Quantity: mustQty(t, 2)},
+	replayStow, err := stow.Execute(ctx, lineID, []usecases.StowBin{
+		{BinID: mustBinIDForReceipt(t, bin1), Quantity: mustQty(t, 3)},
+		{BinID: mustBinIDForReceipt(t, bin2), Quantity: mustQty(t, 2)},
 	})
 	if err != nil || !replayStow.Replay {
 		t.Fatalf("replay stow must return the original: res=%v err=%v", replayStow, err)
@@ -259,7 +284,7 @@ func TestIntegration_TransferReceipt_StageThenStow_RaisesDestinationUsableOnce(t
 	// Still exactly 2 units, exactly 5 usable, exactly one event each.
 	var unitRows int
 	if err := env.pool.QueryRow(ctx,
-		`SELECT count(*) FROM stock_units WHERE site_id = $1 AND sku = $2`, "SITE-RECV-DEST", "SKU-RECV",
+		`SELECT count(*) FROM stock_units WHERE site_id = $1 AND sku = $2`, destRaw, skuRaw,
 	).Scan(&unitRows); err != nil {
 		t.Fatalf("count destination units: %v", err)
 	}
@@ -268,16 +293,16 @@ func TestIntegration_TransferReceipt_StageThenStow_RaisesDestinationUsableOnce(t
 	}
 	if err := env.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(quantity - reserved), 0) FROM stock_units WHERE site_id = $1 AND sku = $2
-	`, "SITE-RECV-DEST", "SKU-RECV").Scan(&usable); err != nil {
+	`, destRaw, skuRaw).Scan(&usable); err != nil {
 		t.Fatalf("re-sum destination usable: %v", err)
 	}
 	if usable != 5 {
 		t.Fatalf("destination usable after replay = %d, want still exactly 5", usable)
 	}
-	if got := outboxCountFor(t, env, stagedEventType); got != 1 {
+	if got := outboxCountFor(t, env, stagedEventType, lineID); got != 1 {
 		t.Fatalf("staged events after replay = %d, want exactly 1", got)
 	}
-	if got := outboxCountFor(t, env, stowedEventType); got != 1 {
+	if got := outboxCountFor(t, env, stowedEventType, lineID); got != 1 {
 		t.Fatalf("stowed events after replay = %d, want exactly 1", got)
 	}
 }
@@ -289,11 +314,15 @@ func TestIntegration_TransferReceipt_UnknownLineIsQuarantined(t *testing.T) {
 	ctx := context.Background()
 	stage, _ := wireReceiptHarness(t, env)
 
-	outboxStagedBefore := outboxCountFor(t, env, stagedEventType)
+	outboxStagedBefore := outboxCountForType(t, env, stagedEventType)
+
+	sfx := runSuffix()
+	transferID, lineID, skuRaw := "tr-ghost-"+sfx, "tl-ghost-"+sfx, "SKU-GHOST-"+sfx
+	destSite := mustSiteID(t, "SITE-RECV-GHOST-"+sfx)
 
 	res, err := stage.Execute(ctx, usecases.ReceiptCommand{
-		TransferID: "tr-ghost", TransferLineID: "tl-ghost-9", DestinationSiteID: mustSiteID(t, "SITE-RECV-DEST"),
-		SKU: mustSKU(t, "SKU-GHOST"), ReceivedQuantity: mustQty(t, 4),
+		TransferID: transferID, TransferLineID: lineID, DestinationSiteID: destSite,
+		SKU: mustSKU(t, skuRaw), ReceivedQuantity: mustQty(t, 4),
 	})
 	if err == nil {
 		t.Fatal("an unknown line must surface an explicit problem")
@@ -304,20 +333,20 @@ func TestIntegration_TransferReceipt_UnknownLineIsQuarantined(t *testing.T) {
 
 	// The exception row exists exactly once; a repeat scan is a replay.
 	var excRows int
-	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM inventory_exceptions WHERE transfer_line_id = $1`, "tl-ghost-9").Scan(&excRows); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM inventory_exceptions WHERE transfer_line_id = $1`, lineID).Scan(&excRows); err != nil {
 		t.Fatalf("count exceptions: %v", err)
 	}
 	if excRows != 1 {
 		t.Fatalf("exception rows = %d, want 1", excRows)
 	}
 	res2, err2 := stage.Execute(ctx, usecases.ReceiptCommand{
-		TransferID: "tr-ghost", TransferLineID: "tl-ghost-9", DestinationSiteID: mustSiteID(t, "SITE-RECV-DEST"),
-		SKU: mustSKU(t, "SKU-GHOST"), ReceivedQuantity: mustQty(t, 4),
+		TransferID: transferID, TransferLineID: lineID, DestinationSiteID: destSite,
+		SKU: mustSKU(t, skuRaw), ReceivedQuantity: mustQty(t, 4),
 	})
 	if err2 == nil || res2 == nil || !res2.Quarantined() || !res2.Replay {
 		t.Fatalf("repeat quarantine must be a replay: res=%v err=%v", res2, err2)
 	}
-	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM inventory_exceptions WHERE transfer_line_id = $1`, "tl-ghost-9").Scan(&excRows); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM inventory_exceptions WHERE transfer_line_id = $1`, lineID).Scan(&excRows); err != nil {
 		t.Fatalf("recount exceptions: %v", err)
 	}
 	if excRows != 1 {
@@ -326,20 +355,20 @@ func TestIntegration_TransferReceipt_UnknownLineIsQuarantined(t *testing.T) {
 
 	// No receipt, no stock, no new availability-raising event.
 	var receiptRows int
-	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM transfer_receipts WHERE transfer_line_id = $1`, "tl-ghost-9").Scan(&receiptRows); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM transfer_receipts WHERE transfer_line_id = $1`, lineID).Scan(&receiptRows); err != nil {
 		t.Fatalf("count receipts: %v", err)
 	}
 	if receiptRows != 0 {
 		t.Fatalf("receipt rows = %d, want 0", receiptRows)
 	}
 	var ghostUnits int
-	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM stock_units WHERE sku = $1`, "SKU-GHOST").Scan(&ghostUnits); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM stock_units WHERE sku = $1`, skuRaw).Scan(&ghostUnits); err != nil {
 		t.Fatalf("count ghost units: %v", err)
 	}
 	if ghostUnits != 0 {
 		t.Fatalf("ghost units = %d, want 0 (quarantine raises no stock)", ghostUnits)
 	}
-	if got := outboxCountFor(t, env, stagedEventType); got != outboxStagedBefore {
+	if got := outboxCountForType(t, env, stagedEventType); got != outboxStagedBefore {
 		t.Fatalf("staged events = %d, want unchanged %d (quarantine publishes nothing)", got, outboxStagedBefore)
 	}
 }
@@ -355,10 +384,13 @@ func TestIntegration_TransferReceipt_OutboxFailureRollsReceiptAndStockBack(t *te
 	exceptions := postgres.NewInventoryExceptionRepo(env.pool)
 	uow := postgres.NewUnitOfWork(env.pool)
 
-	site := mustSiteID(t, "SITE-RECV-B")
-	sku := mustSKU(t, "SKU-RB2")
-	seedAllocatedLineForReceipt(t, env, "tr-rb2", "tl-rb2", site, sku, 5)
-	seedDestinationBin(t, env, "BIN-RB2", "SITE-RECV-DEST2", 20)
+	sfx := runSuffix()
+	transferID, lineID := "tr-rb2-"+sfx, "tl-rb2-"+sfx
+	skuRaw, destRaw, binRaw := "SKU-RB2-"+sfx, "SITE-RECV-DEST2-"+sfx, "BIN-RB2-"+sfx
+	site := mustSiteID(t, "SITE-RECV-B-"+sfx)
+	sku := mustSKU(t, skuRaw)
+	seedAllocatedLineForReceipt(t, env, transferID, lineID, site, sku, 5)
+	seedDestinationBin(t, env, binRaw, destRaw, 20)
 
 	// Stage with a WORKING publisher first.
 	workingEncoder := kafka.NewPublisher(nil, postgres.NewReservationRepo(env.pool))
@@ -368,15 +400,15 @@ func TestIntegration_TransferReceipt_OutboxFailureRollsReceiptAndStockBack(t *te
 		Clock:  memory.SystemClock{}, UnitOfWork: uow,
 	}
 	if _, err := stageOK.Execute(ctx, usecases.ReceiptCommand{
-		TransferID: "tr-rb2", TransferLineID: "tl-rb2", DestinationSiteID: mustSiteID(t, "SITE-RECV-DEST2"),
+		TransferID: transferID, TransferLineID: lineID, DestinationSiteID: mustSiteID(t, destRaw),
 		SKU: sku, ReceivedQuantity: mustQty(t, 5),
 	}); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
 
-	outboxStowedBefore := outboxCountFor(t, env, stowedEventType)
+	outboxStowedBefore := outboxCountFor(t, env, stowedEventType, lineID)
 	var stockBefore int
-	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM stock_units WHERE sku = $1`, "SKU-RB2").Scan(&stockBefore); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM stock_units WHERE sku = $1`, skuRaw).Scan(&stockBefore); err != nil {
 		t.Fatalf("count stock before: %v", err)
 	}
 
@@ -391,15 +423,15 @@ func TestIntegration_TransferReceipt_OutboxFailureRollsReceiptAndStockBack(t *te
 		Clock:      memory.SystemClock{},
 		UnitOfWork: uow,
 	}
-	if _, err := failing.Execute(ctx, "tl-rb2", []usecases.StowBin{
-		{BinID: mustBinIDForReceipt(t, "BIN-RB2"), Quantity: mustQty(t, 5)},
+	if _, err := failing.Execute(ctx, lineID, []usecases.StowBin{
+		{BinID: mustBinIDForReceipt(t, binRaw), Quantity: mustQty(t, 5)},
 	}); err == nil {
 		t.Fatal("expected the outbox failure to surface as an error")
 	}
 
 	// Stock: nothing survived.
 	var stockAfter int
-	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM stock_units WHERE sku = $1`, "SKU-RB2").Scan(&stockAfter); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM stock_units WHERE sku = $1`, skuRaw).Scan(&stockAfter); err != nil {
 		t.Fatalf("count stock after: %v", err)
 	}
 	if stockAfter != stockBefore {
@@ -407,14 +439,14 @@ func TestIntegration_TransferReceipt_OutboxFailureRollsReceiptAndStockBack(t *te
 	}
 	// Receipt: still STAGED — the transition was rolled back with everything else.
 	var state string
-	if err := env.pool.QueryRow(ctx, `SELECT state FROM transfer_receipts WHERE transfer_line_id = $1`, "tl-rb2").Scan(&state); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT state FROM transfer_receipts WHERE transfer_line_id = $1`, lineID).Scan(&state); err != nil {
 		t.Fatalf("read receipt state: %v", err)
 	}
 	if state != "STAGED" {
 		t.Fatalf("receipt state after rollback = %s, want STAGED (retriable)", state)
 	}
 	// Outbox: no stowed row was queued.
-	if got := outboxCountFor(t, env, stowedEventType); got != outboxStowedBefore {
+	if got := outboxCountFor(t, env, stowedEventType, lineID); got != outboxStowedBefore {
 		t.Fatalf("stowed outbox rows after rollback = %d, want unchanged %d", got, outboxStowedBefore)
 	}
 
@@ -428,15 +460,15 @@ func TestIntegration_TransferReceipt_OutboxFailureRollsReceiptAndStockBack(t *te
 		Clock:      memory.SystemClock{},
 		UnitOfWork: uow,
 	}
-	if _, err := stowOK.Execute(ctx, "tl-rb2", []usecases.StowBin{
-		{BinID: mustBinIDForReceipt(t, "BIN-RB2"), Quantity: mustQty(t, 5)},
+	if _, err := stowOK.Execute(ctx, lineID, []usecases.StowBin{
+		{BinID: mustBinIDForReceipt(t, binRaw), Quantity: mustQty(t, 5)},
 	}); err != nil {
 		t.Fatalf("retry stow: %v", err)
 	}
 	var usable int
 	if err := env.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(quantity - reserved), 0) FROM stock_units WHERE site_id = $1 AND sku = $2
-	`, "SITE-RECV-DEST2", "SKU-RB2").Scan(&usable); err != nil {
+	`, destRaw, skuRaw).Scan(&usable); err != nil {
 		t.Fatalf("sum retry usable: %v", err)
 	}
 	if usable != 5 {
