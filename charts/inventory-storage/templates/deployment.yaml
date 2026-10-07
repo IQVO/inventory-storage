@@ -72,6 +72,12 @@ spec:
             - name: PRODUCT_MASTER_CONSUMER_GROUP
               value: {{ .Values.config.productMasterConsumerGroup | quote }}
             {{- end }}
+            - name: TASK_COMPLETED_CONSUMER_MODE
+              value: {{ .Values.config.taskCompletedConsumerMode | quote }}
+            {{- if .Values.config.taskCompletedConsumerGroup }}
+            - name: TASK_COMPLETED_CONSUMER_GROUP
+              value: {{ .Values.config.taskCompletedConsumerGroup | quote }}
+            {{- end }}
             - name: OUTBOX_RELAY_INTERVAL
               value: {{ .Values.config.outboxRelayInterval | quote }}
             - name: HOUSEKEEPING_INTERVAL
@@ -80,6 +86,8 @@ spec:
               value: {{ .Values.config.idempotencyKeyTtl | quote }}
             - name: OUTBOX_RETENTION
               value: {{ .Values.config.outboxRetention | quote }}
+            - name: ORDER_PICK_PROGRESS_RETENTION
+              value: {{ .Values.config.orderPickProgressRetention | quote }}
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
             - name: SERVICE_VERSION

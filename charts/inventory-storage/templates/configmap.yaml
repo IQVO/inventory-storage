@@ -16,6 +16,7 @@ data:
   HOUSEKEEPING_INTERVAL: {{ .Values.config.housekeepingInterval | quote }}
   IDEMPOTENCY_KEY_TTL: {{ .Values.config.idempotencyKeyTtl | quote }}
   OUTBOX_RETENTION: {{ .Values.config.outboxRetention | quote }}
+  ORDER_PICK_PROGRESS_RETENTION: {{ .Values.config.orderPickProgressRetention | quote }}
   ENVIRONMENT: {{ .Values.environment | quote }}
   {{- if .Values.otel.enabled }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}

@@ -65,6 +65,32 @@ type ReservationMetrics interface {
 	ReservationRevoked(ctx context.Context)
 }
 
+// Outcomes ConfirmPicksForOrder reports to PickConfirmationMetrics, one per
+// reservation it looked at (ADR 0035).
+const (
+	// PickOutcomeConfirmed: an ACTIVE reservation was confirmed as picked.
+	PickOutcomeConfirmed = "confirmed"
+	// PickOutcomeExpired: the reservation had expired (before, or lazily on
+	// this lookup) so the completion could not confirm it. Skipped, never an
+	// error: alert on this one, it is stock that went back to usable while the
+	// physical pick still happened.
+	PickOutcomeExpired = "expired"
+	// PickOutcomeAlreadyPicked: already CONFIRMED (a redelivery, or the REST
+	// route got there first).
+	PickOutcomeAlreadyPicked = "already_picked"
+	// PickOutcomeRevoked: REVOKED before the pick completed.
+	PickOutcomeRevoked = "revoked"
+)
+
+// PickConfirmationMetrics records what the TaskCompleted consumer did with
+// each reservation of a completed order, so skipped (expired) confirmations
+// are observable. Use cases treat a nil value as "not instrumented".
+type PickConfirmationMetrics interface {
+	// PickConfirmation adds n to the counter for outcome (one of the
+	// PickOutcome* constants).
+	PickConfirmation(ctx context.Context, outcome string, n int)
+}
+
 // Clock abstracts current time so use cases and tests are deterministic.
 type Clock interface {
 	Now() time.Time
@@ -124,6 +150,19 @@ type ProcessedEventRepo interface {
 	// already recorded (a redelivery). Called inside the same UnitOfWork as
 	// the effect, so a rolled-back effect also un-claims the id.
 	Claim(ctx context.Context, consumer, eventID string) (bool, error)
+}
+
+// OrderPickProgressRepo counts, per order (demand_ref), how many PICK tasks
+// have completed, so the confirm-pick consumer can confirm the order's
+// reservations on the LAST pick (ADR 0035). A fulfillment-execution PICK task
+// is per order line and a Reservation has no line identity, so the count is
+// the only correlation available.
+type OrderPickProgressRepo interface {
+	// RecordPick adds one completed pick for demandRef (creating the row at 1)
+	// and returns the new count. now stamps updated_at, which the housekeeping
+	// sweeper ages out. Called inside the same UnitOfWork as the
+	// processed-event claim, so a rolled-back handling also un-counts the pick.
+	RecordPick(ctx context.Context, demandRef string, now time.Time) (int, error)
 }
 
 // TransferAllocationRepo persists and retrieves the transfer-allocation

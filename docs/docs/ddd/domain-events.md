@@ -33,7 +33,7 @@ table, Kafka) is a composition-root decision.
 | `StockReserved` | Reservation | `ReserveStock` succeeds | `reservationId`, `sku`, `quantity`, `demandRef` |
 | `ReservationExpired` | Reservation | A reservation's timeout elapses and is discovered at the next read (`GetReservationsByDemandRef`, `RevokeReservation`, `ConfirmPick`, or `ReserveStock`'s own idempotency lookup) — **lazy, not swept**, see below | `reservationId` |
 | `ReservationRevoked` | Reservation | `RevokeReservation` succeeds | `reservationId` |
-| `StockPicked` | Reservation | `ConfirmPick` consumes a reservation | `reservationId`, `sku`, `quantity` |
+| `StockPicked` | Reservation | `ConfirmPick` consumes a reservation — from the REST route, or, in production, from `ConfirmPicksForOrder` on fulfillment-execution's `TaskCompleted` ([ADR 0035](/docs/adr/0035)) | `reservationId`, `sku`, `quantity` |
 | `ItemUnlocated` | StockUnit | A cycle-count shortfall cannot account for stock | `stockUnitId`, `sku`, `binId`, `quantity` |
 | `CycleCountCompleted` | Bin | Any cycle count finishes, clean or not | `binId`, `countedQty`, `systemQty`, `discrepancy` |
 | `DiscrepancyDetected` | Bin | A cycle count finds counted ≠ system | `binId`, `countedQty`, `systemQty` |
@@ -49,6 +49,7 @@ flowchart LR
   RES["ReserveStock"] --> E4["StockReserved"]
   REV["RevokeReservation"] --> E5["ReservationRevoked"]
   CP["ConfirmPick"] --> E6["StockPicked"]
+  TC["TaskCompleted (consumed)<br/>PICK, order_ref, last pick of the order, ADR 0035"] --> CPO["ConfirmPicksForOrder"] --> CP
   CC["RunCycleCount"] --> E7["CycleCountCompleted"]
   CC --> E8["DiscrepancyDetected"]
   CC --> E9["ItemUnlocated"]
@@ -95,7 +96,7 @@ relayed by `cmd/inventory`.
 | ReservationRevoked | `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | `warehouse.inventory.events` | reservation id / reservation id | `sku`, `quantity`, `demand_ref` (enriched by repo lookup) | `RevokeReservation` (REST and MCP) | `wes-work-planning` (increments its observed usable) |
 | ReservationRevoked | same `type` | `warehouse.inventory.analytics` | reservation id / reservation id | `reservation_id`, `sku` (enriched) | `RevokeReservation` | `cmd/inventory-projector` |
 | ReservationExpired | `com.warehouse.wms.inventory-storage.reservation.ReservationExpired` | `warehouse.inventory.analytics` | reservation id / reservation id | `reservation_id`, `sku` (enriched) | lazy expiry in `GetReservationsByDemandRef`, `ReserveStock`, `RevokeReservation`, `ConfirmPick` | `cmd/inventory-projector` |
-| StockPicked | `com.warehouse.wms.inventory-storage.reservation.StockPicked` | `warehouse.inventory.analytics` | reservation id / reservation id | `sku`, `reservation_id`, `quantity` | `ConfirmPick` | `cmd/inventory-projector` |
+| StockPicked | `com.warehouse.wms.inventory-storage.reservation.StockPicked` | `warehouse.inventory.analytics` | reservation id / reservation id | `sku`, `reservation_id`, `quantity` | `ConfirmPick` (REST, and per reservation from `ConfirmPicksForOrder`, ADR 0035) | `cmd/inventory-projector` |
 | StockReceived | `com.warehouse.wms.inventory-storage.stock.StockReceived` | `warehouse.inventory.analytics` | SKU / SKU | `sku`, `quantity` | `ReceiveStock` | `cmd/inventory-projector` |
 | ItemStowed | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | `warehouse.inventory.analytics` | SKU / SKU | `sku`, `bin_id`, `quantity` | `StowStock` | `cmd/inventory-projector` |
 | ItemUnlocated | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | `warehouse.inventory.analytics` | SKU / stock unit id | `sku`, `bin_id`, `stock_unit_id`, `quantity` | `RunCycleCount` | `cmd/inventory-projector` |
@@ -108,7 +109,10 @@ relayed by `cmd/inventory`.
 
 Consumed (not produced): `com.warehouse.wms.product-master.product.ProductClassified`
 on `warehouse.product-master.events` feeds the local classification copy via
-`ApplyProductClassification` ([ADR 0034](/docs/adr/0034)).
+`ApplyProductClassification` ([ADR 0034](/docs/adr/0034)), and
+`com.warehouse.wes.fulfillment-execution.task.TaskCompleted` on
+`warehouse.fulfillment.events` confirms the order's picked reservations via
+`ConfirmPicksForOrder` once the order's last pick completes ([ADR 0035](/docs/adr/0035)).
 
 `dataschema` is `urn:warehouse:inventory-storage:events:<EventName>:v1` on
 the integration topic and `urn:warehouse:inventory-storage:analytics:<EventName>:v1`
@@ -121,11 +125,20 @@ on the analytics topic.
 | ZoneRegistered | `com.warehouse.wms.facility-layout.zone.ZoneRegistered` | `warehouse.facility.events` | `facilitycache.Consumer` (per-process group `inventory-storage-facility-location-cache-<host>-<pid>-<ns>`, FirstOffset replay) | caches zone `hazmat` + `temperatureClass` by `zoneId` |
 | LocationSlotRegistered | `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | `warehouse.facility.events` | same | maps `locationCode` → `zoneId` (derived from the code when absent) |
 | LocationSlotDecommissioned | `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `warehouse.facility.events` | same | drops the slot, so it answers `Known=false` |
+| TaskCompleted | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `warehouse.fulfillment.events` | `TaskCompletedConsumer` (fixed group `inventory-storage-confirm-pick`, FirstOffset, `TASK_COMPLETED_CONSUMER_MODE=kafka`, default off) | for `task_type=PICK` with `order_ref`: counts the pick for the order (`order_pick_progress`, one PICK task per order line) and, only on the LAST pick (count reaches the order's ACTIVE + CONFIRMED reservations), confirms every ACTIVE reservation whose `demand_ref` is the order (`StockPicked` each); claim, counter and confirmations in one transaction; expired ones skipped and counted; no `order_ref` or no reservations is a no-op ([ADR 0035](/docs/adr/0035)) |
 | all nine analytics types above | `com.warehouse.wms.inventory-storage.*` | `warehouse.inventory.analytics` | `cmd/inventory-projector` (group `inventory-analytics`, FirstOffset) | upserts `flow_accuracy_rollup`, dedupes on the CloudEvents `id`; `ProductClassified` on the same topic is acknowledged and ignored |
 
 Any other `type` on `warehouse.facility.events` is ignored; a message that
 is not a valid CloudEvent is dead-lettered to `warehouse.facility.events.dlq`.
-The projector WARN-logs and skips invalid messages instead.
+The projector WARN-logs and skips invalid messages instead. On
+`warehouse.fulfillment.events` every type other than `TaskCompleted` is
+committed past; a `TaskCompleted` with an undecodable payload, or whose handling
+keeps failing after 5 attempts, is dead-lettered to
+`warehouse.fulfillment.events.dlq`, and a message that is not a CloudEvent is
+skipped with a sampled WARN. A completed pick before the order's last one only
+advances the internal `order_pick_progress` counter; it raises no event and
+changes no contract. Short picks are not modelled: the Task carries no
+SKU or quantity (ADR 0035).
 
 ## Lazy expiry: no sweeper, resolved at the next read
 
@@ -156,8 +169,10 @@ The practical consequence: a reservation nobody revokes still holds quantity
 out of usable until it is *read* — there remains no proactive reclaim of
 quantity for a reservation that both times out **and** is never looked up
 again. **Decided 2026-10-06: kept** — lazy expiry stays, with no sweeper
-(ADR 0003; pick confirmation moving to a pick-completion event, ADR 0032,
-narrows the gap further once it lands). That is judged an acceptable
+(ADR 0003; pick confirmation from fulfillment-execution's `TaskCompleted`,
+[ADR 0035](/docs/adr/0035), resolves an order's reservations when its last pick completes,
+which narrows the gap further — a pick that completes after the timeout is
+skipped and counted, not recovered). That is judged an acceptable
 trade-off for this service's read
 volume; if it stops being one, the fix is a scheduled read (e.g. a periodic
 call to `GetReservationsByDemandRef` or a dedicated sweep use case), not a

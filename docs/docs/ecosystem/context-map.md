@@ -40,7 +40,7 @@ flowchart LR
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST POST /reservations, DELETE /reservations/id,<br/>GET /products/sku/classification · LIVE"| OM
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST GET /products/sku/classification · LIVE"| WP
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST GET /products/sku/classification · LIVE"| FE
-    FE -.->|"U OHS+PL to D CF<br/>Kafka warehouse.fulfillment.events<br/>pick-completion event · PLANNED, ADR 0032"| INV
+    FE -.->|"U OHS+PL to D CF<br/>Kafka warehouse.fulfillment.events<br/>TaskCompleted (PICK, order_ref) · WIRED, OFF BY DEFAULT, ADR 0035"| INV
     INV -->|"U OHS+PL to D ACL<br/>REST GET /inventory/sku/usable · LIVE"| NF
     INV -->|"U OHS+PL to D CF<br/>REST GET /reservations?demandRef, reports REST,<br/>MCP check_availability, get_bin_occupancy · LIVE"| OA
     INV ~~~ WM
@@ -56,9 +56,10 @@ flowchart LR
 Arrows point **upstream → downstream**, not in the direction of the network
 call: `order-management` *calls* `POST /reservations`, but it is the
 downstream customer of this service's Open Host Service. The dashed arrow is
-wired in code but not selected in any deployed configuration (or, for the
-`fulfillment-execution` → `inventory-storage` edge, planned and not yet built
-— ADR 0032); the
+wired in code but not selected in any deployed configuration (the
+`fulfillment-execution` → `inventory-storage` edge is built here and off by
+default, `TASK_COMPLETED_CONSUMER_MODE`; it acts once fulfillment-execution
+publishes the additive `order_ref` — ADR 0035); the
 unconnected `workforce-management` node is a deliberate Separate Ways.
 Path parameters are written without braces in the diagram (`/reservations/id`
 for `/reservations/{id}`).
@@ -83,7 +84,7 @@ bounded context).
 | 4 | `inventory-storage` → `order-management` | OHS + PL / C/S + ACL | REST `POST /reservations` (with `Idempotency-Key`), `DELETE /reservations/{id}`, `GET /products/{sku}/classification` | there: `internal/adapters/outbound/inventorystorage/client.go`, `internal/adapters/outbound/productclassification/client.go`; gated by `INVENTORY_STORAGE_MODE` / `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** in the cluster; caller default `permissive` |
 | 5 | `inventory-storage` → `wes-work-planning` | OHS + PL / C/S + ACL | REST `GET /products/{sku}/classification` | there: `internal/adapters/outbound/productclassification/client.go`; `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** when the caller sets `http` |
 | 6 | `inventory-storage` → `fulfillment-execution` | OHS + PL / C/S + ACL | REST `GET /products/{sku}/classification` | there: `internal/adapters/outbound/productclassification/client.go`; `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** when the caller sets `http` |
-| 7 | `fulfillment-execution` → `inventory-storage` | OHS + PL / CF | **Planned (decided 2026-10-06, [ADR 0032](/docs/adr/0032), *Proposed*)**: Kafka `warehouse.fulfillment.events`, a pick-completion event this service consumes to confirm the reservation itself. No sync call: the REST route `POST /reservations/{id}/confirm-pick` stays for operators and the simulator only | here: the route exists, no consumer yet; there: no event carries a reservation correlation (`reservation_id` or `demand_ref` + `sku`) or the picked quantity — `TaskCompleted` has `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type` | **Not built — blocked on fulfillment-execution / wes-work-planning fields (ADR 0032)**; only the `e2e-tests` simulator confirms picks today |
+| 7 | `fulfillment-execution` → `inventory-storage` | OHS + PL / CF | **Decided 2026-10-06, built ([ADR 0035](/docs/adr/0035), supersedes ADR 0032)**: Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`. For `task_type=PICK` with the additive optional `order_ref` (the OrderId = a reservation's `demand_ref`) this service confirms every ACTIVE reservation of the order itself, on the order's **last** completed PICK task (one task per order line, counted in `order_pick_progress`; early picks only record progress), idempotently and atomically. No sync call: the REST route `POST /reservations/{id}/confirm-pick` stays for operators and the simulator. Confirms on the last pick, **short picks not modelled** (a Task has no SKU or quantity) | here: `internal/adapters/inbound/kafka/task_completed_consumer.go`, `internal/application/usecases/confirm_picks_for_order.go` (fixed group `inventory-storage-confirm-pick`, DLQ `warehouse.fulfillment.events.dlq`); there: `TaskCompleted` publisher, which adds `order_ref` in a sibling change (a message without it is a no-op here) | **Wired, off by default** (`TASK_COMPLETED_CONSUMER_MODE=kafka`; needs `DATABASE_URL`, `KAFKA_BROKERS`, and `EVENT_PUBLISHER=kafka` for `StockPicked` to leave the service) |
 | 8 | `inventory-storage` → `network-fulfillment` | OHS + PL / ACL | REST `GET /inventory/{sku}/usable` | there: `internal/adapters/outbound/inventoryclient/client.go`, `INVENTORY_STORAGE_URL` (default `http://localhost:8080`, no mode switch) | **Live** |
 | 9 | `inventory-storage` → `warehouse-ops-agent` | OHS + PL / CF | REST `GET /reservations?demandRef=`; reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP (Streamable HTTP) `check_availability`, `get_bin_occupancy` | there: `internal/adapters/outbound/restclient/clients.go`, `reports_clients.go`, `internal/adapters/outbound/mcpclient/inventory_storage.go`; `INVENTORY_STORAGE_REST_URL`, `INVENTORY_STORAGE_REPORTS_REST_URL`, `INVENTORY_STORAGE_MCP_ENDPOINT` | **Live**, read-only; the MCP write tool `revoke_reservation` exists here but the agent does not call it |
 | 10 | `inventory-storage` ↔ `workforce-management` | Separate Ways | — | no client, topic or type in either repo | **Deliberately absent** |
@@ -98,15 +99,6 @@ message is CloudEvents 1.0 structured mode (ADR 0024).
   leak into the system of record.
 - **`process-path-management`, `labor-performance`, `warehouse-planning`** —
   no relationship in either direction today.
-- **`fulfillment-execution` events** — this service does not subscribe to
-  `warehouse.fulfillment.events` **yet**. The decided direction (2026-10-06,
-  [ADR 0032](/docs/adr/0032), *Proposed*) reverses the earlier "explicit
-  `confirm-pick` command" stance: a pick-completion event will be consumed
-  here (idempotent consumer, existing `ConfirmPick` use case) rather than
-  fulfillment-execution or wes-work-planning calling REST/MCP — still no
-  shared types, and this service remains the one that decides whether
-  consumption is legal. Blocked until the event carries a reservation
-  correlation and the picked quantity.
 
 ## This service's edges, in prose
 
@@ -152,6 +144,20 @@ Per [ADR-0012](/docs/adr/0012-adopt-mfe-console-architecture) this service
 also ships `inventory-mfe` (`web/`), a Module Federation remote mounted by
 the `warehouse-console` shell, which calls only this service's own
 `GET /inventory/{sku}/usable` and `GET /reservations?demandRef=`.
+
+### ← `fulfillment-execution` (wired, off by default: one event)
+
+This service consumes exactly one fulfillment-execution type, `TaskCompleted`,
+as published (Conformist, no shared Go types), and turns a completed PICK task
+into the physical decrement of the order's reserved stock through its own
+`ConfirmPick` use case — fulfillment-execution and wes-work-planning never call
+REST/MCP here, and this service stays the one that decides whether a
+confirmation is legal (an expired or revoked reservation is skipped, ADR 0003).
+A PICK task is per order line, so the order's picks are counted
+(`order_pick_progress`) and the reservations are confirmed when the **last** one
+completes. The correlation is one additive field, `order_ref`; nothing else on the topic
+is read, and the other types on it are committed past. See
+[ADR 0035](/docs/adr/0035).
 
 ### ← `facility-layout` (live: Kafka-fed local read model)
 

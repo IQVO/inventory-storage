@@ -11,15 +11,17 @@ func TestHousekeepingSettingsFromEnv_Defaults(t *testing.T) {
 	t.Setenv("HOUSEKEEPING_INTERVAL", "")
 	t.Setenv("IDEMPOTENCY_KEY_TTL", "")
 	t.Setenv("OUTBOX_RETENTION", "")
+	t.Setenv("ORDER_PICK_PROGRESS_RETENTION", "")
 
 	got := housekeepingSettingsFromEnv(quietLogger())
 	want := housekeepingSettings{
-		interval:        postgres.DefaultSweepInterval,
-		idempotencyTTL:  24 * time.Hour,
-		outboxRetention: 7 * 24 * time.Hour,
+		interval:                   postgres.DefaultSweepInterval,
+		idempotencyTTL:             24 * time.Hour,
+		outboxRetention:            7 * 24 * time.Hour,
+		orderPickProgressRetention: 30 * 24 * time.Hour,
 	}
 	if got != want {
-		t.Fatalf("defaults = %+v, want %+v (ADR-0026: 1h sweep, 24h key TTL, 7d outbox retention)", got, want)
+		t.Fatalf("defaults = %+v, want %+v (ADR-0026: 1h sweep, 24h key TTL, 7d outbox retention; ADR-0035: 30d order-pick-progress retention)", got, want)
 	}
 }
 
@@ -27,9 +29,10 @@ func TestHousekeepingSettingsFromEnv_Overrides(t *testing.T) {
 	t.Setenv("HOUSEKEEPING_INTERVAL", "5m")
 	t.Setenv("IDEMPOTENCY_KEY_TTL", "36h")
 	t.Setenv("OUTBOX_RETENTION", "72h")
+	t.Setenv("ORDER_PICK_PROGRESS_RETENTION", "48h")
 
 	got := housekeepingSettingsFromEnv(quietLogger())
-	want := housekeepingSettings{interval: 5 * time.Minute, idempotencyTTL: 36 * time.Hour, outboxRetention: 72 * time.Hour}
+	want := housekeepingSettings{interval: 5 * time.Minute, idempotencyTTL: 36 * time.Hour, outboxRetention: 72 * time.Hour, orderPickProgressRetention: 48 * time.Hour}
 	if got != want {
 		t.Fatalf("overrides = %+v, want %+v", got, want)
 	}

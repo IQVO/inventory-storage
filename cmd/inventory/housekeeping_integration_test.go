@@ -39,6 +39,7 @@ func TestBuildAdapters_StartsHousekeepingSweeperFromEnv(t *testing.T) {
 	t.Setenv("HOUSEKEEPING_INTERVAL", "100ms")
 	t.Setenv("IDEMPOTENCY_KEY_TTL", "1h")
 	t.Setenv("OUTBOX_RETENTION", "1h")
+	t.Setenv("ORDER_PICK_PROGRESS_RETENTION", "1h")
 
 	adapters, err := buildAdapters(ctx, url, url, migrationsDirForTest(t), "log", quietLogger())
 	if err != nil {
@@ -66,21 +67,26 @@ func TestBuildAdapters_StartsHousekeepingSweeperFromEnv(t *testing.T) {
 	mustExec(t, pool, `INSERT INTO outbox_events (topic, event_type, value, created_at, published_at) VALUES
 		('t', 'StalePublished', '\x7b7d', now() - interval '3 hours', now() - interval '3 hours'),
 		('t', 'StaleUnpublished', '\x7b7d', now() - interval '3 hours', NULL)`)
+	mustExec(t, pool, `INSERT INTO order_pick_progress (demand_ref, picked_tasks, updated_at) VALUES
+		('order-stale', 2, now() - interval '3 hours'),
+		('order-fresh', 1, now())`)
 
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		var keys, published, unpublished int
+		var keys, published, unpublished, progressStale, progressFresh int
 		if err := pool.QueryRow(ctx, `SELECT
 			(SELECT count(*) FROM idempotency_keys),
 			(SELECT count(*) FROM outbox_events WHERE event_type = 'StalePublished'),
-			(SELECT count(*) FROM outbox_events WHERE event_type = 'StaleUnpublished')`).Scan(&keys, &published, &unpublished); err != nil {
+			(SELECT count(*) FROM outbox_events WHERE event_type = 'StaleUnpublished'),
+			(SELECT count(*) FROM order_pick_progress WHERE demand_ref = 'order-stale'),
+			(SELECT count(*) FROM order_pick_progress WHERE demand_ref = 'order-fresh')`).Scan(&keys, &published, &unpublished, &progressStale, &progressFresh); err != nil {
 			t.Fatalf("count: %v", err)
 		}
-		if keys == 1 && published == 0 && unpublished == 1 {
+		if keys == 1 && published == 0 && unpublished == 1 && progressStale == 0 && progressFresh == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("sweeper did not converge: idempotency_keys=%d (want 1) stale published=%d (want 0) stale unpublished=%d (want 1)", keys, published, unpublished)
+			t.Fatalf("sweeper did not converge: idempotency_keys=%d (want 1) stale published=%d (want 0) stale unpublished=%d (want 1) stale order_pick_progress=%d (want 0) fresh order_pick_progress=%d (want 1)", keys, published, unpublished, progressStale, progressFresh)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

@@ -12,6 +12,7 @@
 //	lookup.go       LocationClassificationLookup adapter selection
 //	transfer.go     transfer allocation command consumer (Phase 2)
 //	productmaster.go product-master classification consumer (ADR 0034)
+//	confirmpick.go  TaskCompleted confirm-pick consumer (ADR 0035)
 //	republish.go    republish-product-classifications one-shot subcommand
 //	server.go       use-case + HTTP server wiring
 //	shutdown.go     signal handling and graceful drain
@@ -115,7 +116,25 @@ func run() error {
 		stopTransferConsumer(logger, transfer)
 		return err
 	}
-	consumers := combineConsumerHandles(transfer, productMaster)
+
+	// TaskCompleted confirm-pick consumer (ADR 0035): confirms an order's
+	// ACTIVE reservations when fulfillment-execution reports the LAST of its
+	// per-line PICK tasks done. Same lookupCtx. Default "off"; see buildTaskCompletedConsumer.
+	pickMetrics, err := telemetry.NewPickConfirmationMetrics()
+	if err != nil {
+		stopLookup()
+		lookup.close()
+		stopTransferConsumer(logger, combineConsumerHandles(transfer, productMaster))
+		return err
+	}
+	confirmPicks, err := buildTaskCompletedConsumer(lookupCtx, logger, cfg, adapters, pickMetrics)
+	if err != nil {
+		stopLookup()
+		lookup.close()
+		stopTransferConsumer(logger, combineConsumerHandles(transfer, productMaster))
+		return err
+	}
+	consumers := combineConsumerHandles(transfer, productMaster, confirmPicks)
 
 	server := buildServer(adapters, memory.SystemClock{}, lookup.lookup, reservationMetrics, readiness)
 	httpServer := &http.Server{

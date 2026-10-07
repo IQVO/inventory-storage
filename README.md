@@ -271,7 +271,9 @@ of the site-scoped transfer allocation exchange (ADR-0030).
   *published* `outbox_events` older than `OUTBOX_RETENTION` (default `168h`),
   every `HOUSEKEEPING_INTERVAL` (default `1h`; `0` disables the sweeper, a `0`
   TTL/retention keeps that table's rows forever). Unpublished outbox rows are
-  never deleted.
+  never deleted. The same sweeper deletes `order_pick_progress` rows (the
+  confirm-pick consumer's per-order counter, ADR 0035) not updated for
+  `ORDER_PICK_PROGRESS_RETENTION` (default `720h` = 30 days).
 - **Broker**: `KAFKA_BROKERS` env var, comma-separated, default
   `localhost:9092`. There is one broker platform-wide: the in-cluster Kafka
   deployed by `warehouse-infra`, whose external listener is reachable from
@@ -409,6 +411,47 @@ running pod's relay publishes; safe to re-run:
 ```sh
 kubectl -n warehouse-systems exec deploy/inventory-storage -- ./inventory republish-product-classifications
 ```
+
+### Consumed: fulfillment-execution's TaskCompleted → confirm picks on the last pick (ADR-0035)
+
+Nothing calls `POST /reservations/{id}/confirm-pick` in production, so picks are
+confirmed from an event instead (no synchronous call into this context). On
+`com.warehouse.wes.fulfillment-execution.task.TaskCompleted` from
+`warehouse.fulfillment.events`, for a `task_type` of `PICK` with a non-empty
+`order_ref` (the OrderId, = a reservation's `demand_ref`), the pick is **counted**
+for the order (`order_pick_progress`). A PICK task is per order **line** and a
+reservation has no line identity (only `sku`, `quantity`, `demand_ref`), so a task
+cannot be matched to one reservation; when the count reaches the order's
+ACTIVE + CONFIRMED reservations (REVOKED and EXPIRED are not awaited), i.e. on the
+**last** pick, every **ACTIVE** reservation of that order is confirmed through the
+existing `ConfirmPick` logic: stock decremented, bin capacity released,
+`StockPicked` raised. Earlier picks only record progress (confirming early would
+mark unpicked lines as picked with no undo; confirming late is safe). The
+CloudEvents `id` claim (`processed_events`), the counter increment and all
+confirmations commit in **one transaction**; a redelivery (or an extra PICK event
+for an already confirmed order) confirms nothing new and never double-counts.
+CONFIRMED/REVOKED reservations are skipped, an EXPIRED one
+(ADR-0003) is skipped, logged and counted in
+`inventory.pick_confirmations{outcome=expired}`, never an error; an order with
+no reservations is a successful no-op. Counter rows older than
+`ORDER_PICK_PROGRESS_RETENTION` (default `720h`) are swept (see Housekeeping).
+
+**Limitation: short picks are not modelled.** A Task carries no SKU or
+quantity, so on the last pick the whole reserved quantity of every ACTIVE line is
+confirmed. Short picks need per-line quantities in
+work-planning's WorkUnit and fulfillment-execution's Task; the per-line path
+(order-management sends `line_no`, `Reservation` stores it, the event carries it) is
+recorded in ADR-0035.
+
+A transient failure retries the same message (capped backoff, 5 attempts), then
+dead-letters it to `warehouse.fulfillment.events.dlq`; a malformed payload is
+dead-lettered at once. Needs `EVENT_PUBLISHER=kafka` for `StockPicked` to leave
+the service.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `TASK_COMPLETED_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`) |
+| `TASK_COMPLETED_CONSUMER_GROUP` | `inventory-storage-confirm-pick` | Consumer group id |
 
 ### Destination transfer receiving: stage → quarantine → stow (ADR-0033)
 
