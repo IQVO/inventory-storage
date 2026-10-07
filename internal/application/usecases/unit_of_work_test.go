@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
@@ -96,15 +97,17 @@ func TestReserveStock_UnitOfWork_PropagatesPublishFailure(t *testing.T) {
 	}
 }
 
-// TestClassifyProduct_WithUnitOfWork_WrapsSaveAndPublish exercises a
-// second, differently-shaped use case (Save then Publish, no prior reads
-// to branch on) to guard against the wiring being ReserveStock-specific.
-func TestClassifyProduct_WithUnitOfWork_WrapsSaveAndPublish(t *testing.T) {
+// TestApplyProductClassification_WithUnitOfWork_WrapsClaimAndUpsert
+// exercises a second, differently-shaped use case (claim then upsert, no
+// publish) to guard against the wiring being ReserveStock-specific.
+func TestApplyProductClassification_WithUnitOfWork_WrapsClaimAndUpsert(t *testing.T) {
 	e := newEnv()
 	uow := &recordingUnitOfWork{}
-	uc := &usecases.ClassifyProduct{Classifications: e.Classifications, Events: e.Events, Clock: e.Clock, UnitOfWork: uow}
+	uc := &usecases.ApplyProductClassification{Classifications: e.Classifications, ProcessedEvents: memory.NewProcessedEventRepo(), UnitOfWork: uow}
 
-	if _, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), []product.HandlingTag{product.Fragile}, "", 0); err != nil {
+	if _, err := uc.Execute(context.Background(), usecases.ProductClassificationUpdate{
+		EventID: "ce-1", SKU: "SKU-1", HandlingTags: []string{string(product.Fragile)}, ClassificationSource: "native", Version: 1,
+	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if uow.calls != 1 {

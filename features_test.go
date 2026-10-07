@@ -53,6 +53,9 @@ type world struct {
 	clock           *memory.FixedClock
 	classifications *memory.ProductClassificationRepo
 	publisher       *events.BufferedPublisher
+	// applyClassification is the product-master consumer's use case, driven
+	// directly by the "product-master has classified" Given step.
+	applyClassification *usecases.ApplyProductClassification
 
 	status  int
 	body    []byte
@@ -80,7 +83,6 @@ func (w *world) start() {
 		GetUsable:                  &usecases.GetUsable{Stock: stockRepo},
 		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
 		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
-		ClassifyProduct:            &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
 		RegisterBin:                &usecases.RegisterBin{Locations: locationRepo},
 		GetBin:                     &usecases.GetBin{Locations: locationRepo},
 		Classifications:            classificationRepo,
@@ -92,6 +94,7 @@ func (w *world) start() {
 	w.clock = clock
 	w.classifications = classificationRepo
 	w.publisher = publisher
+	w.applyClassification = &usecases.ApplyProductClassification{Classifications: classificationRepo, ProcessedEvents: memory.NewProcessedEventRepo()}
 	w.status = 0
 	w.body = nil
 	w.headers = nil
@@ -294,10 +297,18 @@ func (w *world) iClassifySKUWithHandlingTags(ctx context.Context, sku, tags stri
 	})
 }
 
-func (w *world) iClassifySKUAsTemperatureSensitiveWithoutATemperatureClass(ctx context.Context, sku string) error {
-	return w.record(ctx, http.MethodPut, "/products/"+sku+"/classification", map[string]any{
-		"handlingTags": []string{"TemperatureSensitive"},
+// productMasterHasClassifiedSKU applies a product-master ProductClassified
+// to the local copy through the consumer's use case (ADR 0033), as the
+// Kafka adapter would after decoding the CloudEvent.
+func (w *world) productMasterHasClassifiedSKU(ctx context.Context, sku, tags string, version int) error {
+	_, err := w.applyClassification.Execute(ctx, usecases.ProductClassificationUpdate{
+		EventID:              fmt.Sprintf("pm-%s-v%d", sku, version),
+		SKU:                  sku,
+		HandlingTags:         strings.Split(tags, ", "),
+		ClassificationSource: "native",
+		Version:              int64(version),
 	})
+	return err
 }
 
 func (w *world) iRequestTheClassificationForSKU(ctx context.Context, sku string) error {
@@ -664,7 +675,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^I look up the Reservations for demand "([^"]*)"$`, w.iLookUpTheReservationsForDemand)
 	sc.Step(`^I look up the Reservations without a demandRef$`, w.iLookUpTheReservationsWithoutADemandRef)
 	sc.Step(`^I Classify SKU "([^"]*)" with handling tags "([^"]*)"$`, w.iClassifySKUWithHandlingTags)
-	sc.Step(`^I Classify SKU "([^"]*)" as TemperatureSensitive without a temperature class$`, w.iClassifySKUAsTemperatureSensitiveWithoutATemperatureClass)
+	sc.Step(`^product-master has classified SKU "([^"]*)" with handling tags "([^"]*)" at version (\d+)$`, w.productMasterHasClassifiedSKU)
 	sc.Step(`^I request the classification for SKU "([^"]*)"$`, w.iRequestTheClassificationForSKU)
 
 	sc.Step(`^I register Bin "([^"]*)" with capacity (\d+)$`, w.iRegisterBinWithCapacity)

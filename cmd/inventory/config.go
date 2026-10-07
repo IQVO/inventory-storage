@@ -49,6 +49,11 @@ type config struct {
 	// transferConsumerGroup is TRANSFER_ALLOCATION_CONSUMER_GROUP; empty
 	// means inboundkafka.DefaultConsumerGroup.
 	transferConsumerGroup string
+
+	// productMasterConsumerGroup is PRODUCT_MASTER_CONSUMER_GROUP: the
+	// stable consumer group of the product-master classification consumer
+	// (ADR 0033). Empty means the consumer is not started.
+	productMasterConsumerGroup string
 }
 
 // loadConfig reads the process environment.
@@ -68,6 +73,8 @@ func loadConfig() config {
 		facilityLayoutBaseURL: os.Getenv("FACILITY_LAYOUT_BASE_URL"),
 		transferConsumerMode:  getenv("TRANSFER_ALLOCATION_CONSUMER_MODE", "off"),
 		transferConsumerGroup: os.Getenv("TRANSFER_ALLOCATION_CONSUMER_GROUP"),
+
+		productMasterConsumerGroup: os.Getenv("PRODUCT_MASTER_CONSUMER_GROUP"),
 	}
 	if raw := os.Getenv("KAFKA_BROKERS"); raw != "" {
 		cfg.kafkaBrokers = strings.Split(raw, ",")

@@ -14,7 +14,6 @@ import (
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
-	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
@@ -167,35 +166,6 @@ func TestOutbox_PublishFailure_RollsBackEverything(t *testing.T) {
 
 	if got := countOutbox(t, pool, "event_type = 'StockReceived'"); got != 0 {
 		t.Fatalf("expected NO StockReceived outbox row after a rolled-back publish, got %d", got)
-	}
-}
-
-// TestOutbox_ClassifyProduct_PublishFailure_RollsBackTheClassification
-// proves rollback for a Save+Publish (not just a bare Publish) use case:
-// the ProductClassification row must not survive either.
-func TestOutbox_ClassifyProduct_PublishFailure_RollsBackTheClassification(t *testing.T) {
-	pool := outboxDB(t)
-	ctx := context.Background()
-	classifications := postgres.NewProductClassificationRepo(pool)
-
-	uc := &usecases.ClassifyProduct{
-		Classifications: classifications,
-		Events:          postgres.NewOutboxPublisher(pool, failingEncoder{err: errors.New("encode boom")}),
-		Clock:           &fixedClock{t: time.Now().UTC()},
-		UnitOfWork:      postgres.NewUnitOfWork(pool),
-	}
-
-	sku, _ := shared.NewSKU("OUTBOX-CLASSIFY-SKU")
-	if _, err := uc.Execute(ctx, sku, []product.HandlingTag{product.Fragile}, "", 0); err == nil {
-		t.Fatal("expected the encoder failure to fail Execute")
-	}
-
-	found, err := classifications.FindBySKU(ctx, sku)
-	if err != nil {
-		t.Fatalf("unexpected error looking up classification: %v", err)
-	}
-	if found != nil {
-		t.Fatal("classification row survived a failed publish: the unit of work did not roll back")
 	}
 }
 

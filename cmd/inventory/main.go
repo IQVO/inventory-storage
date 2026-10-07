@@ -97,6 +97,19 @@ func run() error {
 		return err
 	}
 
+	// product-master classification consumer (ADR 0033): keeps the local
+	// product_classifications copy StowStock reads in step with
+	// product-master. Same lookupCtx, so shutdown drains it with the rest.
+	// Not started unless PRODUCT_MASTER_CONSUMER_GROUP is set.
+	productMaster, err := buildProductMasterConsumer(lookupCtx, logger, cfg, adapters)
+	if err != nil {
+		stopLookup()
+		lookup.close()
+		stopTransferConsumer(logger, transfer)
+		return err
+	}
+	consumers := combineConsumerHandles(transfer, productMaster)
+
 	server := buildServer(adapters, memory.SystemClock{}, lookup.lookup, reservationMetrics, readiness)
 	httpServer := &http.Server{
 		Addr:              cfg.httpAddr,
@@ -104,5 +117,5 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	return serveHTTPUntilSignal(logger, httpServer, readiness, stopLookup, lookup.close, lookup.runDone, transfer)
+	return serveHTTPUntilSignal(logger, httpServer, readiness, stopLookup, lookup.close, lookup.runDone, consumers)
 }

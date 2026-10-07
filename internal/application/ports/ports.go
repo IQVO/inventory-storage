@@ -88,12 +88,42 @@ type UnitOfWork interface {
 	Execute(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
-// ProductClassificationRepo persists and retrieves ProductClassification
-// aggregates, keyed by SKU. This service is the source of truth for this
-// master data — see ADR 0009.
+// ProductClassificationRepo reads the local copy of a SKU's handling
+// classification, keyed by SKU. product-master owns this master data
+// (ADR 0033); StowStock and the deprecated GET endpoint read the copy
+// exactly as they read this service's own rows before the hand-over.
+// FindBySKU returns nil, nil for an unclassified SKU.
 type ProductClassificationRepo interface {
-	Save(ctx context.Context, c *product.ProductClassification) error
 	FindBySKU(ctx context.Context, sku shared.SKU) (*product.ProductClassification, error)
+}
+
+// ProductClassificationLocalCopy writes the local copy from product-master's
+// ProductClassified events (ADR 0033).
+type ProductClassificationLocalCopy interface {
+	// ApplyIfNewer upserts c for c.SKU() when version is greater than the
+	// stored version (an absent row counts as older than any version), and
+	// records source as the row's classification_source. It reports
+	// whether the row was written; a stale or equal version is a no-op
+	// (false, nil).
+	ApplyIfNewer(ctx context.Context, c *product.ProductClassification, version int64, source string) (bool, error)
+}
+
+// ProductClassificationCatalogue pages through every stored classification
+// in SKU order. Only the one-shot republish-product-classifications backfill
+// uses it (ADR 0033, stage B).
+type ProductClassificationCatalogue interface {
+	// ListAfter returns up to limit classifications whose SKU sorts
+	// strictly after afterSKU (afterSKU "" starts from the beginning).
+	ListAfter(ctx context.Context, afterSKU shared.SKU, limit int) ([]*product.ProductClassification, error)
+}
+
+// ProcessedEventRepo records which inbound CloudEvents a consumer has
+// already applied, so at-least-once delivery has an exactly-once effect.
+type ProcessedEventRepo interface {
+	// Claim records (consumer, eventID). It reports false when the pair was
+	// already recorded (a redelivery). Called inside the same UnitOfWork as
+	// the effect, so a rolled-back effect also un-claims the id.
+	Claim(ctx context.Context, consumer, eventID string) (bool, error)
 }
 
 // TransferAllocationRepo persists and retrieves the transfer-allocation
