@@ -8,11 +8,13 @@ paths:
 # Cross-service integration events (Kafka)
 
 This service PUBLISHES integration events over Kafka to the fleet's shared
-broker. It CONSUMES three sibling topics: `warehouse.facility.events`
+broker. It CONSUMES four sibling topics: `warehouse.facility.events`
 (facility-layout) into a local location-classification cache,
-`warehouse.network-inventory-planning.events` (transfer commands) and
+`warehouse.network-inventory-planning.events` (transfer commands),
 `warehouse.product-master.events` (product-master, ADR-0034) into the local
-copy of product classifications — see "Consumed" below.
+copy of product classifications, and `warehouse.fulfillment.events`
+(fulfillment-execution `TaskCompleted`, ADR-0035) to confirm picks — see
+"Consumed" below.
 
 ## Envelope: CloudEvents 1.0, mandatory (ADR-0024)
 
@@ -157,6 +159,30 @@ not the event stream.
 - Integration test: `internal/application/usecases/product_master_handover_integration_test.go`
   (testcontainers Kafka + Postgres: event -> local copy -> hazmat stow
   placement).
+
+## Consumed: `warehouse.fulfillment.events` (ADR-0035)
+
+- Adapter: `internal/adapters/inbound/kafka/task_completed_consumer.go`.
+  Selected by `TASK_COMPLETED_CONSUMER_MODE=kafka` (default `off`). Consumer
+  group `TASK_COMPLETED_CONSUMER_GROUP` (default `inventory-storage-confirm-pick`).
+  Malformed messages go to `warehouse.fulfillment.events.dlq` at once; transient
+  failures retry with capped backoff, then dead-letter.
+- Dispatches ONLY on the full type
+  `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` with `task_type`
+  `PICK` and a non-empty `order_ref` (the ORDER id = a reservation's `demand_ref`;
+  fulfillment-execution ADR-0040); everything else is committed past.
+- `ConfirmPicksForOrder` claims the CloudEvents `id` in `processed_events`
+  (consumer `task-completed-confirm-pick`), counts the pick in
+  `order_pick_progress` and, only when the count reaches the order's
+  confirmable reservations (ACTIVE + CONFIRMED), confirms every ACTIVE one via
+  `ConfirmPick` — all in ONE UnitOfWork. A PICK task is per order LINE and a
+  Reservation has no line identity, so confirmation happens on the LAST pick:
+  late is safe (the reservation holds the stock), early would mark unpicked
+  lines as picked. Short picks are not modelled. Expired reservations are
+  skipped and counted (`inventory.pick_confirmations{outcome=expired}`).
+- The sweeper deletes `order_pick_progress` rows older than
+  `ORDER_PICK_PROGRESS_RETENTION` (default 720h; chart
+  `config.orderPickProgressRetention`; `0` disables).
 
 ## Consumed: `warehouse.network-inventory-planning.events` (ADR-0030)
 
