@@ -118,8 +118,8 @@ func run() error {
 	}
 
 	// TaskCompleted confirm-pick consumer (ADR 0035): confirms an order's
-	// ACTIVE reservations when fulfillment-execution reports its PICK task
-	// done. Same lookupCtx. Default "off"; see buildTaskCompletedConsumer.
+	// ACTIVE reservations when fulfillment-execution reports the LAST of its
+	// per-line PICK tasks done. Same lookupCtx. Default "off"; see buildTaskCompletedConsumer.
 	pickMetrics, err := telemetry.NewPickConfirmationMetrics()
 	if err != nil {
 		stopLookup()

@@ -271,7 +271,9 @@ of the site-scoped transfer allocation exchange (ADR-0030).
   *published* `outbox_events` older than `OUTBOX_RETENTION` (default `168h`),
   every `HOUSEKEEPING_INTERVAL` (default `1h`; `0` disables the sweeper, a `0`
   TTL/retention keeps that table's rows forever). Unpublished outbox rows are
-  never deleted.
+  never deleted. The same sweeper deletes `order_pick_progress` rows (the
+  confirm-pick consumer's per-order counter, ADR 0035) not updated for
+  `ORDER_PICK_PROGRESS_RETENTION` (default `720h` = 30 days).
 - **Broker**: `KAFKA_BROKERS` env var, comma-separated, default
   `localhost:9092`. There is one broker platform-wide: the in-cluster Kafka
   deployed by `warehouse-infra`, whose external listener is reachable from

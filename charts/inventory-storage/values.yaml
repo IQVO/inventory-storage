@@ -166,10 +166,13 @@ config:
   # Transactional-outbox relay poll interval (ADR-0017); OUTBOX_RELAY_INTERVAL.
   outboxRelayInterval: "1s"
   # Housekeeping sweeper (ADR-0026): how often it runs, how long an
-  # idempotency key is kept, how long PUBLISHED outbox rows are kept.
+  # idempotency key is kept, how long PUBLISHED outbox rows are kept, and how
+  # long an order's pick counter (order_pick_progress, ADR-0035) is kept after
+  # its last pick.
   housekeepingInterval: "1h"
   idempotencyKeyTtl: "24h"
   outboxRetention: "168h"
+  orderPickProgressRetention: "720h"
   # Site-scoped transfer allocation command consumer (ADR-0030). "kafka"
   # enables consuming network-inventory-planning's
   # TransferAllocationRequested commands; requires database.* and

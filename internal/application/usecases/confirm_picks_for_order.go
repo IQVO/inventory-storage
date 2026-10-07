@@ -50,14 +50,26 @@ const (
 	// PicksNoReservations: no reservation carries this demand_ref (a
 	// transfer or non-inventory order). A successful no-op.
 	PicksNoReservations ConfirmPicksOutcome = "NO_RESERVATIONS"
-	// PicksProcessed: the order's reservations were walked; see the counts.
+	// PicksAwaiting: the pick was counted but it is not the order's last one
+	// (PicksSeen < PicksNeeded); nothing was confirmed.
+	PicksAwaiting ConfirmPicksOutcome = "AWAITING_LAST_PICK"
+	// PicksNothingToConfirm: no ACTIVE reservation is left to confirm (all are
+	// already CONFIRMED, REVOKED or EXPIRED). A successful no-op.
+	PicksNothingToConfirm ConfirmPicksOutcome = "NOTHING_TO_CONFIRM"
+	// PicksProcessed: this was the last pick; the order's reservations were
+	// walked, see the counts.
 	PicksProcessed ConfirmPicksOutcome = "PROCESSED"
 )
 
-// ConfirmPicksResult is the per-event summary: how many of the order's
-// reservations ended in each state.
+// ConfirmPicksResult is the per-event summary: where the order's pick count
+// stands and how many of its reservations ended in each state.
 type ConfirmPicksResult struct {
 	Outcome ConfirmPicksOutcome
+	// PicksSeen is the order's completed-PICK count including this event, and
+	// PicksNeeded the count at which the order is confirmed (ACTIVE +
+	// CONFIRMED reservations). Zero when the event was not counted.
+	PicksSeen   int
+	PicksNeeded int
 	// Confirmed reservations were ACTIVE and are now CONFIRMED (picked).
 	Confirmed int
 	// AlreadyPicked reservations were already CONFIRMED.
@@ -75,17 +87,26 @@ type reservationConfirmer interface {
 	Execute(ctx context.Context, reservationID string) error
 }
 
-// ConfirmPicksForOrder turns "a PICK task for order X completed" into the
-// physical decrement of every ACTIVE reservation whose demand_ref is X
-// (ADR 0035, superseding ADR 0032). Granularity is the ORDER: a Task carries
-// no SKU or quantity, so the order's reservations are the finest unit the
-// event can name. Short picks are therefore not modelled.
+// ConfirmPicksForOrder turns "the LAST PICK task for order X completed" into
+// the physical decrement of every ACTIVE reservation whose demand_ref is X
+// (ADR 0035, superseding ADR 0032).
 //
-// The CloudEvents id claim and every ConfirmPick write (stock, bin,
-// reservation, outbox rows) run in ONE UnitOfWork, so a failure rolls all of
-// them back and the redelivery is applied in full. A redelivered event
-// confirms nothing new: the claim short-circuits it, and even a NEW id for
-// the same order only finds reservations that are no longer ACTIVE.
+// A PICK task is per order LINE and every one publishes the same order_ref,
+// while a Reservation has no line identity (only sku, quantity, demand_ref),
+// so a task cannot be mapped to one reservation. The order's picks are
+// counted instead (order_pick_progress) and the reservations are confirmed
+// when the count reaches needed = ACTIVE + CONFIRMED reservations (REVOKED and
+// EXPIRED never get picked). Earlier picks only record progress: confirming
+// then would mark unpicked lines as picked with no undo, whereas confirming
+// late is safe (the reservation keeps the stock unavailable meanwhile).
+// Short picks are not modelled.
+//
+// The CloudEvents id claim, the counter increment and every ConfirmPick write
+// (stock, bin, reservation, outbox rows) run in ONE UnitOfWork, so a failure
+// rolls all of them back and the redelivery is applied in full. A redelivered
+// event is short-circuited by the claim before it can touch the counter, and
+// even a NEW id for the same order only finds reservations that are no longer
+// ACTIVE.
 type ConfirmPicksForOrder struct {
 	Stock        ports.StockRepo
 	Reservations ports.ReservationRepo
@@ -94,6 +115,9 @@ type ConfirmPicksForOrder struct {
 	// Confirm is the existing confirm-pick use case (*ConfirmPick).
 	Confirm         reservationConfirmer
 	ProcessedEvents ports.ProcessedEventRepo
+	// PickProgress counts the order's completed PICK tasks, in the same
+	// UnitOfWork as the claim.
+	PickProgress ports.OrderPickProgressRepo
 	// UnitOfWork brackets the claim and all confirmations. Optional: nil
 	// means "no transactional backing" (in-memory runs).
 	UnitOfWork ports.UnitOfWork
@@ -125,31 +149,83 @@ func (uc *ConfirmPicksForOrder) Execute(ctx context.Context, in PickCompletion) 
 			result.Outcome = PicksDuplicate
 			return nil
 		}
-
-		reservations, err := uc.Reservations.FindByDemandRef(ctx, in.OrderRef)
-		if err != nil {
-			return err
-		}
-		if len(reservations) == 0 {
-			result.Outcome = PicksNoReservations
-			return nil
-		}
-		// Deterministic order, so concurrent handlers lock rows alike.
-		sort.Slice(reservations, func(i, j int) bool { return reservations[i].ID() < reservations[j].ID() })
-
-		result.Outcome = PicksProcessed
-		for _, res := range reservations {
-			if err := uc.settle(ctx, res, &result); err != nil {
-				return err
-			}
-		}
-		return nil
+		return uc.countAndConfirm(ctx, in.OrderRef, &result)
 	})
 	if err != nil {
 		return ConfirmPicksResult{}, err
 	}
 	uc.record(ctx, result)
 	return result, nil
+}
+
+// countAndConfirm runs inside the claim's transaction: it counts this pick for
+// orderRef and, when it is the order's last, confirms the ACTIVE reservations.
+func (uc *ConfirmPicksForOrder) countAndConfirm(ctx context.Context, orderRef string, result *ConfirmPicksResult) error {
+	reservations, err := uc.Reservations.FindByDemandRef(ctx, orderRef)
+	if err != nil {
+		return err
+	}
+	if len(reservations) == 0 {
+		result.Outcome = PicksNoReservations
+		return nil
+	}
+	// Deterministic order, so concurrent handlers lock rows alike.
+	sort.Slice(reservations, func(i, j int) bool { return reservations[i].ID() < reservations[j].ID() })
+
+	needed, active := confirmable(reservations)
+	if needed == 0 {
+		// Every reservation is REVOKED or EXPIRED: nothing can ever be
+		// confirmed, so no progress row is left behind either.
+		result.Outcome = PicksNothingToConfirm
+		return nil
+	}
+
+	// Count this pick in the SAME transaction as the claim: a rollback
+	// un-counts it, and a redelivery never reaches this line.
+	picked, err := uc.PickProgress.RecordPick(ctx, orderRef, uc.Clock.Now())
+	if err != nil {
+		return err
+	}
+	result.PicksSeen, result.PicksNeeded = picked, needed
+
+	switch {
+	case picked < needed:
+		// Not the last pick: confirming now would mark lines nobody has
+		// picked yet as picked, with no undo (ADR 0035).
+		result.Outcome = PicksAwaiting
+		return nil
+	case active == 0:
+		// Everything confirmable is already CONFIRMED (an extra or late
+		// event, or the REST route got there first).
+		result.Outcome = PicksNothingToConfirm
+		return nil
+	}
+
+	result.Outcome = PicksProcessed
+	for _, res := range reservations {
+		if err := uc.settle(ctx, res, result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// confirmable returns how many of the order's reservations still await (or
+// already got) a pick, ACTIVE + CONFIRMED, and how many of those are ACTIVE.
+// REVOKED and EXPIRED reservations will never be picked for, so they do not
+// count. An ACTIVE reservation already past its timeout still counts until a
+// read resolves it to EXPIRED (ADR 0003, lazy expiry).
+func confirmable(reservations []*reservation.Reservation) (needed, active int) {
+	for _, res := range reservations {
+		switch res.Status() {
+		case reservation.StatusActive:
+			needed++
+			active++
+		case reservation.StatusConfirmed:
+			needed++
+		}
+	}
+	return needed, active
 }
 
 // settle confirms one reservation when it is ACTIVE and counts it in result

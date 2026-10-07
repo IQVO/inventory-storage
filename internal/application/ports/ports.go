@@ -152,6 +152,19 @@ type ProcessedEventRepo interface {
 	Claim(ctx context.Context, consumer, eventID string) (bool, error)
 }
 
+// OrderPickProgressRepo counts, per order (demand_ref), how many PICK tasks
+// have completed, so the confirm-pick consumer can confirm the order's
+// reservations on the LAST pick (ADR 0035). A fulfillment-execution PICK task
+// is per order line and a Reservation has no line identity, so the count is
+// the only correlation available.
+type OrderPickProgressRepo interface {
+	// RecordPick adds one completed pick for demandRef (creating the row at 1)
+	// and returns the new count. now stamps updated_at, which the housekeeping
+	// sweeper ages out. Called inside the same UnitOfWork as the
+	// processed-event claim, so a rolled-back handling also un-counts the pick.
+	RecordPick(ctx context.Context, demandRef string, now time.Time) (int, error)
+}
+
 // TransferAllocationRepo persists and retrieves the transfer-allocation
 // ledger: one row per decided transfer line, DB-unique on transfer_line_id.
 type TransferAllocationRepo interface {

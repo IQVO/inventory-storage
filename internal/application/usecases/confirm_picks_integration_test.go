@@ -5,12 +5,15 @@
 // package's shared testcontainers Postgres with every migration applied; never
 // an external broker, never t.Skip):
 //
-//	fulfillment-execution-shaped TaskCompleted on a Kafka topic
-//	  -> TaskCompletedConsumer -> ConfirmPicksForOrder -> ConfirmPick
-//	  -> reservations PICKED (CONFIRMED), stock decremented exactly once,
-//	     bin capacity released, StockPicked in the outbox exactly once
-//	  -> a duplicate delivery (same CloudEvents id) and a second PICK event for
-//	     the same order change nothing.
+//	fulfillment-execution-shaped TaskCompleted on a Kafka topic (one PICK task
+//	per order LINE, all with the same order_ref)
+//	  -> TaskCompletedConsumer -> ConfirmPicksForOrder (counts the order's picks
+//	     in order_pick_progress, atomically with the processed-event claim)
+//	  -> NOTHING is confirmed until the LAST pick; then every reservation is
+//	     CONFIRMED, stock decremented exactly once, bin capacity released,
+//	     StockPicked in the outbox exactly once
+//	  -> a redelivered event (same CloudEvents id) and an extra PICK event for
+//	     the same order change nothing, and never advance the counter.
 //
 // Every id carries a per-run suffix, so the tests are -count=N safe on the
 // shared database.
@@ -25,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	kafkago "github.com/segmentio/kafka-go"
 
 	inboundkafka "github.com/claudioed/inventory-storage/internal/adapters/inbound/kafka"
@@ -228,8 +232,23 @@ func cpUseCase(env *transferTestEnv, events ports.EventPublisher) *usecases.Conf
 			Events: events, Clock: memory.SystemClock{}, UnitOfWork: uow,
 		},
 		ProcessedEvents: postgres.NewProcessedEventRepo(env.pool),
+		PickProgress:    postgres.NewOrderPickProgressRepo(env.pool),
 		UnitOfWork:      uow,
 	}
+}
+
+// cpProgress reads the order's counter row; ok is false when it has none.
+func cpProgress(t *testing.T, env *transferTestEnv, demandRef string) (picked int, ok bool) {
+	t.Helper()
+	err := env.pool.QueryRow(context.Background(),
+		`SELECT picked_tasks FROM order_pick_progress WHERE demand_ref = $1`, demandRef).Scan(&picked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false
+	}
+	if err != nil {
+		t.Fatalf("read order_pick_progress %s: %v", demandRef, err)
+	}
+	return picked, true
 }
 
 // cpOutboxPublisher is the production outbox wiring: StockPicked is an
@@ -273,45 +292,100 @@ func cpConsumer(t *testing.T, env *transferTestEnv, group string, uc inboundkafk
 	return consumer
 }
 
-func TestIntegration_TaskCompleted_ConfirmsTheOrdersPicksExactlyOnce(t *testing.T) {
+// pickFixtureOrder seeds a three-line order (one reservation per line, as
+// order-management reserves) plus an unrelated order's reservation.
+type pickFixtureOrder struct {
+	order string
+	lines []cpLine
+	other cpLine
+}
+
+func cpSeedThreeLineOrder(t *testing.T, env *transferTestEnv, run string) pickFixtureOrder {
+	t.Helper()
+	order := "order-cp-" + run
+	return pickFixtureOrder{
+		order: order,
+		lines: []cpLine{
+			cpSeedLine(t, env, run, "A", order, 10, 4, nil),
+			cpSeedLine(t, env, run, "B", order, 8, 3, nil),
+			cpSeedLine(t, env, run, "C", order, 6, 2, nil),
+		},
+		other: cpSeedLine(t, env, run, "O", "order-other-"+run, 5, 2, nil),
+	}
+}
+
+func cpAssertAllUntouched(t *testing.T, env *transferTestEnv, f pickFixtureOrder, when string) {
+	t.Helper()
+	for _, l := range append(append([]cpLine{}, f.lines...), f.other) {
+		if got := cpReservationStatus(t, env, l.reservationID); got != "ACTIVE" {
+			t.Errorf("%s: %s reservation = %s, want ACTIVE", when, l.sku, got)
+		}
+		if q, r := cpUnitQuantities(t, env, l.unitID); q != l.stowed || r != l.reserved {
+			t.Errorf("%s: %s unit quantity/reserved = %d/%d, want %d/%d (untouched)", when, l.sku, q, r, l.stowed, l.reserved)
+		}
+		if occ := cpBinOccupied(t, env, l.binID); occ != l.stowed {
+			t.Errorf("%s: %s bin occupied = %d, want %d (untouched)", when, l.sku, occ, l.stowed)
+		}
+		if n := cpOutboxRows(t, env, "StockPicked", l.reservationID); n != 0 {
+			t.Errorf("%s: %s raised StockPicked %d times, want 0", when, l.sku, n)
+		}
+	}
+}
+
+// ADR 0035: a PICK task is per order LINE, so with three lines the first two
+// TaskCompleted events must confirm NOTHING and only the third confirms all
+// three, with the stock decremented exactly once even when events are
+// redelivered or extra ones arrive.
+func TestIntegration_TaskCompleted_ConfirmsTheOrderOnlyOnTheLastPickExactlyOnce(t *testing.T) {
 	run := uniqueRun()
 	env := cpEnv(t, run)
-	order := "order-cp-" + run
+	f := cpSeedThreeLineOrder(t, env, run)
 
-	lineA := cpSeedLine(t, env, run, "A", order, 10, 4, nil)
-	lineB := cpSeedLine(t, env, run, "B", order, 8, 3, nil)
-	expired := cpSeedLine(t, env, run, "X", order, 6, 2, memory.NewFixedClock(time.Now().Add(-2*time.Hour)))
-	other := cpSeedLine(t, env, run, "O", "order-other-"+run, 5, 2, nil)
-
-	// The use case runs against the real outbox publisher, so StockPicked and
-	// ReservationExpired land in outbox_events in the confirming transaction.
+	// The use case runs against the real outbox publisher, so StockPicked
+	// lands in outbox_events in the confirming transaction.
 	uc := cpUseCase(env, cpOutboxPublisher(t, env))
 	group := "confirm-pick-itest-" + run
 	consumer := cpConsumer(t, env, group, uc)
 
-	// The first delivery, then: a duplicate of it (same CloudEvents id), a PACK
-	// task for the same order, a PICK without order_ref (a producer that predates
-	// the field), a PICK for an order that holds no reservation, and garbage.
-	cpPublish(t, env, "task-1", cpTaskCompleted(t, "ce-1-"+run, "task-1", "PICK", order))
-	cpPublish(t, env, "task-1", cpTaskCompleted(t, "ce-1-"+run, "task-1", "PICK", order))
-	cpPublish(t, env, "task-2", cpTaskCompleted(t, "ce-2-"+run, "task-2", "PACK", order))
-	cpPublish(t, env, "task-3", cpTaskCompleted(t, "ce-3-"+run, "task-3", "PICK", ""))
-	cpPublish(t, env, "task-4", cpTaskCompleted(t, "ce-4-"+run, "task-4", "PICK", "order-no-reservations-"+run))
+	// Picks 1 and 2, plus: a duplicate of pick 1 (same CloudEvents id), a PACK
+	// task for the order, a PICK without order_ref (a producer that predates the
+	// field), a PICK for an order that holds no reservation, and garbage.
+	cpPublish(t, env, "task-1", cpTaskCompleted(t, "ce-1-"+run, "task-1", "PICK", f.order))
+	cpPublish(t, env, "task-1", cpTaskCompleted(t, "ce-1-"+run, "task-1", "PICK", f.order))
+	cpPublish(t, env, "task-p", cpTaskCompleted(t, "ce-pack-"+run, "task-p", "PACK", f.order))
+	cpPublish(t, env, "task-n", cpTaskCompleted(t, "ce-noref-"+run, "task-n", "PICK", ""))
+	cpPublish(t, env, "task-x", cpTaskCompleted(t, "ce-noresv-"+run, "task-x", "PICK", "order-no-reservations-"+run))
 	cpPublish(t, env, "garbage", []byte(`{"event":"TaskCompleted","legacy":true}`))
+	cpPublish(t, env, "task-2", cpTaskCompleted(t, "ce-2-"+run, "task-2", "PICK", f.order))
 
 	cpRunUntil(t, env, consumer, group, func() bool {
-		return cpReservationStatus(t, env, lineA.reservationID) == "CONFIRMED" &&
-			cpReservationStatus(t, env, lineB.reservationID) == "CONFIRMED" &&
-			cpClaims(t, env, "ce-4-"+run) == 1
+		return cpClaims(t, env, "ce-1-"+run) == 1 && cpClaims(t, env, "ce-2-"+run) == 1 && cpClaims(t, env, "ce-noresv-"+run) == 1
 	})
 
-	for _, l := range []cpLine{lineA, lineB} {
+	// After TWO of three picks nothing is confirmed, nothing decremented.
+	cpAssertAllUntouched(t, env, f, "after 2 of 3 picks")
+	if n, ok := cpProgress(t, env, f.order); !ok || n != 2 {
+		t.Fatalf("order_pick_progress = %d (row %v), want 2 (the duplicate and the PACK must not count)", n, ok)
+	}
+	if _, ok := cpProgress(t, env, "order-no-reservations-"+run); ok {
+		t.Error("an order with no reservations left an order_pick_progress row")
+	}
+	for _, id := range []string{"ce-pack-" + run, "ce-noref-" + run} {
+		if n := cpClaims(t, env, id); n != 0 {
+			t.Errorf("an ignored event claimed %s (%d rows)", id, n)
+		}
+	}
+
+	// The third (last) pick confirms the whole order.
+	cpPublish(t, env, "task-3", cpTaskCompleted(t, "ce-3-"+run, "task-3", "PICK", f.order))
+	cpRunUntil(t, env, consumer, group, func() bool { return cpClaims(t, env, "ce-3-"+run) == 1 })
+
+	for _, l := range f.lines {
 		if got := cpReservationStatus(t, env, l.reservationID); got != "CONFIRMED" {
 			t.Errorf("%s reservation = %s, want CONFIRMED", l.sku, got)
 		}
 		// Physically decremented exactly once: stowed - reserved, nothing still reserved.
-		q, r := cpUnitQuantities(t, env, l.unitID)
-		if q != l.stowed-l.reserved || r != 0 {
+		if q, r := cpUnitQuantities(t, env, l.unitID); q != l.stowed-l.reserved || r != 0 {
 			t.Errorf("%s unit quantity/reserved = %d/%d, want %d/0", l.sku, q, r, l.stowed-l.reserved)
 		}
 		if occ := cpBinOccupied(t, env, l.binID); occ != l.stowed-l.reserved {
@@ -321,11 +395,75 @@ func TestIntegration_TaskCompleted_ConfirmsTheOrdersPicksExactlyOnce(t *testing.
 			t.Errorf("%s StockPicked outbox rows = %d, want exactly 1", l.sku, n)
 		}
 	}
-	firstPickedRows := cpOutboxRows(t, env, "StockPicked", lineA.reservationID)
+	if n, _ := cpProgress(t, env, f.order); n != 3 {
+		t.Errorf("order_pick_progress = %d, want 3", n)
+	}
+	// A different order is untouched.
+	if got := cpReservationStatus(t, env, f.other.reservationID); got != "ACTIVE" {
+		t.Errorf("other order reservation = %s, want ACTIVE", got)
+	}
+	if q, r := cpUnitQuantities(t, env, f.other.unitID); q != f.other.stowed || r != f.other.reserved {
+		t.Errorf("other order unit quantity/reserved = %d/%d, want %d/%d", q, r, f.other.stowed, f.other.reserved)
+	}
 
-	// EXPIRED: skipped (never confirmed), its stock returned by lazy expiry.
+	// Redelivery of the 3rd, then an extra PICK event with a NEW id for the same
+	// order: nothing changes (the claim short-circuits the first; the second
+	// finds no ACTIVE reservation), so stock is decremented exactly once.
+	pickedRows := cpOutboxRows(t, env, "StockPicked", f.lines[0].reservationID)
+	cpPublish(t, env, "task-3", cpTaskCompleted(t, "ce-3-"+run, "task-3", "PICK", f.order))
+	cpPublish(t, env, "task-5", cpTaskCompleted(t, "ce-5-"+run, "task-5", "PICK", f.order))
+	cpRunUntil(t, env, consumer, group, func() bool { return cpClaims(t, env, "ce-5-"+run) == 1 })
+
+	for _, l := range f.lines {
+		if got := cpReservationStatus(t, env, l.reservationID); got != "CONFIRMED" {
+			t.Errorf("%s reservation = %s after redelivery, want CONFIRMED", l.sku, got)
+		}
+		if q, r := cpUnitQuantities(t, env, l.unitID); q != l.stowed-l.reserved || r != 0 {
+			t.Errorf("%s after redelivery quantity/reserved = %d/%d, want %d/0 (decremented exactly once)", l.sku, q, r, l.stowed-l.reserved)
+		}
+		if n := cpOutboxRows(t, env, "StockPicked", l.reservationID); n != 1 {
+			t.Errorf("%s StockPicked outbox rows = %d after redelivery, want 1", l.sku, n)
+		}
+	}
+	if n := cpOutboxRows(t, env, "StockPicked", f.lines[0].reservationID); n != pickedRows {
+		t.Errorf("StockPicked outbox rows %d -> %d after redelivery, want unchanged", pickedRows, n)
+	}
+	if n, _ := cpProgress(t, env, f.order); n != 4 {
+		t.Errorf("order_pick_progress = %d, want 4 (3 distinct picks + 1 extra; the redelivered 3rd did not count)", n)
+	}
+}
+
+// A reservation that expired before the last pick is skipped, never confirmed:
+// its stock was already returned to usable by lazy expiry.
+func TestIntegration_TaskCompleted_ExpiredLineIsSkippedOnTheLastPick(t *testing.T) {
+	ctx := context.Background()
+	run := uniqueRun()
+	env := cpEnv(t, run)
+	order := "order-cp-exp-" + run
+
+	live := cpSeedLine(t, env, run, "EL", order, 10, 4, nil)
+	// Already past its timeout but still ACTIVE in the database (what lazy
+	// expiry leaves behind), so it counts as a pending pick.
+	expired := cpSeedLine(t, env, run, "EX", order, 6, 2, memory.NewFixedClock(time.Now().Add(-2*time.Hour)))
+
+	uc := cpUseCase(env, cpOutboxPublisher(t, env))
+	first, err := uc.Execute(ctx, usecases.PickCompletion{EventID: "ce-e1-" + run, TaskID: "t1", TaskType: "PICK", OrderRef: order})
+	if err != nil || first.Outcome != usecases.PicksAwaiting {
+		t.Fatalf("first pick = %+v, %v; want AWAITING_LAST_PICK", first, err)
+	}
+	if got := cpReservationStatus(t, env, live.reservationID); got != "ACTIVE" {
+		t.Fatalf("live line = %s after the first of two picks, want ACTIVE", got)
+	}
+	last, err := uc.Execute(ctx, usecases.PickCompletion{EventID: "ce-e2-" + run, TaskID: "t2", TaskType: "PICK", OrderRef: order})
+	if err != nil || last.Outcome != usecases.PicksProcessed || last.Confirmed != 1 || last.Expired != 1 {
+		t.Fatalf("last pick = %+v, %v; want PROCESSED with 1 confirmed and 1 expired", last, err)
+	}
+
+	if got := cpReservationStatus(t, env, live.reservationID); got != "CONFIRMED" {
+		t.Errorf("live line = %s, want CONFIRMED", got)
+	}
 	if got := cpReservationStatus(t, env, expired.reservationID); got != "EXPIRED" {
-		t.Errorf("expired line reservation = %s, want EXPIRED", got)
+		t.Errorf("expired line = %s, want EXPIRED", got)
 	}
 	if q, r := cpUnitQuantities(t, env, expired.unitID); q != expired.stowed || r != 0 {
 		t.Errorf("expired line unit quantity/reserved = %d/%d, want %d/0 (returned to usable, never picked)", q, r, expired.stowed)
@@ -333,43 +471,10 @@ func TestIntegration_TaskCompleted_ConfirmsTheOrdersPicksExactlyOnce(t *testing.
 	if n := cpOutboxRows(t, env, "StockPicked", expired.reservationID); n != 0 {
 		t.Errorf("expired line raised StockPicked %d times, want 0", n)
 	}
-
-	// A different order is untouched.
-	if got := cpReservationStatus(t, env, other.reservationID); got != "ACTIVE" {
-		t.Errorf("other order reservation = %s, want ACTIVE", got)
-	}
-	if q, r := cpUnitQuantities(t, env, other.unitID); q != other.stowed || r != other.reserved {
-		t.Errorf("other order unit quantity/reserved = %d/%d, want %d/%d", q, r, other.stowed, other.reserved)
-	}
-
-	// The duplicate was claimed once; ignored events claimed nothing.
-	if n := cpClaims(t, env, "ce-1-"+run); n != 1 {
-		t.Errorf("claims for ce-1 = %d, want 1", n)
-	}
-	for _, id := range []string{"ce-2-" + run, "ce-3-" + run} {
-		if n := cpClaims(t, env, id); n != 0 {
-			t.Errorf("an ignored event claimed %s (%d rows)", id, n)
-		}
-	}
-
-	// Redelivery after the fact: the same id again, and a NEW id for the same
-	// order (a second PICK task). Nothing changes.
-	cpPublish(t, env, "task-1", cpTaskCompleted(t, "ce-1-"+run, "task-1", "PICK", order))
-	cpPublish(t, env, "task-5", cpTaskCompleted(t, "ce-5-"+run, "task-5", "PICK", order))
-	cpRunUntil(t, env, consumer, group, func() bool { return cpClaims(t, env, "ce-5-"+run) == 1 })
-
-	for _, l := range []cpLine{lineA, lineB} {
-		if q, r := cpUnitQuantities(t, env, l.unitID); q != l.stowed-l.reserved || r != 0 {
-			t.Errorf("%s after redelivery quantity/reserved = %d/%d, want %d/0 (decremented exactly once)", l.sku, q, r, l.stowed-l.reserved)
-		}
-	}
-	if n := cpOutboxRows(t, env, "StockPicked", lineA.reservationID); n != firstPickedRows {
-		t.Errorf("StockPicked outbox rows %d -> %d after redelivery, want unchanged", firstPickedRows, n)
-	}
 }
 
-// A failure mid-handling rolls back the claim AND every confirmation together;
-// the retried delivery then converges.
+// A failure on the LAST pick rolls back the claim, the counter increment AND
+// every confirmation together; the retried delivery then converges.
 func TestIntegration_TaskCompleted_FailureRollsBackEverythingAndRetryConverges(t *testing.T) {
 	ctx := context.Background()
 	run := uniqueRun()
@@ -378,10 +483,17 @@ func TestIntegration_TaskCompleted_FailureRollsBackEverythingAndRetryConverges(t
 
 	lineA := cpSeedLine(t, env, run, "RA", order, 10, 4, nil)
 	lineB := cpSeedLine(t, env, run, "RB", order, 8, 3, nil)
-	eventID := "ce-rb-" + run
+	firstID, eventID := "ce-rb1-"+run, "ce-rb-"+run
 
-	// The outbox encode step fails on the LAST write of the first confirmation,
-	// after the stock/bin/reservation writes: exactly what the rollback must undo.
+	// Pick 1 of 2 commits normally.
+	healthy := cpUseCase(env, cpOutboxPublisher(t, env))
+	if got, err := healthy.Execute(ctx, usecases.PickCompletion{EventID: firstID, TaskID: "task-rb1", TaskType: "PICK", OrderRef: order}); err != nil || got.Outcome != usecases.PicksAwaiting {
+		t.Fatalf("first pick = %+v, %v; want AWAITING_LAST_PICK", got, err)
+	}
+
+	// The outbox encode step fails on the LAST write of the last pick's
+	// confirmation, after the counter/stock/bin/reservation writes: exactly what
+	// the rollback must undo.
 	broken := cpUseCase(env, postgres.NewOutboxPublisher(env.pool, failingTransferEncoder{}))
 	var outboxBefore int
 	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events`).Scan(&outboxBefore); err != nil {
@@ -406,6 +518,9 @@ func TestIntegration_TaskCompleted_FailureRollsBackEverythingAndRetryConverges(t
 	if n := cpClaims(t, env, eventID); n != 0 {
 		t.Fatalf("claim survived the rollback (%d rows): the redelivery would be skipped as a duplicate", n)
 	}
+	if n, _ := cpProgress(t, env, order); n != 1 {
+		t.Fatalf("order_pick_progress = %d after the rolled-back pick, want 1 (the failed pick must not stay counted)", n)
+	}
 	var outboxAfter int
 	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events`).Scan(&outboxAfter); err != nil {
 		t.Fatalf("count outbox: %v", err)
@@ -414,14 +529,13 @@ func TestIntegration_TaskCompleted_FailureRollsBackEverythingAndRetryConverges(t
 		t.Fatalf("outbox rows %d -> %d, want unchanged", outboxBefore, outboxAfter)
 	}
 
-	// The redelivery of the SAME event now converges.
-	healthy := cpUseCase(env, cpOutboxPublisher(t, env))
+	// The redelivery of the SAME event now converges: counted once, confirmed.
 	got, err := healthy.Execute(ctx, usecases.PickCompletion{EventID: eventID, TaskID: "task-rb", TaskType: "PICK", OrderRef: order})
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	if got.Outcome != usecases.PicksProcessed || got.Confirmed != 2 {
-		t.Fatalf("retry result = %+v, want PROCESSED with 2 confirmed", got)
+	if got.Outcome != usecases.PicksProcessed || got.Confirmed != 2 || got.PicksSeen != 2 {
+		t.Fatalf("retry result = %+v, want PROCESSED with 2 confirmed on pick 2 of 2", got)
 	}
 	for _, l := range []cpLine{lineA, lineB} {
 		if s := cpReservationStatus(t, env, l.reservationID); s != "CONFIRMED" {
@@ -433,6 +547,9 @@ func TestIntegration_TaskCompleted_FailureRollsBackEverythingAndRetryConverges(t
 	}
 	if n := cpClaims(t, env, eventID); n != 1 {
 		t.Errorf("claims after the retry = %d, want 1", n)
+	}
+	if n, _ := cpProgress(t, env, order); n != 2 {
+		t.Errorf("order_pick_progress = %d after the retry, want 2", n)
 	}
 }
 

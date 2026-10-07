@@ -283,6 +283,14 @@ func (c *TaskCompletedConsumer) Handle(ctx context.Context, msg kafkago.Message)
 	case usecases.PicksNoReservations:
 		c.Logger.InfoContext(ctx, "task-completed for an order with no reservations; nothing to confirm",
 			"id", e.ID(), "task_id", data.TaskID, "order_ref", data.OrderRef)
+	case usecases.PicksAwaiting:
+		c.Logger.InfoContext(ctx, "task-completed counted; waiting for the order's last pick before confirming",
+			"id", e.ID(), "task_id", data.TaskID, "order_ref", data.OrderRef,
+			"picks_seen", result.PicksSeen, "picks_needed", result.PicksNeeded)
+	case usecases.PicksNothingToConfirm:
+		c.Logger.InfoContext(ctx, "task-completed for an order with no ACTIVE reservation left; nothing to confirm",
+			"id", e.ID(), "task_id", data.TaskID, "order_ref", data.OrderRef,
+			"picks_seen", result.PicksSeen, "picks_needed", result.PicksNeeded)
 	default:
 		c.logSettled(ctx, e.ID(), data, result)
 	}
@@ -294,7 +302,7 @@ func (c *TaskCompletedConsumer) Handle(ctx context.Context, msg kafkago.Message)
 // usable (ADR 0035).
 func (c *TaskCompletedConsumer) logSettled(ctx context.Context, id string, data taskCompletedData, r usecases.ConfirmPicksResult) {
 	level := slog.LevelInfo
-	msg := "task-completed confirmed the order's picks"
+	msg := "task-completed confirmed the order's picks (last pick)"
 	if r.Expired > 0 {
 		level = slog.LevelWarn
 		msg = "task-completed skipped expired reservations (stock was already returned to usable)"

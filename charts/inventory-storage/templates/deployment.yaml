@@ -86,6 +86,8 @@ spec:
               value: {{ .Values.config.idempotencyKeyTtl | quote }}
             - name: OUTBOX_RETENTION
               value: {{ .Values.config.outboxRetention | quote }}
+            - name: ORDER_PICK_PROGRESS_RETENTION
+              value: {{ .Values.config.orderPickProgressRetention | quote }}
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
             - name: SERVICE_VERSION

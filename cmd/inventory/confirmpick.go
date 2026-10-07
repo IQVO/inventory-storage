@@ -35,10 +35,11 @@ var dialBroker = func(ctx context.Context, brokers []string) error {
 
 // buildTaskCompletedConsumer wires the confirm-pick consumer (ADR 0035): it
 // consumes fulfillment-execution's TaskCompleted (CloudEvents 1.0 on
-// warehouse.fulfillment.events) and, for a PICK task with an order_ref,
-// confirms every ACTIVE reservation of that order through ConfirmPick. The
-// CloudEvents id claim and all confirmations (stock, bin, reservation, outbox
-// rows) commit in ONE UnitOfWork transaction.
+// warehouse.fulfillment.events), counts each PICK task per order_ref and, when
+// the LAST pick of the order completes, confirms every ACTIVE reservation of
+// that order through ConfirmPick. The CloudEvents id claim, the pick counter
+// and all confirmations (stock, bin, reservation, outbox rows) commit in ONE
+// UnitOfWork transaction.
 //
 // mode is TASK_COMPLETED_CONSUMER_MODE: "off" (default — the feature stays
 // dark until an operator opts a deployment in) or "kafka". "kafka" also
@@ -85,6 +86,7 @@ func buildTaskCompletedConsumer(
 			Events: set.publisher, Clock: clock, UnitOfWork: set.uow,
 		},
 		ProcessedEvents: postgres.NewProcessedEventRepo(set.pool),
+		PickProgress:    postgres.NewOrderPickProgressRepo(set.pool),
 		UnitOfWork:      set.uow,
 		Metrics:         metrics,
 	}
