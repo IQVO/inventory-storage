@@ -5,3 +5,11 @@ rules:
   operation-tags: error
   info-description: error
   oas3-api-servers: error
+overrides:
+  # PUT /products/{sku}/classification is retired (ADR 0033): it only ever
+  # answers 410 classification-moved, so it has no 2xx response by design.
+  # Removed at product-master ADR 0003 stage E, together with this override.
+  - files:
+      - "apis/openapi.yaml#/paths/~1products~1%7Bsku%7D~1classification/put"
+    rules:
+      operation-success-response: "off"

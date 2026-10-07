@@ -51,14 +51,24 @@ info:
     **What reaches Kafka.** This document is the complete domain-event
     catalog for the bounded context. Two topics carry a subset of it:
     `warehouse.inventory.events` (the integration contract — `StockReserved`,
-    `ReservationRevoked`, the two transfer replies, and `ProductClassified`
-    (SKU master data, ADR 0031), from
+    `ReservationRevoked`, the two transfer replies, and the legacy
+    `ProductClassified`, from
     `internal/adapters/outbound/kafka/publisher.go`) and
     `warehouse.inventory.analytics` (the analytics data product — every
-    message below except `LocationRecorded`, from
+    message below except `LocationRecorded` and `ProductClassified`, from
     `internal/adapters/outbound/kafka/analytics_publisher.go`). Each message
     says which topics it reaches. `LocationRecorded` is in-process only (no
-    consumer; decided 2026-10-06).
+    consumer; decided 2026-10-06). Since ADR 0033 product-master owns
+    product classification: `ProductClassified` is no longer raised by any
+    write path and is emitted only by the one-shot
+    `republish-product-classifications` backfill command (product-master ADR
+    0003 stage B), on the integration topic.
+
+
+    **Consumed.** This service also consumes product-master's
+    `warehouse.product-master.events` (channel below, ADR 0033) into a local
+    copy of every SKU's classification that StowStock reads. Applying it
+    raises no event here.
 
 
     **CloudEvents is mandatory (ADR-0024).** Every message on both topics is
@@ -98,8 +108,14 @@ tags:
       bin's contents and the discrepancies they reveal.
   - name: product
     description: >
-      Events raised by the ProductClassification aggregate: SKU-level handling
-      master data (hazmat, fragile, temperature, ...) this service owns.
+      Events about SKU-level handling master data (hazmat, fragile,
+      temperature, ...). Owned by product-master since ADR 0033; this
+      service only re-emits its legacy `ProductClassified` from the one-shot
+      backfill command and consumes product-master's own events.
+  - name: product-master
+    description: >
+      Events consumed from the product-master bounded context (wms
+      subdomain), the owner of SKU master data (ADR 0033).
 
 servers:
   production:
@@ -120,8 +136,10 @@ channels:
       The outbound integration topic for this bounded context (the `Topic`
       constant in `internal/adapters/outbound/kafka/publisher.go`). Reaching
       it: `StockReserved` and `ReservationRevoked` (keyed by reservation
-      id), the two transfer replies, and `ProductClassified` (keyed by
-      SKU, ADR 0031). The primary downstream consumer is
+      id), the two transfer replies, and the legacy `ProductClassified`
+      (keyed by SKU), which since ADR 0033 only the one-shot
+      `republish-product-classifications` backfill emits (product-master's
+      legacy importer consumes it). The primary downstream consumer is
       wes-work-planning, which dispatches on their full `type` strings and
       projects them into its `UsableInventoryObserved` read model, keyed by
       SKU.
@@ -156,8 +174,10 @@ channels:
       for reservation-lifecycle events). Consumed only by this service's own
       projector (`cmd/inventory-projector`), which dispatches on the full
       `type`, dedupes on `id`, and skips (WARN) anything that is not a valid
-      CloudEvent. `ProductClassified` (ADR 0031) shares this topic and is
-      acknowledged without touching the read model.
+      CloudEvent. `ProductClassified` no longer reaches this topic (ADR
+      0033: the write path stopped raising it and the backfill writes the
+      integration topic only); the projector would acknowledge it without
+      touching the read model.
     subscribe:
       operationId: consumeInventoryStorageAnalytics
       summary: Consume inventory-storage analytics events (internal).
@@ -179,7 +199,39 @@ channels:
           - $ref: "#/components/messages/ReservationRevoked"
           - $ref: "#/components/messages/CycleCountCompleted"
           - $ref: "#/components/messages/DiscrepancyDetected"
-          - $ref: "#/components/messages/ProductClassified"
+
+  warehouse.product-master.events:
+    description: >
+      product-master's integration topic, its Published Language for SKU
+      master data (product-master ADR 0001; the `ProductMasterTopic`
+      constant in `internal/adapters/inbound/kafka/product_master_consumer.go`).
+      CONSUMED by this service (ADR 0033), not published: key = SKU,
+      `source=/warehouse/product-master`, `subject` = SKU. Only
+      `com.warehouse.wms.product-master.product.ProductClassified` is acted
+      on; `ProductRegistered`, `ProductDescriptionChanged`,
+      `ProductDimensionsDeclared` and `ProductMeasured` share the topic and
+      are committed past untouched. The consumer runs only when
+      `PRODUCT_MASTER_CONSUMER_GROUP` is set (stable group id; also requires
+      `DATABASE_URL` and `KAFKA_BROKERS`).
+    publish:
+      operationId: applyProductMasterClassification
+      summary: Apply product-master's ProductClassified to the local copy.
+      description: >
+        At-least-once, fixed group: FetchMessage, then CommitMessages only
+        after the handler settles. The CloudEvents `id` is claimed in
+        `processed_events` in the SAME transaction as the
+        `product_classifications` upsert, which applies only when `version`
+        is greater than the stored version (a missing row is inserted; legacy
+        rows carry version 0). A transient database error retries the same
+        message with capped backoff; a message that is not a valid
+        CloudEvent, has an undecodable payload or breaks the classification
+        invariants is logged and committed past. Nothing is published in
+        response (no loop back to product-master).
+      tags:
+        - name: product-master
+          description: Consumed from the product-master bounded context.
+      message:
+        $ref: "#/components/messages/ProductMasterProductClassified"
 
 components:
   messages:
@@ -289,32 +341,32 @@ components:
 
     ProductClassified:
       name: ProductClassified
-      title: Product Classified
-      summary: A SKU's handling classification (master data) was registered or replaced.
+      title: Product Classified (legacy, backfill only)
+      summary: A SKU's handling classification, re-emitted by the one-shot backfill.
       description: >
-        Raised by the ClassifyProduct use case when a SKU's
-        ProductClassification is registered or replaced (ADR 0009). The
-        classification is SKU-level master data this service owns; publishing
-        it lets siblings keep a local copy instead of polling
-        `GET /products/{sku}/classification` (ADR 0031, which supersedes only
-        the "in-process only" clause of ADR 0024 for this event).
+        LEGACY (ADR 0033). product-master owns product classification; no
+        write path in this service raises this event any more. It is emitted
+        only by the one-shot `republish-product-classifications` command
+        (product-master ADR 0003 stage B): one message per
+        `product_classifications` row, enqueued through the transactional
+        outbox and published by the running pod's relay, on
+        `warehouse.inventory.events` only (dataschema
+        `urn:warehouse:inventory-storage:events:ProductClassified:v1`).
+        product-master's legacy importer turns it into product-master data.
+        The wire contract is unchanged from ADR 0031. Retired at
+        product-master ADR 0003 stage E.
 
 
-        **Published to both topics**, through the transactional outbox in the
-        same transaction as the classification save. CloudEvents `subject` and
-        the Kafka key are the SKU, so reclassifications of one SKU stay
-        ordered on one partition. `data` is `{sku, handling_tags,
-        temperature_class?, dot_hazard_class?}` on both topics (dataschema
-        `urn:warehouse:inventory-storage:events:ProductClassified:v1` on
-        `warehouse.inventory.events`, `...:analytics:ProductClassified:v1` on
-        `warehouse.inventory.analytics`). It is a **full-state replacement**:
-        overwrite your local row; an absent optional field means "none".
-        `handling_tags` is in the aggregate's stable enum order. No PII. This
-        service's own analytics projector ignores it.
+        CloudEvents `subject` and the Kafka key are the SKU. `data` is
+        `{sku, handling_tags, temperature_class?, dot_hazard_class?}`. It is
+        a **full-state replacement**: overwrite your local row; an absent
+        optional field means "none". `handling_tags` is in the stable enum
+        order. No PII. Re-running the backfill re-emits the same states,
+        which is harmless.
       contentType: application/cloudevents+json
       tags:
         - name: product
-          description: Raised by the ProductClassification aggregate.
+          description: Legacy SKU master-data event (backfill only).
       payload:
         $ref: "#/components/schemas/ProductClassifiedEvent"
       examples:
@@ -346,11 +398,53 @@ components:
             subject: SKU-1
             time: "2026-10-06T12:01:00Z"
             datacontenttype: application/json
-            dataschema: urn:warehouse:inventory-storage:analytics:ProductClassified:v1
+            dataschema: urn:warehouse:inventory-storage:events:ProductClassified:v1
             data:
               sku: SKU-1
               handling_tags:
                 - Fragile
+
+    ProductMasterProductClassified:
+      name: ProductMasterProductClassified
+      title: Product Classified (from product-master, consumed)
+      summary: product-master's full-state classification of a SKU, with its product version.
+      description: >
+        CONSUMED, not produced (ADR 0033). Pinned by product-master's
+        `apis/asyncapi.yaml`: type
+        `com.warehouse.wms.product-master.product.ProductClassified`,
+        `source=/warehouse/product-master`, subject and Kafka key = SKU.
+        `data` is the full classification plus `classification_source`
+        (`native` | `legacy-import`) and the product `version`; this service
+        applies a message only when `version` is greater than the version it
+        stores for the SKU. `temperature_class` and `dot_hazard_class` are
+        omitted when unset.
+      contentType: application/cloudevents+json
+      tags:
+        - name: product-master
+          description: Consumed from product-master.
+      payload:
+        $ref: "#/components/schemas/ProductMasterProductClassifiedEvent"
+      examples:
+        - name: hazmatFrozenSku
+          summary: SKU-1 classified Hazmat + TemperatureSensitive (Frozen), DOT class 3, version 3.
+          payload:
+            specversion: "1.0"
+            id: 3f1c2b7a-8d4e-4c55-9a0b-6e2d1f7c8a90
+            source: /warehouse/product-master
+            type: com.warehouse.wms.product-master.product.ProductClassified
+            subject: SKU-1
+            time: "2026-10-06T12:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:product-master:events:ProductClassified:v1
+            data:
+              sku: SKU-1
+              handling_tags:
+                - Hazmat
+                - TemperatureSensitive
+              temperature_class: Frozen
+              dot_hazard_class: 3
+              classification_source: native
+              version: 3
 
     StockReserved:
       name: StockReserved
@@ -899,9 +993,10 @@ components:
 
     ProductClassifiedEvent:
       description: >
-        CloudEvents envelope for a ProductClassified domain event, on both
-        topics; `dataschema` selects the topic variant, the `data` shape is the
-        same on both.
+        CloudEvents envelope for the legacy ProductClassified event. Since
+        ADR 0033 only the integration-topic (`events`) variant is emitted, by
+        the backfill command; the `analytics` dataschema is still accepted by
+        the encoder's frozen contract but no longer produced.
       allOf:
         - $ref: "#/components/schemas/CloudEventBase"
         - type: object
@@ -945,6 +1040,82 @@ components:
                   minimum: 1
                   maximum: 9
                   description: Top-level US DOT hazard class; present only for a Hazmat classification with one recorded (ADR 0010).
+
+    ProductMasterProductClassifiedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of product-master's ProductClassified as
+        consumed here (not composed from CloudEventBase, whose `source` is
+        this service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events).
+        source:
+          type: string
+          enum: ["/warehouse/product-master"]
+        type:
+          type: string
+          const: "com.warehouse.wms.product-master.product.ProductClassified"
+        subject:
+          type: string
+          description: The SKU (also the Kafka key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:product-master:events:ProductClassified:v1
+        data:
+          type: object
+          required:
+            - sku
+            - handling_tags
+            - classification_source
+            - version
+          properties:
+            sku:
+              type: string
+            handling_tags:
+              type: array
+              minItems: 1
+              description: Stable order Hazmat, Fragile, TemperatureSensitive, Oversized, HighValue.
+              items:
+                type: string
+                enum: [Hazmat, Fragile, TemperatureSensitive, Oversized, HighValue]
+            temperature_class:
+              type: string
+              enum: [Ambient, Chilled, Frozen]
+              description: Present if and only if handling_tags includes TemperatureSensitive.
+            dot_hazard_class:
+              type: integer
+              minimum: 1
+              maximum: 9
+              description: Present only for a Hazmat classification with one recorded.
+            classification_source:
+              type: string
+              enum: [native, legacy-import]
+              description: Stored verbatim as product_classifications.classification_source.
+            version:
+              type: integer
+              format: int64
+              minimum: 1
+              description: product-master's Product.version; applied only when greater than the stored version.
 
     StockReservedEvent:
       description: >

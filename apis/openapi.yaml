@@ -64,10 +64,12 @@ tags:
   - name: Products
     description: >
       SKU-level product classification (Hazmat/Fragile/TemperatureSensitive/
-      Oversized/HighValue): master data this service owns as source of
-      truth, independent of any StockUnit or bin. Enforced by StowStock as
-      hazmat/temperature placement rules via a synchronous read from the
-      facility-layout bounded context (see ADR 0009).
+      Oversized/HighValue). Owned by product-master since ADR 0033: this
+      service keeps a read-only local copy, fed by product-master's
+      `ProductClassified` events, that StowStock reads to enforce
+      hazmat/temperature placement (ADR 0009) and same-bin DOT segregation
+      (ADR 0010). The write endpoint answers 410 and the read endpoint is
+      deprecated.
   - name: Health
     description: Liveness and readiness probes.
   - name: Reports
@@ -1091,138 +1093,51 @@ paths:
   /products/{sku}/classification:
     put:
       operationId: classifyProduct
-      summary: Register or replace a SKU's product classification
+      deprecated: true
+      summary: Retired - classify the SKU in product-master instead (410)
       description: >
-        Registers or replaces the handling classification for a SKU —
-        SKU-level master data this service owns as source of truth (see
-        ADR 0009), independent of any StockUnit or bin. Idempotent by SKU:
-        classifying an already-classified SKU replaces its prior
-        classification (a legitimate operational action, e.g. an item newly
-        designated hazmat) rather than erroring. handlingTags must be a
-        non-empty, duplicate-free array drawn from the closed enum; when
-        (and only when) handlingTags includes TemperatureSensitive,
-        temperatureClass is required. This classification is consulted by
-        StowStock to enforce hazmat/temperature placement rules at stow
-        time.
+        Retired by ADR 0033 (product-master ADR 0003 stage C). product-master
+        owns product classification; this service keeps a read-only local
+        copy fed by product-master's `ProductClassified` events. Every call
+        returns `410 Gone` with problem type `classification-moved`, naming
+        product-master's `PUT /products/{sku}/classification` (same request
+        body). Any request body is ignored and nothing is written. Removed
+        at product-master ADR 0003 stage E.
       tags: [Products]
       parameters:
         - $ref: "#/components/parameters/Sku"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ClassifyProductRequest"
-            example:
-              handlingTags: [Hazmat, TemperatureSensitive]
-              temperatureClass: Frozen
       responses:
-        "200":
-          description: An existing classification for this SKU was replaced.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ProductClassification"
-              example:
-                sku: SKU-1
-                handlingTags: [Hazmat, TemperatureSensitive]
-                temperatureClass: Frozen
-        "201":
-          description: A new classification for this SKU was created.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ProductClassification"
-              example:
-                sku: SKU-1
-                handlingTags: [Hazmat, TemperatureSensitive]
-                temperatureClass: Frozen
-        "400":
+        "410":
           description: >
-            Malformed JSON body, SKU missing/empty, handlingTags empty or
-            containing an unknown/duplicate tag, temperatureClass supplied
-            without TemperatureSensitive, or an unknown temperatureClass
-            value.
+            Classification has moved to product-master. The detail names
+            product-master's endpoint.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              examples:
-                noTags:
-                  summary: No handling tags supplied
-                  value:
-                    type: https://errors.inventory-storage.warehouse-systems.dev/no-handling-tags
-                    title: Classification requires at least one handling tag
-                    status: 400
-                    detail: classification requires at least one handling tag
-                    instance: /products/SKU-1/classification
-                unknownTag:
-                  summary: Unknown handling tag
-                  value:
-                    type: https://errors.inventory-storage.warehouse-systems.dev/unknown-handling-tag
-                    title: Unknown handling tag
-                    status: 400
-                    detail: unknown handling tag
-                    instance: /products/SKU-1/classification
-                temperatureClassRequired:
-                  summary: TemperatureSensitive without a temperatureClass
-                  value:
-                    type: https://errors.inventory-storage.warehouse-systems.dev/temperature-class-required
-                    title: Temperature-sensitive classification requires a temperature class
-                    status: 400
-                    detail: temperature-sensitive classification requires a temperature class
-                    instance: /products/SKU-1/classification
-                unknownTemperatureClass:
-                  summary: Unknown temperatureClass value
-                  value:
-                    type: https://errors.inventory-storage.warehouse-systems.dev/unknown-temperature-class
-                    title: Unknown temperature class
-                    status: 400
-                    detail: unknown temperature class
-                    instance: /products/SKU-1/classification
-                temperatureClassNotApplicable:
-                  summary: temperatureClass without TemperatureSensitive
-                  value:
-                    type: https://errors.inventory-storage.warehouse-systems.dev/temperature-class-not-applicable
-                    title: Temperature class is only meaningful when the temperature-sensitive tag is present
-                    status: 400
-                    detail: temperature class is only meaningful when the temperature-sensitive tag is present
-                    instance: /products/SKU-1/classification
-                duplicateHandlingTag:
-                  summary: Same handling tag listed twice
-                  value:
-                    type: https://errors.inventory-storage.warehouse-systems.dev/duplicate-handling-tag
-                    title: Duplicate handling tag
-                    status: 400
-                    detail: duplicate handling tag
-                    instance: /products/SKU-1/classification
-                invalidDotHazardClass:
-                  summary: dotHazardClass outside 1-9
-                  value:
-                    type: https://errors.inventory-storage.warehouse-systems.dev/invalid-dot-hazard-class
-                    title: DOT hazard class must be between 1 and 9
-                    status: 400
-                    detail: dot hazard class must be between 1 and 9
-                    instance: /products/SKU-1/classification
-                dotHazardClassNotApplicable:
-                  summary: dotHazardClass without the Hazmat tag
-                  value:
-                    type: https://errors.inventory-storage.warehouse-systems.dev/dot-hazard-class-not-applicable
-                    title: DOT hazard class is only meaningful when the hazmat tag is present
-                    status: 400
-                    detail: dot hazard class is only meaningful when the hazmat tag is present
-                    instance: /products/SKU-1/classification
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/classification-moved
+                title: Product classification has moved to product-master
+                status: 410
+                detail: "product classification is owned by product-master; classify this SKU with product-master's PUT /products/{sku}/classification (inventory-storage keeps a read-only local copy)"
+                instance: /products/SKU-1/classification
         "500":
           $ref: "#/components/responses/InternalError"
 
     get:
       operationId: getProductClassification
-      summary: Get a SKU's current product classification
+      deprecated: true
+      summary: Get a SKU's product classification (deprecated local copy)
       description: >
-        Returns the currently registered classification for a SKU.
-        Side-effect-free. Unlike GetUsableInventory, an unclassified SKU is
-        a 404, not a zero-value response — there is no meaningful "empty"
-        classification to return.
+        DEPRECATED (ADR 0033): product-master owns product classification;
+        read it from product-master's `GET /products/{sku}/classification`
+        (same response shape). This endpoint stays until product-master
+        ADR 0003 stage E and is served from this service's local copy of
+        product-master's `ProductClassified` events (the copy StowStock
+        reads), so it can lag product-master briefly. Side-effect-free.
+        Unlike GetUsableInventory, an unclassified SKU is a 404, not a
+        zero-value response — there is no meaningful "empty" classification
+        to return.
       tags: [Products]
       parameters:
         - $ref: "#/components/parameters/Sku"
@@ -1741,50 +1656,13 @@ components:
           description: True if countedQuantity differed from systemQuantity.
           example: true
 
-    ClassifyProductRequest:
-      type: object
-      required: [handlingTags]
-      properties:
-        handlingTags:
-          type: array
-          description: >
-            Non-empty, duplicate-free set of handling tags from the closed
-            enum. Order is not significant.
-          minItems: 1
-          items:
-            type: string
-            enum: [Hazmat, Fragile, TemperatureSensitive, Oversized, HighValue]
-          example: [Hazmat, TemperatureSensitive]
-        temperatureClass:
-          type: string
-          description: >
-            Required if and only if handlingTags includes
-            TemperatureSensitive; omit/empty otherwise.
-          enum: [Ambient, Chilled, Frozen]
-          example: Frozen
-        dotHazardClass:
-          type: integer
-          format: int32
-          minimum: 1
-          maximum: 9
-          nullable: true
-          description: >
-            Optional top-level US DOT hazard class (1-9; explosives
-            sub-divisions/compatibility-groups A-L/S are out of scope —
-            see ADR 0010). Meaningful, and settable, only when
-            handlingTags includes Hazmat — but unlike temperatureClass,
-            never REQUIRED by Hazmat: omit/null for a Hazmat
-            classification with no DOT class on file (e.g. one
-            classified before this field existed).
-          example: 3
-
     ProductClassification:
       type: object
       description: >
         SKU-level master data describing how an item must be handled,
-        independent of any StockUnit or bin. This service owns it as
-        source of truth (ADR 0009). dotHazardClass adds a same-bin DOT
-        segregation check enforced at stow time (ADR 0010).
+        independent of any StockUnit or bin. Owned by product-master
+        (ADR 0033); this is this service's local copy. dotHazardClass adds a
+        same-bin DOT segregation check enforced at stow time (ADR 0010).
       properties:
         sku:
           type: string

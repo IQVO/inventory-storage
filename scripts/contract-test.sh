@@ -42,12 +42,8 @@ for _ in $(seq 1 50); do
 done
 curl -sf "${BASE_URL}/healthz" >/dev/null # fail loudly if it never came up
 
-# classifyProduct is excluded: its temperatureClass field is conditionally
-# required (iff handlingTags contains TemperatureSensitive), which OpenAPI
-# 3.0.3 cannot express in a schema. The conditional IS tested — by the BDD
-# scenarios (features/product_classification.feature) and unit tests — this
-# exclusion only stops Schemathesis generating the unexpressible-but-invalid
-# combinations.
+# classifyProduct is retired (ADR 0033) and always answers 410
+# classification-moved, so it is checked like any other operation.
 #
 # The Reports tag (/reports/*) is excluded because those operations are served
 # by the separate inventory-reports binary (read-only analytical pool), not by
@@ -56,5 +52,4 @@ st run apis/openapi.yaml \
   --url "${BASE_URL}" \
   --max-examples "${MAX_EXAMPLES}" \
   --workers 4 \
-  --exclude-operation-id classifyProduct \
   --exclude-tag Reports
