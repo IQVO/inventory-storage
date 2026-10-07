@@ -11,7 +11,10 @@ description: ADR 0009 — a closed-enum ProductClassification aggregate owned by
 
 ## Status
 
-Accepted.
+Accepted. Ownership part ("this service owns `ProductClassification` as
+source of truth") superseded by [ADR 0034](./0034-product-master-owns-classification.md):
+product-master owns it and this service keeps a local copy; the stow-time
+placement rules stay in force.
 
 ## Context
 

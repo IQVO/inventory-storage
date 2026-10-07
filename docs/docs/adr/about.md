@@ -66,7 +66,7 @@ Typos, broken links and formatting are of course fair game.
 | [0006](./0006-arch-go-fitness-tests.md) | arch-go fitness tests to enforce the dependency rule | Accepted |
 | [0007](./0007-godog-bdd-acceptance-tests.md) | godog/Gherkin acceptance tests as executable specification | Accepted |
 | [0008](./0008-mcp-inbound-adapter.md) | Model Context Protocol as an inbound adapter, not a new service | Accepted — auth/bearer/OAuth/`mcp.readKey` sections superseded by [0015](./0015-remove-rest-identity-layer.md) |
-| [0009](./0009-product-classification-as-sku-master-data.md) | Product classification as SKU-level master data, enforced at stow time | Accepted |
+| [0009](./0009-product-classification-as-sku-master-data.md) | Product classification as SKU-level master data, enforced at stow time | Accepted — ownership superseded by [0034](./0034-product-master-owns-classification.md) |
 | [0010](./0010-dot-hazard-class-and-same-bin-segregation.md) | Optional DOT hazard class and same-bin DOT segregation at stow time | Accepted |
 | [0011](./0011-analytical-data-product.md) | Per-service analytical data product (report) via a separate analytics topic | Accepted (envelope superseded by [0024](./0024-cloudevents-mandatory-envelope.md)) |
 | [0012](./0012-adopt-mfe-console-architecture.md) | Adopt the fleet's micro-frontend console architecture (ADR-0002 in `warehouse-ops-agent`) | Accepted |
@@ -88,9 +88,10 @@ Typos, broken links and formatting are of course fair game.
 | [0028](./0028-bootretry-boot-time-dial-retry.md) | Boot-time dial retry (bootretry) | Accepted |
 | [0029](./0029-extra-architecture-fitness-tests.md) | Additional architecture fitness tests beyond the dependency rule | Accepted |
 | [0030](./0030-site-scoped-transfer-allocation.md) | Site-scoped transfer allocation as a command/reply consumer | Accepted |
-| [0031](./0031-publish-product-classified.md) | Publish ProductClassified through the outbox on both topics | Accepted |
+| [0031](./0031-publish-product-classified.md) | Publish ProductClassified through the outbox on both topics | Accepted — publication superseded by [0034](./0034-product-master-owns-classification.md) |
 | [0032](./0032-confirm-pick-event-driven.md) | Confirm picks from a pick-completion event, not from a REST call | Proposed |
 | [0033](./0033-destination-transfer-receipt-custody.md) | Destination transfer receipt custody — stage, quarantine, stow | Accepted |
+| [0034](./0034-product-master-owns-classification.md) | product-master owns product classification; this service keeps a local copy | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

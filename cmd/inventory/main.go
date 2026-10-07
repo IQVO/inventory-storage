@@ -11,6 +11,8 @@
 //	housekeeping.go idempotency-key / outbox retention sweeper
 //	lookup.go       LocationClassificationLookup adapter selection
 //	transfer.go     transfer allocation command consumer (Phase 2)
+//	productmaster.go product-master classification consumer (ADR 0034)
+//	republish.go    republish-product-classifications one-shot subcommand
 //	server.go       use-case + HTTP server wiring
 //	shutdown.go     signal handling and graceful drain
 package main
@@ -28,6 +30,11 @@ import (
 )
 
 func main() {
+	// A subcommand (e.g. republish-product-classifications, ADR 0034) runs
+	// once and exits instead of starting the service.
+	if len(os.Args) > 1 {
+		os.Exit(runCommand(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+	}
 	if err := run(); err != nil {
 		slog.Error("service exited with error", "error", err)
 		os.Exit(1)
@@ -97,6 +104,19 @@ func run() error {
 		return err
 	}
 
+	// product-master classification consumer (ADR 0034): keeps the local
+	// product_classifications copy StowStock reads in step with
+	// product-master. Same lookupCtx, so shutdown drains it with the rest.
+	// Not started unless PRODUCT_MASTER_CONSUMER_GROUP is set.
+	productMaster, err := buildProductMasterConsumer(lookupCtx, logger, cfg, adapters)
+	if err != nil {
+		stopLookup()
+		lookup.close()
+		stopTransferConsumer(logger, transfer)
+		return err
+	}
+	consumers := combineConsumerHandles(transfer, productMaster)
+
 	server := buildServer(adapters, memory.SystemClock{}, lookup.lookup, reservationMetrics, readiness)
 	httpServer := &http.Server{
 		Addr:              cfg.httpAddr,
@@ -104,5 +124,5 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	return serveHTTPUntilSignal(logger, httpServer, readiness, stopLookup, lookup.close, lookup.runDone, transfer)
+	return serveHTTPUntilSignal(logger, httpServer, readiness, stopLookup, lookup.close, lookup.runDone, consumers)
 }

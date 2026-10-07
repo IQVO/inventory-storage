@@ -179,6 +179,12 @@ config:
   # locally-run process can never steal the live Deployment's partitions.
   transferAllocationConsumerMode: "off"
   transferAllocationConsumerGroup: ""
+  # product-master classification local copy (ADR-0034). Set to a stable
+  # group id (e.g. inventory-storage-product-master) to consume
+  # product-master's ProductClassified from warehouse.product-master.events
+  # into product_classifications; empty = consumer not started. Requires
+  # database.* and kafka.enabled.
+  productMasterConsumerGroup: ""
 
 database:
   url: ""
@@ -201,7 +207,9 @@ database:
 # Kafka wiring. This service PUBLISHES (StockReserved /
 # ReservationRevoked / the ADR-0030 transfer replies) and, when
 # config.transferAllocationConsumerMode=kafka, CONSUMES
-# network-inventory-planning's transfer allocation commands.
+# network-inventory-planning's transfer allocation commands; when
+# config.productMasterConsumerGroup is set it also CONSUMES product-master's
+# ProductClassified (ADR-0034).
 # kafka.enabled gates EVENT_PUBLISHER=kafka.
 kafka:
   enabled: false

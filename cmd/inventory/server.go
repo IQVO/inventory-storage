@@ -30,7 +30,6 @@ func buildServer(
 		GetUsable:                  &usecases.GetUsable{Stock: stockRepo},
 		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
 		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
-		ClassifyProduct:            &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
 		RegisterBin:                &usecases.RegisterBin{Locations: locationRepo, UnitOfWork: uow},
 		GetBin:                     &usecases.GetBin{Locations: locationRepo},
 		StageTransferReceipt: &usecases.StageTransferReceipt{

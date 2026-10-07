@@ -21,13 +21,14 @@ Dependencies are plain struct fields, wired once per binary in
 | 5 | `ConfirmPick` | `POST /reservations/{id}/confirm-pick` | — | `StockPicked` (+ `ReservationExpired` via lazy expiry) |
 | 6 | `GetUsable` | `GET /inventory/{sku}/usable` | `check_availability`, resource `inventory://{sku}/usable` | — (read model) |
 | 7 | `RunCycleCount` | `POST /bins/{binId}/cycle-count` | — | `CycleCountCompleted`, `DiscrepancyDetected`, `ItemUnlocated` |
-| 8 | `ClassifyProduct` | `PUT /products/{sku}/classification` | — | `ProductClassified` (published on both topics via the outbox since 2026-10-06, ADR 0031) |
+| 8 | `ApplyProductClassification` | — (Kafka: `warehouse.product-master.events`, ADR 0034; `PUT /products/{sku}/classification` is 410) | — | — (local copy; `ProductClassified` only from the backfill command) |
 | 9 | `GetReservationsByDemandRef` | `GET /reservations?demandRef=` | — | `ReservationExpired` via lazy expiry only |
 | 10 | `RegisterBin` | `PUT /bins/{binId}` | — | — (local topology master data, ADR 0025) |
 | 11 | `GetBin` | `GET /bins/{binId}` | — | — (read) |
 
-`GET /products/{sku}/classification` has no use case of its own: the HTTP
-adapter reads `ProductClassificationRepo` directly for that single lookup.
+`GET /products/{sku}/classification` (deprecated, ADR 0034) has no use case
+of its own: the HTTP adapter reads `ProductClassificationRepo` (the local
+copy) directly for that single lookup.
 The MCP `get_bin_occupancy` tool likewise reads `StockRepo.FindByBin`
 directly, without a use case.
 
@@ -268,31 +269,32 @@ Two deliberate choices are visible here:
 Already-`UNLOCATED` and `REMOVED` units are excluded from `systemQty` — you
 cannot lose the same stock twice.
 
-## 8. ClassifyProduct(sku, tags, temperatureClass, dotHazardClass)
+## 8. ApplyProductClassification (replaces ClassifyProduct, ADR 0034)
 
-Registers or replaces a SKU's `ProductClassification` — SKU-level master
-data this service owns as source of truth (ADR 0009), extended in ADR 0010
-with an optional DOT hazard class.
+product-master owns product classification since
+[ADR 0034](/docs/adr/0034); `ClassifyProduct` is removed and
+`PUT /products/{sku}/classification` answers `410 classification-moved`.
+`ApplyProductClassification` is the use case behind the
+`warehouse.product-master.events` consumer: it keeps this service's local
+copy of a SKU's `ProductClassification`, the copy `StowStock` reads.
 
-**Collaborators:** `ProductClassificationRepo`, `EventPublisher`, `Clock`,
+**Collaborators:** `ProductClassificationLocalCopy`, `ProcessedEventRepo`,
 `UnitOfWork`.
 
-**Idempotent by SKU:** classifying an already-classified SKU replaces its
-prior classification rather than erroring — re-classification (e.g. an item
-newly designated hazmat) is a legitimate operational action, the same
-"replace, don't error" pattern `RegisterStation` uses in
-`fulfillment-execution`.
+**Atomic and idempotent:** the CloudEvents `id` is claimed in
+`processed_events` and the row is upserted in ONE unit of work. The upsert
+applies only when the message's `version` is greater than the stored one
+(legacy rows are version 0), so redeliveries and out-of-order messages are
+harmless. No domain event is raised.
 
-**Fails when:** no handling tags supplied (400 `ErrNoHandlingTags`), an
-unknown tag (400 `ErrUnknownHandlingTag`), a duplicate tag (400
-`ErrDuplicateHandlingTag`), `TemperatureSensitive` without a valid
-`TemperatureClass` (400 `ErrTemperatureClassRequired` /
-`ErrUnknownTemperatureClass`), a `TemperatureClass` supplied without
-`TemperatureSensitive` (400 `ErrTemperatureClassNotApplicable`), a
-`DOTHazardClass` outside 1-9 (400 `ErrInvalidDOTHazardClass`), or a
-`DOTHazardClass` supplied without `Hazmat` (400
-`ErrDOTHazardClassNotApplicable`). All validation is delegated to the
-aggregate constructor `product.New` — this use case does not duplicate it.
+**Fails when:** the message breaks the classification invariants (built by
+the aggregate constructor `product.New`, as before) or carries no id or a
+version below 1 — `ErrMalformedProductClassification`, which the consumer
+logs and commits past; a database error is transient and retried.
+
+`RepublishProductClassifications` (stage B backfill, the
+`republish-product-classifications` subcommand) re-emits every stored row as
+the legacy `ProductClassified` through the outbox, in batches.
 
 `StowStock` (#2 above) is the consumer of this master data at stow time.
 

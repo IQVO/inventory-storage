@@ -131,16 +131,6 @@ type binResponse struct {
 	Available int    `json:"available"`
 }
 
-type classifyProductRequest struct {
-	HandlingTags     []string `json:"handlingTags"`
-	TemperatureClass string   `json:"temperatureClass,omitempty"`
-	// DOTHazardClass is optional (a nil pointer means "unspecified"), and
-	// meaningful only when HandlingTags includes "Hazmat" — see ADR 0010.
-	// A pointer distinguishes "field omitted" from "explicitly 0", since
-	// 0 is not a valid DOT hazard class (the valid range is 1-9).
-	DOTHazardClass *int `json:"dotHazardClass,omitempty"`
-}
-
 type productClassificationResponse struct {
 	SKU              string   `json:"sku"`
 	HandlingTags     []string `json:"handlingTags"`
