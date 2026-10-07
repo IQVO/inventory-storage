@@ -410,6 +410,37 @@ running pod's relay publishes; safe to re-run:
 kubectl -n warehouse-systems exec deploy/inventory-storage -- ./inventory republish-product-classifications
 ```
 
+### Consumed: fulfillment-execution's TaskCompleted → confirm picks (ADR-0035)
+
+Nothing calls `POST /reservations/{id}/confirm-pick` in production, so picks are
+confirmed from an event instead (no synchronous call into this context). On
+`com.warehouse.wes.fulfillment-execution.task.TaskCompleted` from
+`warehouse.fulfillment.events`, for a `task_type` of `PICK` with a non-empty
+`order_ref` (the OrderId, = a reservation's `demand_ref`), every **ACTIVE**
+reservation of that order is confirmed through the existing `ConfirmPick` logic:
+stock decremented, bin capacity released, `StockPicked` raised. The CloudEvents
+`id` claim (`processed_events`) and all confirmations commit in **one
+transaction**; a redelivery (or a second PICK event for the same order)
+confirms nothing new. CONFIRMED/REVOKED reservations are skipped, an EXPIRED one
+(ADR-0003) is skipped, logged and counted in
+`inventory.pick_confirmations{outcome=expired}`, never an error; an order with
+no reservations is a successful no-op.
+
+**Limitation: short picks are not modelled.** A Task carries no SKU or
+quantity, so confirmation is per order, and the first PICK completion for an
+order confirms all of its lines. Short picks need per-line quantities in
+work-planning's WorkUnit and fulfillment-execution's Task.
+
+A transient failure retries the same message (capped backoff, 5 attempts), then
+dead-letters it to `warehouse.fulfillment.events.dlq`; a malformed payload is
+dead-lettered at once. Needs `EVENT_PUBLISHER=kafka` for `StockPicked` to leave
+the service.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `TASK_COMPLETED_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`) |
+| `TASK_COMPLETED_CONSUMER_GROUP` | `inventory-storage-confirm-pick` | Consumer group id |
+
 ### Destination transfer receiving: stage → quarantine → stow (ADR-0033)
 
 When the truck arrives, custody at the destination is taken by a SCAN,

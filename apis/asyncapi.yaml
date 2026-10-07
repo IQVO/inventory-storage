@@ -66,7 +66,11 @@ info:
     **Consumed.** This service also consumes product-master's
     `warehouse.product-master.events` (channel below, ADR 0034) into a local
     copy of every SKU's classification that StowStock reads. Applying it
-    raises no event here.
+    raises no event here. It also consumes fulfillment-execution's
+    `TaskCompleted` from `warehouse.fulfillment.events` (channel below, ADR
+    0035) to confirm the completed PICK task's order's reservations as picked;
+    that raises this service's own `StockPicked` (analytics topic) per
+    reservation.
 
 
     **CloudEvents is mandatory (ADR-0024).** Every message on both topics is
@@ -114,6 +118,10 @@ tags:
     description: >
       Events consumed from the product-master bounded context (wms
       subdomain), the owner of SKU master data (ADR 0034).
+  - name: fulfillment-execution
+    description: >
+      Events consumed from the fulfillment-execution bounded context (wes
+      subdomain): TaskCompleted, from which picks are confirmed (ADR 0035).
 
 servers:
   production:
@@ -232,6 +240,52 @@ channels:
           description: Consumed from the product-master bounded context.
       message:
         $ref: "#/components/messages/ProductMasterProductClassified"
+
+  warehouse.fulfillment.events:
+    description: >
+      fulfillment-execution's integration topic, its Published Language for
+      task facts (the `FulfillmentTopic` constant in
+      `internal/adapters/inbound/kafka/task_completed_consumer.go`). CONSUMED
+      by this service (ADR 0035), not published: key = `subject` = task id,
+      `source=/warehouse/fulfillment-execution`. Only
+      `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` is acted on;
+      `TaskCPTMissed`, `PackageManifested` and the `Transfer*` facts share the
+      topic and are committed past untouched. The consumer runs only when
+      `TASK_COMPLETED_CONSUMER_MODE=kafka` (default `off`; also requires
+      `DATABASE_URL` and `KAFKA_BROKERS`), under the fixed group
+      `TASK_COMPLETED_CONSUMER_GROUP` (default `inventory-storage-confirm-pick`).
+      Poison messages and messages whose handling kept failing are written to
+      `warehouse.fulfillment.events.dlq`.
+    publish:
+      operationId: confirmPicksFromTaskCompleted
+      summary: Confirm an order's picked reservations from TaskCompleted.
+      description: >
+        At-least-once, fixed group: FetchMessage, then CommitMessages only after
+        the message settles. For `task_type = PICK` with a non-empty `order_ref`
+        (the OrderId order-management reserved against, stored here as
+        `demand_ref`), every reservation with that `demand_ref` that is ACTIVE is
+        confirmed through the existing ConfirmPick logic (stock decremented, bin
+        capacity released, `StockPicked` raised). The CloudEvents `id` claim in
+        `processed_events` and all confirmations commit in ONE transaction, so a
+        failure rolls everything back and the redelivery is applied in full; a
+        redelivered id, or a second PICK event for the same order, confirms
+        nothing new. Reservations already CONFIRMED or REVOKED are skipped; an
+        EXPIRED one (ADR 0003) is skipped, logged and counted
+        (`inventory.pick_confirmations{outcome=expired}`), never an error. No
+        reservations for the order (a transfer or non-inventory order), a
+        non-PICK task, a missing `order_ref` (a producer that predates the field)
+        and every other event type are successful no-ops. Granularity is the
+        ORDER: a Task carries no SKU or quantity, so SHORT PICKS ARE NOT MODELLED
+        and the first PICK completion for an order confirms all of its lines.
+        A transient failure retries the same message with capped backoff (5
+        attempts), then dead-letters it; an undecodable payload is dead-lettered
+        at once; a message that is not a CloudEvent is skipped with a sampled
+        WARN.
+      tags:
+        - name: fulfillment-execution
+          description: Consumed from the fulfillment-execution bounded context.
+      message:
+        $ref: "#/components/messages/FulfillmentTaskCompleted"
 
 components:
   messages:
@@ -445,6 +499,48 @@ components:
               dot_hazard_class: 3
               classification_source: native
               version: 3
+
+    FulfillmentTaskCompleted:
+      name: FulfillmentTaskCompleted
+      title: Task Completed (from fulfillment-execution, consumed)
+      summary: A station finished a claimed task; for a PICK task the order's reservations are confirmed as picked.
+      description: >
+        CONSUMED, not produced (ADR 0035). Pinned by fulfillment-execution's
+        `apis/asyncapi.yaml`: type
+        `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`,
+        `source=/warehouse/fulfillment-execution`, subject and Kafka key = task
+        id. This service reads only `task_id`, `task_type` and `order_ref`;
+        every other field (`station_id`, `work_unit_id`, `associate_id`,
+        `duration_seconds`) is ignored. `order_ref` is the additive optional
+        field of ADR 0035 (v1, omitted when empty): the task's order reference,
+        i.e. the OrderId order-management used as `demand_ref`. A message without
+        it, or with any `task_type` other than `PICK`, is a successful no-op.
+      contentType: application/cloudevents+json
+      tags:
+        - name: fulfillment-execution
+          description: Consumed from fulfillment-execution.
+      payload:
+        $ref: "#/components/schemas/FulfillmentTaskCompletedEvent"
+      examples:
+        - name: pickTaskCompleted
+          summary: The PICK task of order ORD-1001 completed.
+          payload:
+            specversion: "1.0"
+            id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted
+            subject: task-8a1f
+            time: "2026-10-06T15:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:fulfillment-execution:events:TaskCompleted:v1
+            data:
+              task_id: task-8a1f
+              station_id: station-03
+              work_unit_id: wu-8a1f
+              associate_id: worker-42
+              duration_seconds: 245
+              task_type: PICK
+              order_ref: ORD-1001
 
     StockReserved:
       name: StockReserved
@@ -1225,6 +1321,66 @@ components:
               format: int64
               minimum: 1
               description: product-master's Product.version; applied only when greater than the stored version.
+
+    FulfillmentTaskCompletedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of fulfillment-execution's TaskCompleted v1 as
+        consumed here (not composed from CloudEventBase, whose `source` is this
+        service's own). Only the fields this service reads are listed under
+        `data`; the producer sends more.
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events under consumer `task-completed-confirm-pick`).
+        source:
+          type: string
+          enum: ["/warehouse/fulfillment-execution"]
+        type:
+          type: string
+          const: "com.warehouse.wes.fulfillment-execution.task.TaskCompleted"
+        subject:
+          type: string
+          description: The task id (also the Kafka key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:fulfillment-execution:events:TaskCompleted:v1
+        data:
+          type: object
+          required:
+            - task_id
+          properties:
+            task_id:
+              type: string
+            task_type:
+              type: string
+              enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL]
+              description: Only PICK is acted on; omitted by the producer when the task could not be found.
+            order_ref:
+              type: string
+              description: >
+                The completed task's order reference = the OrderId order-management
+                reserved against (this service's reservation `demand_ref`). Additive
+                and optional (ADR 0035): omitted when empty, in which case nothing
+                is confirmed.
 
     StockReservedEvent:
       description: >

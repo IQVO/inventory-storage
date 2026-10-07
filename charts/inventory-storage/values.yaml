@@ -185,6 +185,17 @@ config:
   # into product_classifications; empty = consumer not started. Requires
   # database.* and kafka.enabled.
   productMasterConsumerGroup: ""
+  # TaskCompleted confirm-pick consumer (ADR-0035). "kafka" enables consuming
+  # fulfillment-execution's TaskCompleted from warehouse.fulfillment.events and
+  # confirming every ACTIVE reservation of the completed PICK task's order
+  # (order_ref); requires database.* and kafka.enabled (the claim and the
+  # confirmations are only atomic through the Postgres UnitOfWork/outbox) and
+  # EVENT_PUBLISHER=kafka for StockPicked to leave the service. Default off.
+  # taskCompletedConsumerGroup overrides the group id (default
+  # inventory-storage-confirm-pick). Poison / exhausted messages go to
+  # warehouse.fulfillment.events.dlq.
+  taskCompletedConsumerMode: "off"
+  taskCompletedConsumerGroup: ""
 
 database:
   url: ""
@@ -209,7 +220,8 @@ database:
 # config.transferAllocationConsumerMode=kafka, CONSUMES
 # network-inventory-planning's transfer allocation commands; when
 # config.productMasterConsumerGroup is set it also CONSUMES product-master's
-# ProductClassified (ADR-0034).
+# ProductClassified (ADR-0034); when config.taskCompletedConsumerMode=kafka it
+# also CONSUMES fulfillment-execution's TaskCompleted (ADR-0035).
 # kafka.enabled gates EVENT_PUBLISHER=kafka.
 kafka:
   enabled: false
