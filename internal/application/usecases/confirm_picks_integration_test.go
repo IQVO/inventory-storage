@@ -83,6 +83,21 @@ func cpSeedLine(t *testing.T, env *transferTestEnv, run, label, demandRef string
 		t.Fatalf("reserve %s: %v", line.sku, err)
 	}
 	line.reservationID = res.ID()
+
+	// The shared database's outbox is drained by other tests' relay passes; the
+	// rows this test queues (analytics-topic StockPicked / ReservationExpired,
+	// whose topic does not exist on the shared broker) must not become the
+	// "oldest unpublished row" those passes trip over. Mark them published when
+	// the test ends: the row's existence was asserted by then.
+	reservationID := res.ID()
+	t.Cleanup(func() {
+		if _, err := env.pool.Exec(context.Background(), `
+			UPDATE outbox_events SET published_at = now()
+			WHERE published_at IS NULL
+			  AND convert_from(value, 'UTF8')::jsonb -> 'data' ->> 'reservation_id' = $1`, reservationID); err != nil {
+			t.Errorf("mark outbox rows of %s published: %v", reservationID, err)
+		}
+	})
 	return line
 }
 
