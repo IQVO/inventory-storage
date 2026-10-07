@@ -96,7 +96,9 @@ the one-shot `republish-product-classifications` backfill re-emits it
    ACTIVE reservation per line/SKU, so a different SKU or quantity under the
    same demandRef is a new reservation, never a retry
 4. `RevokeReservation(reservationId)` -> returns qty to usable
-5. `ConfirmPick(reservationId)` -> consumes reservation, StockPicked
+5. `ConfirmPick(reservationId)` -> consumes reservation, StockPicked. Called
+   by `POST /reservations/{id}/confirm-pick` and, for a completed order, by
+   `ConfirmPicksForOrder` (use case 9)
 6. `GetUsable(sku)` -> usable-inventory read model
 7. `RunCycleCount(binId, countedQty)` -> reconcile, may raise
    Discrepancy/Unlocated
@@ -110,6 +112,12 @@ the one-shot `republish-product-classifications` backfill re-emits it
    `ClassifyProduct` is removed; `PUT /products/{sku}/classification` is 410.
    `RepublishProductClassifications` is the one-shot stage-B backfill
    (re-emits every row as the legacy `ProductClassified` through the outbox).
+9. `ConfirmPicksForOrder(eventId, taskType, orderRef)` -> the fulfillment
+   `TaskCompleted` consumer's use case (ADR-0035): for a PICK with an order
+   ref, claims the event id, counts the pick (`order_pick_progress`) and, on the
+   order's LAST pick, confirms its ACTIVE reservations via `ConfirmPick`, all in
+   ONE UnitOfWork. Earlier picks only record progress. Short picks are not
+   modelled.
 9. `RegisterBin(binId, capacity)` -> idempotent, declarative bin
    registration: creates an absent bin, no-ops on same capacity, resizes
    otherwise via `Bin.Resize` (rejects below occupancy). No domain event —

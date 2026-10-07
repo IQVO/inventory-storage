@@ -61,9 +61,11 @@ structs across the wire; every response is a DTO.
   Vite/React micro-frontend remote — see `.claude/rules/frontend-mfe.md`).
 - Publishes `StockReserved`/`ReservationRevoked` to `warehouse.inventory.events`
   (plus the analytics stream `warehouse.inventory.analytics`), all as
-  CloudEvents 1.0 (ADR-0024), and consumes ONE sibling topic, facility-layout's
-  `warehouse.facility.events`, into a local location-classification cache
-  (`LOCATION_LOOKUP_MODE=kafka`, ADR-0013). Every REST and MCP endpoint is
+  CloudEvents 1.0 (ADR-0024), and consumes sibling topics: facility-layout's
+  `warehouse.facility.events` into a local location-classification cache
+  (`LOCATION_LOOKUP_MODE=kafka`, ADR-0013), plus the transfer-command,
+  product-master and fulfillment (`TaskCompleted`, confirm-pick, ADR-0035)
+  topics — see `integration-events.md`. Every REST and MCP endpoint is
   unauthenticated (ADR-0015).
 - API contracts are the single source of truth for generated docs:
   `apis/openapi.yaml` (REST, Spectral-linted) and `apis/asyncapi.yaml`
@@ -72,7 +74,7 @@ structs across the wire; every response is a DTO.
 
 ## ADR index (check before re-litigating a decision)
 
-`docs/docs/adr/0001..0029`: hexagonal layering ADR-0001, chaotic storage
+`docs/docs/adr/0001..0035`: hexagonal layering ADR-0001, chaotic storage
 ADR-0002, revocable reservations ADR-0003, DOT hazard segregation ADR-0010,
 facility-layout events cache ADR-0013, why the REST identity/bearer-auth
 layer was added then removed ADR-0014/0015, standard metrics convention
@@ -81,5 +83,9 @@ ADR-0018, optimistic concurrency ADR-0019, resilience (breaker, DLQ,
 graceful shutdown) ADR-0020, Kafka partition key ADR-0021, CloudEvents
 mandatory envelope ADR-0024, declarative bin registration & pick location
 ADR-0025, housekeeping sweeper ADR-0026, MCP eval/governance suite ADR-0027,
-bootretry ADR-0028, extra architecture fitness tests ADR-0029. The full
+bootretry ADR-0028, extra architecture fitness tests ADR-0029, site-scoped
+transfer allocation ADR-0030, publish ProductClassified ADR-0031,
+confirm-pick event-driven ADR-0032 (superseded by 0035), destination transfer
+receipt custody ADR-0033, product-master owns classification ADR-0034,
+confirm picks on the LAST pick from TaskCompleted ADR-0035. The full
 index with every Status is `docs/docs/adr/about.md`.
