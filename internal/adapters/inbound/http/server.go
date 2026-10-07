@@ -41,6 +41,13 @@ type Server struct {
 	RegisterBin *usecases.RegisterBin
 	// GetBin backs GET /bins/{binId}: capacity/occupancy read.
 	GetBin *usecases.GetBin
+	// StageTransferReceipt backs POST /transfers/{transferLineId}/receipt
+	// (ADR 0031): destination scan -> STAGED receipt or quarantine.
+	StageTransferReceipt *usecases.StageTransferReceipt
+	// StowTransferStock backs POST /transfers/{transferLineId}/stow
+	// (ADR 0031): STAGED receipt -> destination StockUnits (the only
+	// path that raises destination usable).
+	StowTransferStock *usecases.StowTransferStock
 	// Classifications backs the read-only GET endpoint. It is the same
 	// port ClassifyProduct writes through; there is no dedicated
 	// "GetProductClassification" use case because the read is a direct,
@@ -153,6 +160,21 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	r.Post("/bins/{binId}/cycle-count", s.handleRunCycleCount)
 	r.Put("/products/{sku}/classification", s.handleClassifyProduct)
 	r.Get("/products/{sku}/classification", s.handleGetProductClassification)
+
+	// The two destination transfer-custody endpoints (ADR 0031), both
+	// behind RequireIdempotencyKey when a transactional pool is wired:
+	// a stage creates a receipt (server-correlated state) and a stow
+	// creates destination StockUnits, so a lost response plus a client
+	// retry must never double-apply. The use cases are idempotent on
+	// transfer_line_id at the DATABASE level too — the middleware is
+	// defense in depth that also replays the original HTTP response.
+	if s.IdempotencyPool != nil {
+		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/transfers/{transferLineId}/receipt", s.handleStageTransferReceipt)
+		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/transfers/{transferLineId}/stow", s.handleStowTransferStock)
+	} else {
+		r.Post("/transfers/{transferLineId}/receipt", s.handleStageTransferReceipt)
+		r.Post("/transfers/{transferLineId}/stow", s.handleStowTransferStock)
+	}
 
 	return r
 }

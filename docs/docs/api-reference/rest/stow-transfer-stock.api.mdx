@@ -1,0 +1,72 @@
+---
+id: stow-transfer-stock
+title: "Stow a staged transfer receipt into destination bins"
+description: "Places a STAGED transfer receipt's goods into destination-site bins (ADR 0031) — the ONLY path that raises the destination site's usable stock for a transfer, exactly once per transfer_line_id. Every requested bin must be registered at the receipt's destination site (the site-custody fact fails closed: another site's bin or a legacy site-less bin is a 409), and the bin quantities must sum EXACTLY to the receipt's receivedQuantity. One StockUnit per bin leg is created AT the destination site, the receipt moves STAGED -> STOWED, and TransferStockStowed is published through the same transactional outbox."
+sidebar_label: "Stow a staged transfer receipt into destination bins"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Stow a staged transfer receipt into destination bins"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/transfers/{transferLineId}/stow"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Places a STAGED transfer receipt's goods into destination-site bins (ADR 0031) — the ONLY path that raises the destination site's usable stock for a transfer, exactly once per transfer_line_id. Every requested bin must be registered at the receipt's destination site (the site-custody fact fails closed: another site's bin or a legacy site-less bin is a 409), and the bin quantities must sum EXACTLY to the receipt's receivedQuantity. One StockUnit per bin leg is created AT the destination site, the receipt moves STAGED -&gt; STOWED, and TransferStockStowed is published through the same transactional outbox.
+
+Idempotent at the database level: a replayed stow for an already-STOWED receipt answers 200 with the ORIGINAL outcome (replay: true, the original allocations), creates NO second StockUnit and publishes nothing new. Stowing a line with no staged receipt (stow-before-stage) is a 409 receipt-not-staged.
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./stow-transfer-stock.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./stow-transfer-stock.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./stow-transfer-stock.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

@@ -90,6 +90,7 @@ Typos, broken links and formatting are of course fair game.
 | [0030](./0030-site-scoped-transfer-allocation.md) | Site-scoped transfer allocation as a command/reply consumer | Accepted |
 | [0031](./0031-publish-product-classified.md) | Publish ProductClassified through the outbox on both topics | Accepted |
 | [0032](./0032-confirm-pick-event-driven.md) | Confirm picks from a pick-completion event, not from a REST call | Proposed |
+| [0033](./0033-destination-transfer-receipt-custody.md) | Destination transfer receipt custody — stage, quarantine, stow | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

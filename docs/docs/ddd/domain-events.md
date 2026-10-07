@@ -37,7 +37,7 @@ table, Kafka) is a composition-root decision.
 | `ItemUnlocated` | StockUnit | A cycle-count shortfall cannot account for stock | `stockUnitId`, `sku`, `binId`, `quantity` |
 | `CycleCountCompleted` | Bin | Any cycle count finishes, clean or not | `binId`, `countedQty`, `systemQty`, `discrepancy` |
 | `DiscrepancyDetected` | Bin | A cycle count finds counted ≠ system | `binId`, `countedQty`, `systemQty` |
-| `ProductClassified` | ProductClassification | `ClassifyProduct` registers or replaces a SKU's classification | `sku`, `handlingTags`, `temperatureClass`, `dotHazardClass` — **published on both topics since 2026-10-06** ([ADR 0031](/docs/adr/0031)); wire fields below |
+| `ProductClassified` | ProductClassification | `ClassifyProduct` registers or replaces a SKU's classification | `sku`, `handlingTags`, `temperatureClass`, `dotHazardClass` — **published on both topics since 2026-10-06** ([ADR 0033](/docs/adr/0031)); wire fields below |
 
 ## Which events flow where
 
@@ -101,7 +101,7 @@ relayed by `cmd/inventory`.
 | CycleCountCompleted | `com.warehouse.wms.inventory-storage.bin.CycleCountCompleted` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system`, `discrepancy` | `RunCycleCount` | `cmd/inventory-projector` |
 | DiscrepancyDetected | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system` | `RunCycleCount` | `cmd/inventory-projector` |
 | LocationRecorded | — (not published; **decided 2026-10-06: stays in-process**, no consumer) | — | — | — | `StowStock` | none |
-| ProductClassified | `com.warehouse.wms.inventory-storage.product.ProductClassified` | `warehouse.inventory.events` | SKU / SKU | `sku`, `handling_tags`, `temperature_class?`, `dot_hazard_class?` (full-state replacement) | `ClassifyProduct` (via the outbox, same transaction as the save) | none yet — siblings may keep a local copy instead of polling `GET /products/{sku}/classification` ([ADR 0031](/docs/adr/0031)) |
+| ProductClassified | `com.warehouse.wms.inventory-storage.product.ProductClassified` | `warehouse.inventory.events` | SKU / SKU | `sku`, `handling_tags`, `temperature_class?`, `dot_hazard_class?` (full-state replacement) | `ClassifyProduct` (via the outbox, same transaction as the save) | none yet — siblings may keep a local copy instead of polling `GET /products/{sku}/classification` ([ADR 0033](/docs/adr/0031)) |
 | ProductClassified | same `type` | `warehouse.inventory.analytics` | SKU / SKU | same shape | `ClassifyProduct` | none — `cmd/inventory-projector` ignores it |
 
 `dataschema` is `urn:warehouse:inventory-storage:events:<EventName>:v1` on
