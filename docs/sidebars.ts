@@ -111,6 +111,8 @@ const sidebars: SidebarsConfig = {
         'adr/0031-publish-product-classified',
         'adr/0032-confirm-pick-event-driven',
         'adr/0033-destination-transfer-receipt-custody',
+        'adr/0034-product-master-owns-classification',
+        'adr/0035-confirm-pick-from-task-completed',
       ],
     },
   ],
