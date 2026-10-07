@@ -21,7 +21,7 @@ Dependencies are plain struct fields, wired once per binary in
 | 5 | `ConfirmPick` | `POST /reservations/{id}/confirm-pick` | — | `StockPicked` (+ `ReservationExpired` via lazy expiry) |
 | 6 | `GetUsable` | `GET /inventory/{sku}/usable` | `check_availability`, resource `inventory://{sku}/usable` | — (read model) |
 | 7 | `RunCycleCount` | `POST /bins/{binId}/cycle-count` | — | `CycleCountCompleted`, `DiscrepancyDetected`, `ItemUnlocated` |
-| 8 | `ClassifyProduct` | `PUT /products/{sku}/classification` | — | `ProductClassified` |
+| 8 | `ClassifyProduct` | `PUT /products/{sku}/classification` | — | `ProductClassified` (published on both topics via the outbox since 2026-10-06, ADR 0031) |
 | 9 | `GetReservationsByDemandRef` | `GET /reservations?demandRef=` | — | `ReservationExpired` via lazy expiry only |
 | 10 | `RegisterBin` | `PUT /bins/{binId}` | — | — (local topology master data, ADR 0025) |
 | 11 | `GetBin` | `GET /bins/{binId}` | — | — (read) |
@@ -220,6 +220,14 @@ for a future stow. It then saves the reservation and publishes `StockPicked`.
 **Fails when:** reservation unknown (404), already resolved (409), expired
 (409 `ErrExpired`), a referenced stock unit or bin is missing (404).
 
+**Trigger.** Today only operators and the `e2e-tests` simulator call
+`POST /reservations/{id}/confirm-pick`. Decided 2026-10-06
+([ADR 0032](/docs/adr/0032), *Proposed*): in production the trigger is a
+pick-completion event from fulfillment-execution consumed by an idempotent
+Kafka consumer that calls this use case — never a sync REST/MCP call from a
+sibling; blocked until that event carries a reservation correlation and the
+picked quantity.
+
 ## 6. GetUsable(sku)
 
 The read model. Loads every `StockUnit` for the SKU and sums `Usable()`.
@@ -287,6 +295,12 @@ unknown tag (400 `ErrUnknownHandlingTag`), a duplicate tag (400
 aggregate constructor `product.New` — this use case does not duplicate it.
 
 `StowStock` (#2 above) is the consumer of this master data at stow time.
+
+**Publishes** `ProductClassified` through the outbox inside the same
+`UnitOfWork` as the save, on `warehouse.inventory.events` and
+`warehouse.inventory.analytics` (subject and key = SKU; a full-state
+replacement) — so siblings can keep a local copy instead of polling
+`GET /products/{sku}/classification` ([ADR 0031](/docs/adr/0031)).
 
 ## 9. GetReservationsByDemandRef(demandRef)
 

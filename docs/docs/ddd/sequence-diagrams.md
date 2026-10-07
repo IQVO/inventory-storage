@@ -242,6 +242,7 @@ sequenceDiagram
     participant SR as StockRepo
     participant LR as LocationRepo
     participant OB as Outbox
+    Note over C,H: Decided 2026-10-06 (ADR 0032, Proposed): in production the trigger<br/>becomes a pick-completion event consumed here. This REST route stays<br/>for operators and the simulator. No sync call from sibling contexts.
     C->>H: POST /reservations/id/confirm-pick
     H->>UC: Execute(reservationId)
     UC->>RR: FindByID(id)
@@ -338,7 +339,7 @@ sequenceDiagram
         else valid
             rect rgb(235, 235, 235)
                 UC->>PCR: Save(classification), upsert by SKU
-                UC->>OB: Publish ProductClassified, no row written
+                UC->>OB: Publish ProductClassified, 2 outbox rows<br/>events + analytics topic, same transaction
             end
             H-->>C: 201 first time or 200 replaced
         end
@@ -347,7 +348,9 @@ sequenceDiagram
 
 Source: `internal/adapters/inbound/http/server.go` (`handleClassifyProduct`),
 `internal/application/usecases/classify_product.go`,
-`internal/domain/product/classification.go`.
+`internal/domain/product/classification.go`,
+`internal/adapters/outbound/kafka/publisher.go` and `analytics_publisher.go`
+(both encoders map `ProductClassified`, [ADR 0031](/docs/adr/0031)).
 Omitted: the read `GET /products/{sku}/classification`, a direct repository
 lookup with no use case.
 

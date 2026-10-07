@@ -37,7 +37,7 @@ table, Kafka) is a composition-root decision.
 | `ItemUnlocated` | StockUnit | A cycle-count shortfall cannot account for stock | `stockUnitId`, `sku`, `binId`, `quantity` |
 | `CycleCountCompleted` | Bin | Any cycle count finishes, clean or not | `binId`, `countedQty`, `systemQty`, `discrepancy` |
 | `DiscrepancyDetected` | Bin | A cycle count finds counted ≠ system | `binId`, `countedQty`, `systemQty` |
-| `ProductClassified` | ProductClassification | `ClassifyProduct` registers or replaces a SKU's classification | `sku`, `handlingTags`, `temperatureClass`, `dotHazardClass` |
+| `ProductClassified` | ProductClassification | `ClassifyProduct` registers or replaces a SKU's classification | `sku`, `handlingTags`, `temperatureClass`, `dotHazardClass` — **published on both topics since 2026-10-06** ([ADR 0031](/docs/adr/0031)); wire fields below |
 
 ## Which events flow where
 
@@ -55,25 +55,27 @@ flowchart LR
   EXP["lazy read"] --> E10["ReservationExpired"]
   CLS["ClassifyProduct"] --> E11["ProductClassified"]
 
-  E4 & E5 --> KAF["warehouse.inventory.events<br/>integration topic"]
-  E1 & E2 & E4 & E5 & E6 & E7 & E8 & E9 & E10 --> ANA["warehouse.inventory.analytics<br/>internal analytics topic"]
-  E3 & E11 --> LOG["in-process only<br/>never leaves the service"]
+  E4 & E5 & E11 --> KAF["warehouse.inventory.events<br/>integration topic"]
+  E1 & E2 & E4 & E5 & E6 & E7 & E8 & E9 & E10 & E11 --> ANA["warehouse.inventory.analytics<br/>internal analytics topic"]
+  E3 --> LOG["in-process only<br/>never leaves the service<br/>no consumer, decided 2026-10-06"]
 
   classDef wired fill:#0f766e,stroke:#134e4a,color:#fff;
   classDef local fill:#94a3b8,stroke:#475569,color:#0f172a;
-  class E4,E5,KAF wired;
+  class E4,E5,E11,KAF wired;
   class LOG local;
 ```
 
-**Only `StockReserved` and `ReservationRevoked` cross the service boundary
-on the integration topic.** The integration publisher's `Encode` returns
-nothing for every other event — deliberate, not an oversight: those two are
-the published integration contract. Nine of the eleven events also go to the
-internal analytics topic for this service's own projector;
-`LocationRecorded` and `ProductClassified` go nowhere (no outbox row, no
-Kafka message). `apis/asyncapi.yaml` documents both channels, so a
-downstream team cannot mistake a documented analytics event for a wired
-integration one.
+**`StockReserved`, `ReservationRevoked` and, since 2026-10-06,
+`ProductClassified` are the integration events on the reservation and
+master-data paths** (plus the two transfer replies,
+[ADR 0030](/docs/adr/0030)). The integration publisher's `Encode` returns
+nothing for every other event — deliberate, not an oversight: those are the
+published integration contract. Ten of the eleven events also go to the
+internal analytics topic (the projector ignores `ProductClassified`);
+only `LocationRecorded` goes nowhere (no outbox row, no Kafka message — it has
+no consumer, so it stays in-process by decision). `apis/asyncapi.yaml`
+documents both channels, so a downstream team cannot mistake a documented
+analytics event for a wired integration one.
 
 ## Wire catalogue
 
@@ -98,8 +100,9 @@ relayed by `cmd/inventory`.
 | ItemUnlocated | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | `warehouse.inventory.analytics` | SKU / stock unit id | `sku`, `bin_id`, `stock_unit_id`, `quantity` | `RunCycleCount` | `cmd/inventory-projector` |
 | CycleCountCompleted | `com.warehouse.wms.inventory-storage.bin.CycleCountCompleted` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system`, `discrepancy` | `RunCycleCount` | `cmd/inventory-projector` |
 | DiscrepancyDetected | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system` | `RunCycleCount` | `cmd/inventory-projector` |
-| LocationRecorded | — (not published) | — | — | — | `StowStock` | none |
-| ProductClassified | — (not published; would be `com.warehouse.wms.inventory-storage.product.ProductClassified`) | — | — | — | `ClassifyProduct` | none — siblings read `GET /products/{sku}/classification` instead |
+| LocationRecorded | — (not published; **decided 2026-10-06: stays in-process**, no consumer) | — | — | — | `StowStock` | none |
+| ProductClassified | `com.warehouse.wms.inventory-storage.product.ProductClassified` | `warehouse.inventory.events` | SKU / SKU | `sku`, `handling_tags`, `temperature_class?`, `dot_hazard_class?` (full-state replacement) | `ClassifyProduct` (via the outbox, same transaction as the save) | none yet — siblings may keep a local copy instead of polling `GET /products/{sku}/classification` ([ADR 0031](/docs/adr/0031)) |
+| ProductClassified | same `type` | `warehouse.inventory.analytics` | SKU / SKU | same shape | `ClassifyProduct` | none — `cmd/inventory-projector` ignores it |
 
 `dataschema` is `urn:warehouse:inventory-storage:events:<EventName>:v1` on
 the integration topic and `urn:warehouse:inventory-storage:analytics:<EventName>:v1`
@@ -112,7 +115,7 @@ on the analytics topic.
 | ZoneRegistered | `com.warehouse.wms.facility-layout.zone.ZoneRegistered` | `warehouse.facility.events` | `facilitycache.Consumer` (per-process group `inventory-storage-facility-location-cache-<host>-<pid>-<ns>`, FirstOffset replay) | caches zone `hazmat` + `temperatureClass` by `zoneId` |
 | LocationSlotRegistered | `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | `warehouse.facility.events` | same | maps `locationCode` → `zoneId` (derived from the code when absent) |
 | LocationSlotDecommissioned | `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `warehouse.facility.events` | same | drops the slot, so it answers `Known=false` |
-| all nine analytics types above | `com.warehouse.wms.inventory-storage.*` | `warehouse.inventory.analytics` | `cmd/inventory-projector` (group `inventory-analytics`, FirstOffset) | upserts `flow_accuracy_rollup`, dedupes on the CloudEvents `id` |
+| all nine analytics types above | `com.warehouse.wms.inventory-storage.*` | `warehouse.inventory.analytics` | `cmd/inventory-projector` (group `inventory-analytics`, FirstOffset) | upserts `flow_accuracy_rollup`, dedupes on the CloudEvents `id`; `ProductClassified` on the same topic is acknowledged and ignored |
 
 Any other `type` on `warehouse.facility.events` is ignored; a message that
 is not a valid CloudEvent is dead-lettered to `warehouse.facility.events.dlq`.
@@ -146,7 +149,10 @@ returned to a caller:
 The practical consequence: a reservation nobody revokes still holds quantity
 out of usable until it is *read* — there remains no proactive reclaim of
 quantity for a reservation that both times out **and** is never looked up
-again. That is judged an acceptable trade-off for this service's read
+again. **Decided 2026-10-06: kept** — lazy expiry stays, with no sweeper
+(ADR 0003; pick confirmation moving to a pick-completion event, ADR 0032,
+narrows the gap further once it lands). That is judged an acceptable
+trade-off for this service's read
 volume; if it stops being one, the fix is a scheduled read (e.g. a periodic
 call to `GetReservationsByDemandRef` or a dedicated sweep use case), not a
 change to the lazy check itself. `apis/asyncapi.yaml` documents

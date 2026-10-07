@@ -66,7 +66,7 @@ truth for SKU handling classification (hazmat, temperature, DOT class).
 | Inbound dock (operator, simulator) | StowStock | Command | REST `POST /stock/stow` | OHS |
 | Inventory control (operator, simulator) | RunCycleCount | Command | REST `POST /bins/{binId}/cycle-count` | OHS |
 | Catalogue owner (operator, simulator) | ClassifyProduct | Command | REST `PUT /products/{sku}/classification` | OHS |
-| Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/confirm-pick` | OHS — no sibling context calls it |
+| Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/confirm-pick` | OHS — no sibling context calls it; **decided 2026-10-06**: production confirmation will come from fulfillment-execution's pick-completion event, consumed here (ADR 0032, *Proposed*, blocked on the event's fields) |
 | Operator, `inventory-mfe` | GetBin, GetUsable | Query | REST `GET /bins/{binId}`, `GET /inventory/{sku}/usable` | OHS |
 | Kubernetes | liveness / readiness | Query | REST `GET /healthz`, `GET /readyz` | — |
 
@@ -76,7 +76,8 @@ truth for SKU handling classification (hazmat, temperature, DOT class).
 | --- | --- | --- | --- | --- |
 | `wes-work-planning` | StockReserved | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.reservation.StockReserved` (key = reservation id) | OHS/PL; downstream Conformist |
 | `wes-work-planning` | ReservationRevoked | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` (key = reservation id) | OHS/PL; downstream Conformist |
-| own projector (`cmd/inventory-projector`) | StockReceived, ItemStowed, ItemUnlocated, StockReserved, StockPicked, ReservationExpired, ReservationRevoked, CycleCountCompleted, DiscrepancyDetected | Event | Kafka `warehouse.inventory.analytics`, `com.warehouse.wms.inventory-storage.<stock, reservation or bin>.<EventName>` | internal |
+| any sibling (no consumer yet) | ProductClassified | Event | Kafka `warehouse.inventory.events` (and `warehouse.inventory.analytics`), `com.warehouse.wms.inventory-storage.product.ProductClassified` (key = SKU; full-state replacement) — [ADR 0031](/docs/adr/0031) | OHS/PL; replaces polling `GET /products/{sku}/classification` |
+| own projector (`cmd/inventory-projector`) | StockReceived, ItemStowed, ItemUnlocated, StockReserved, StockPicked, ReservationExpired, ReservationRevoked, CycleCountCompleted, DiscrepancyDetected | Event | Kafka `warehouse.inventory.analytics`, `com.warehouse.wms.inventory-storage.<stock, reservation or bin>.<EventName>` (`ProductClassified` shares the topic and is ignored) | internal |
 | `facility-layout` | location classification | Query | REST `GET /locations/{locationCode}/classification` — only with `LOCATION_LOOKUP_MODE=http`, behind a circuit breaker | ACL; wired but unused (rollback) |
 | `facility-layout` (DLQ) | invalid facility message | Event | Kafka `warehouse.facility.events.dlq` (raw payload + `x-dlq-*` headers) | — |
 
@@ -113,7 +114,7 @@ The terms that carry the model:
 | This context owns product classification; placement rules are fail-open for unclassified SKUs and unknown bins, fail-closed only when a classified SKU's lookup fails. | ADR 0009 |
 | DOT segregation uses a 9 × 9 class-level matrix with four documented simplifications. | ADR 0010, `product.Incompatible` |
 | Bins are registered declaratively over REST; registration raises no event. | ADR 0025 |
-| Only `StockReserved` and `ReservationRevoked` are integration events. | `kafka.Publisher.Encode`, `apis/asyncapi.yaml` |
+| `StockReserved`, `ReservationRevoked` and `ProductClassified` (since 2026-10-06, ADR 0031) are the integration events, plus the two transfer replies (ADR 0030). | `kafka.Publisher.Encode`, `apis/asyncapi.yaml` |
 | Zone data comes from facility-layout's events into a local cache, not a per-stow call. | ADR 0013 |
 | No authentication on REST or MCP. | ADR 0015 |
 
@@ -145,14 +146,23 @@ The terms that carry the model:
 
 ## Open Questions
 
-- Should a background job reclaim reservations that time out and are never
-  read again? Today they hold quantity until read or revoked.
-- Should `ProductClassified` be published so siblings stop polling
-  `GET /products/{sku}/classification`?
+- ~~Should a background job reclaim reservations that time out and are never
+  read again?~~ **Decided 2026-10-06: kept** — expiry stays lazy (ADR 0003);
+  they hold quantity until read or revoked.
+- ~~Should `ProductClassified` be published so siblings stop polling
+  `GET /products/{sku}/classification`?~~ **Decided 2026-10-06: yes** —
+  published through the outbox on both topics, additive ([ADR 0031](/docs/adr/0031)).
+  `LocationRecorded` stays in-process (no consumer).
 - Should `StowStock` validate a bin against facility-layout's slot catalogue,
   not only against its own `LocationRepo`?
-- Who should call `POST /reservations/{id}/confirm-pick` in production?
-  No sibling context does.
+- ~~Who should call `POST /reservations/{id}/confirm-pick` in production?~~
+  **Decided 2026-10-06: nobody** — this context consumes fulfillment-execution's
+  pick-completion event and confirms the reservation itself; no sync REST/MCP
+  call from siblings ([ADR 0032](/docs/adr/0032), *Proposed*: the event does not
+  yet carry a reservation correlation, SKU or picked quantity).
+- ~~Should the default `LOCATION_LOOKUP_MODE` stay `permissive`?~~
+  **Decided 2026-10-06: kept** (ADR 0013/0020) — a cold facility cache would
+  reject every receipt; the cluster already injects `kafka`.
 - Should the reservation replay guard become a database constraint, closing
   the concurrent first-attempt race?
 - Placement rules for `Fragile`, `Oversized` and `HighValue` are unbuilt —

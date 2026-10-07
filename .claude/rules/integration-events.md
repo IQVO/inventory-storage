@@ -75,17 +75,18 @@ NO envelope toggle.
   `log`).
 - Topic: `warehouse.inventory.events`.
 
-## Published today: 4 of 12 catalog events
+## Published today: 5 of 13 catalog events
 
-**`StockReserved`, `ReservationRevoked`, `TransferStockAllocated` and
-`TransferStockAllocationRejected` cross the service boundary.**
+**`StockReserved`, `ReservationRevoked`, `TransferStockAllocated`,
+`TransferStockAllocationRejected` and `ProductClassified` cross the service
+boundary.**
 The Kafka adapter's `switch` has a `default: return nil` branch that
 silently drops every other domain event — deliberate, not an oversight.
-`apis/asyncapi.yaml` documents the full 10-event catalog (three of the four
-aggregates: StockUnit, Reservation, Bin/Location — `ProductClassified` is
-domain-only and is NOT in the AsyncAPI catalog, see
-`docs/docs/api-reference/events.md`) and marks every catalog-only message as
-such in its own `description`, so a downstream team cannot mistake a
+`apis/asyncapi.yaml` documents the full 13-message catalog (all four
+aggregates: StockUnit, Reservation, Bin/Location, ProductClassification —
+`ProductClassified` is published since ADR-0031, SKU master data as a
+full-state replacement, no PII; `LocationRecorded` stays in-process) and marks
+every catalog-only message as such in its own `description`, so a downstream team cannot mistake a
 documented event for a wired one.
 
 - **StockReserved** — `data`: `{"sku": "...", "quantity": N, "demand_ref": "..."}`.
@@ -114,7 +115,8 @@ new event names when wiring a publisher; carry them through with this exact
 Wire `type`s: `com.warehouse.wms.inventory-storage.reservation.StockReserved`
 and `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`
 (wes-work-planning dispatches on these exact strings). The analytics topic
-carries nine types (entity `stock`/`reservation`/`bin`, see ADR-0024).
+carries ten types (entity `stock`/`reservation`/`bin`/`product`, see ADR-0024
+and ADR-0031).
 
 Consumers should ignore unknown `type` values (the catalog will grow),
 deduplicate on `(source, id)` (Kafka delivery is at-least-once). Every

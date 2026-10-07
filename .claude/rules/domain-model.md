@@ -78,8 +78,9 @@ StockReceived, ItemStowed, LocationRecorded, StockReserved,
 ReservationExpired, ReservationRevoked, StockPicked, ItemUnlocated,
 CycleCountCompleted, DiscrepancyDetected, ProductClassified — eleven total,
 raised by four aggregates (StockUnit, Reservation, Bin/Location,
-ProductClassification). Only **StockReserved** and **ReservationRevoked**
-currently cross the service boundary via Kafka — see `integration-events.md`.
+ProductClassification). **StockReserved**, **ReservationRevoked**, the two
+transfer replies and **ProductClassified** (ADR-0031) cross the service
+boundary via Kafka — see `integration-events.md`.
 
 ## Use cases (application layer)
 

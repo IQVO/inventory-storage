@@ -2,9 +2,11 @@
 // warehouse-systems Kafka broker. It implements ports.EventPublisher, so it
 // drops in wherever the log or Postgres outbox publisher is used today.
 //
-// Only StockReserved and ReservationRevoked are part of the published
-// integration contract (see CLAUDE.md's Cross-service integration section);
-// every other domain event is a local concern and is not forwarded here.
+// Only the reservation-lifecycle events (StockReserved, ReservationRevoked),
+// the two transfer replies, and ProductClassified (SKU master data, ADR 0031)
+// are part of the published integration contract (see CLAUDE.md's
+// Cross-service integration section and apis/asyncapi.yaml); every other
+// domain event is a local concern and is not forwarded here.
 package kafka
 
 import (
@@ -22,6 +24,7 @@ import (
 
 	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
+	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
@@ -32,6 +35,11 @@ const Topic = "warehouse.inventory.events"
 // every event this publisher forwards (the Reservation aggregate raises both
 // StockReserved and ReservationRevoked — see apis/asyncapi.yaml).
 const reservationEntity = "reservation"
+
+// productEntity is the `<entity>` segment for ProductClassified, raised by
+// the ProductClassification master-data aggregate (ADR 0031, ADR 0024's
+// reserved name).
+const productEntity = "product"
 
 // tracerName scopes the publish spans this adapter emits.
 const tracerName = "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
@@ -90,6 +98,33 @@ type transferRejectedData struct {
 	Reason            string `json:"reason"`
 }
 
+// productClassifiedData is the `data` payload for ProductClassified on BOTH
+// topics (v1; ADR 0031). It is the SKU master-data classification as a
+// full-state replacement: a consumer keeping a local copy overwrites its
+// row with this, and an absent optional field means "none". No PII — SKU
+// handling attributes only.
+type productClassifiedData struct {
+	SKU              string   `json:"sku"`
+	HandlingTags     []string `json:"handling_tags"`
+	TemperatureClass string   `json:"temperature_class,omitempty"`
+	DOTHazardClass   int      `json:"dot_hazard_class,omitempty"`
+}
+
+// newProductClassifiedData maps the domain event to its wire payload.
+// HandlingTags arrive in the aggregate's stable enum order.
+func newProductClassifiedData(e product.ProductClassified) productClassifiedData {
+	tags := make([]string, 0, len(e.HandlingTags))
+	for _, tag := range e.HandlingTags {
+		tags = append(tags, string(tag))
+	}
+	return productClassifiedData{
+		SKU:              e.SKU.String(),
+		HandlingTags:     tags,
+		TemperatureClass: string(e.TemperatureClass),
+		DOTHazardClass:   int(e.DOTHazardClass),
+	}
+}
+
 // Publisher publishes StockReserved and ReservationRevoked domain events as
 // integration events on Topic. It satisfies both ports.EventPublisher
 // (direct publish) and kafka.Encoder (used by postgres.OutboxPublisher to
@@ -136,7 +171,8 @@ func NewWriter(brokers ...string) *kafkago.Writer {
 func isIntegrationEvent(event shared.DomainEvent) bool {
 	switch event.(type) {
 	case shared.StockReserved, shared.ReservationRevoked,
-		shared.TransferStockAllocated, shared.TransferStockAllocationRejected:
+		shared.TransferStockAllocated, shared.TransferStockAllocationRejected,
+		product.ProductClassified:
 		return true
 	default:
 		return false
@@ -165,6 +201,10 @@ func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Enc
 	// data is the `data` payload; transfer events carry their own shapes.
 	var data any
 	var key string
+	// entity is the `<entity>` segment of the CloudEvents type: every event
+	// here is raised by the Reservation aggregate except ProductClassified
+	// (the ProductClassification master-data aggregate, ADR 0031).
+	entity := reservationEntity
 
 	switch e := event.(type) {
 	case shared.StockReserved:
@@ -210,13 +250,20 @@ func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Enc
 		// Key = subject = transfer_line_id: a rejection has no
 		// reservation, so the line is the aggregate the reply is about.
 		key = e.TransferLineID
+	case product.ProductClassified:
+		data = newProductClassifiedData(e)
+		// Key = subject = SKU: reclassifications of one SKU stay ordered
+		// on one partition, so a consumer's local copy converges on the
+		// last write (ADR-0021).
+		entity = productEntity
+		key = e.SKU.String()
 	default:
 		return nil, nil
 	}
 
 	msg, err := cloudevents.New(cloudevents.Spec{
 		ID:        newEventID(p.NewID),
-		Entity:    reservationEntity,
+		Entity:    entity,
 		EventName: event.EventName(),
 		Subject:   key,
 		Time:      event.OccurredAt(),
@@ -234,7 +281,7 @@ func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Enc
 	headers := []kafkago.Header{cloudevents.ContentTypeHeader()}
 	otel.GetTextMapPropagator().Inject(ctx, headerCarrier{headers: &headers})
 
-	return []Encoded{{Topic: Topic, EventType: cloudevents.Type(reservationEntity, event.EventName()), Key: []byte(key), Value: msg, Headers: headers}}, nil
+	return []Encoded{{Topic: Topic, EventType: cloudevents.Type(entity, event.EventName()), Key: []byte(key), Value: msg, Headers: headers}}, nil
 }
 
 // Compile-time assertion that Publisher satisfies the outbox's Encoder port.

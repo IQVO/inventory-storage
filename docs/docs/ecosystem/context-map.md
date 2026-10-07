@@ -36,10 +36,11 @@ flowchart LR
 
     FL -->|"U OHS+PL to D CF<br/>Kafka warehouse.facility.events<br/>ZoneRegistered, LocationSlotRegistered,<br/>LocationSlotDecommissioned · LIVE"| INV
     FL -.->|"U OHS to D ACL<br/>REST GET /locations/code/classification<br/>LOCATION_LOOKUP_MODE=http · WIRED, UNUSED"| INV
-    INV -->|"U OHS+PL to D CF<br/>Kafka warehouse.inventory.events<br/>StockReserved, ReservationRevoked · LIVE"| WP
+    INV -->|"U OHS+PL to D CF<br/>Kafka warehouse.inventory.events<br/>StockReserved, ReservationRevoked,<br/>ProductClassified (no consumer yet) · LIVE"| WP
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST POST /reservations, DELETE /reservations/id,<br/>GET /products/sku/classification · LIVE"| OM
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST GET /products/sku/classification · LIVE"| WP
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST GET /products/sku/classification · LIVE"| FE
+    FE -.->|"U OHS+PL to D CF<br/>Kafka warehouse.fulfillment.events<br/>pick-completion event · PLANNED, ADR 0032"| INV
     INV -->|"U OHS+PL to D ACL<br/>REST GET /inventory/sku/usable · LIVE"| NF
     INV -->|"U OHS+PL to D CF<br/>REST GET /reservations?demandRef, reports REST,<br/>MCP check_availability, get_bin_occupancy · LIVE"| OA
     INV ~~~ WM
@@ -55,7 +56,9 @@ flowchart LR
 Arrows point **upstream → downstream**, not in the direction of the network
 call: `order-management` *calls* `POST /reservations`, but it is the
 downstream customer of this service's Open Host Service. The dashed arrow is
-wired in code but not selected in any deployed configuration; the
+wired in code but not selected in any deployed configuration (or, for the
+`fulfillment-execution` → `inventory-storage` edge, planned and not yet built
+— ADR 0032); the
 unconnected `workforce-management` node is a deliberate Separate Ways.
 Path parameters are written without braces in the diagram (`/reservations/id`
 for `/reservations/{id}`).
@@ -76,11 +79,11 @@ bounded context).
 | --- | --- | --- | --- | --- | --- |
 | 1 | `facility-layout` → `inventory-storage` | OHS + PL / CF | Kafka `warehouse.facility.events`: `com.warehouse.wms.facility-layout.zone.ZoneRegistered`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | here: `internal/adapters/outbound/facilitycache/consumer.go` (per-process group, FirstOffset replay, DLQ `warehouse.facility.events.dlq`); there: facility-layout's Kafka publisher | **Live** when `LOCATION_LOOKUP_MODE=kafka` (what `warehouse-infra` sets); the binary default `permissive` does no lookup |
 | 2 | `facility-layout` → `inventory-storage` | OHS / ACL | REST `GET /locations/{locationCode}/classification` | here: `internal/adapters/outbound/facilitylayout/client.go` + `breaker.go` (circuit breaker, ADR 0020); there: `internal/adapters/inbound/http/server.go` route `/locations/{locationCode}/classification` | **Wired, unused** — `LOCATION_LOOKUP_MODE=http` is the documented rollback for #1 |
-| 3 | `inventory-storage` → `wes-work-planning` | OHS + PL / CF | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.reservation.StockReserved`, `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | here: `internal/adapters/outbound/kafka/publisher.go` (via outbox relay); there: `internal/adapters/inbound/kafka/consumer.go`, group `wes-work-planning`, projects `UsableInventoryObserved` | **Live** (`EVENT_PUBLISHER=kafka`) |
+| 3 | `inventory-storage` → `wes-work-planning` | OHS + PL / CF | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.reservation.StockReserved`, `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`; also published there (no consumer yet): `com.warehouse.wms.inventory-storage.product.ProductClassified` ([ADR 0031](/docs/adr/0031)) | here: `internal/adapters/outbound/kafka/publisher.go` (via outbox relay); there: `internal/adapters/inbound/kafka/consumer.go`, group `wes-work-planning`, projects `UsableInventoryObserved` | **Live** (`EVENT_PUBLISHER=kafka`) |
 | 4 | `inventory-storage` → `order-management` | OHS + PL / C/S + ACL | REST `POST /reservations` (with `Idempotency-Key`), `DELETE /reservations/{id}`, `GET /products/{sku}/classification` | there: `internal/adapters/outbound/inventorystorage/client.go`, `internal/adapters/outbound/productclassification/client.go`; gated by `INVENTORY_STORAGE_MODE` / `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** in the cluster; caller default `permissive` |
 | 5 | `inventory-storage` → `wes-work-planning` | OHS + PL / C/S + ACL | REST `GET /products/{sku}/classification` | there: `internal/adapters/outbound/productclassification/client.go`; `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** when the caller sets `http` |
 | 6 | `inventory-storage` → `fulfillment-execution` | OHS + PL / C/S + ACL | REST `GET /products/{sku}/classification` | there: `internal/adapters/outbound/productclassification/client.go`; `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** when the caller sets `http` |
-| 7 | `inventory-storage` → `fulfillment-execution` | OHS / — | REST `POST /reservations/{id}/confirm-pick` | here: the route exists; there: no client | **Deliberately absent** — no sibling context confirms picks; only the `e2e-tests` simulator calls it |
+| 7 | `fulfillment-execution` → `inventory-storage` | OHS + PL / CF | **Planned (decided 2026-10-06, [ADR 0032](/docs/adr/0032), *Proposed*)**: Kafka `warehouse.fulfillment.events`, a pick-completion event this service consumes to confirm the reservation itself. No sync call: the REST route `POST /reservations/{id}/confirm-pick` stays for operators and the simulator only | here: the route exists, no consumer yet; there: no event carries a reservation correlation (`reservation_id` or `demand_ref` + `sku`) or the picked quantity — `TaskCompleted` has `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type` | **Not built — blocked on fulfillment-execution / wes-work-planning fields (ADR 0032)**; only the `e2e-tests` simulator confirms picks today |
 | 8 | `inventory-storage` → `network-fulfillment` | OHS + PL / ACL | REST `GET /inventory/{sku}/usable` | there: `internal/adapters/outbound/inventoryclient/client.go`, `INVENTORY_STORAGE_URL` (default `http://localhost:8080`, no mode switch) | **Live** |
 | 9 | `inventory-storage` → `warehouse-ops-agent` | OHS + PL / CF | REST `GET /reservations?demandRef=`; reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP (Streamable HTTP) `check_availability`, `get_bin_occupancy` | there: `internal/adapters/outbound/restclient/clients.go`, `reports_clients.go`, `internal/adapters/outbound/mcpclient/inventory_storage.go`; `INVENTORY_STORAGE_REST_URL`, `INVENTORY_STORAGE_REPORTS_REST_URL`, `INVENTORY_STORAGE_MCP_ENDPOINT` | **Live**, read-only; the MCP write tool `revoke_reservation` exists here but the agent does not call it |
 | 10 | `inventory-storage` ↔ `workforce-management` | Separate Ways | — | no client, topic or type in either repo | **Deliberately absent** |
@@ -96,10 +99,14 @@ message is CloudEvents 1.0 structured mode (ADR 0024).
 - **`process-path-management`, `labor-performance`, `warehouse-planning`** —
   no relationship in either direction today.
 - **`fulfillment-execution` events** — this service does not subscribe to
-  `warehouse.fulfillment.events`. Consuming a `PickCompleted` event would
-  make this ledger a *follower* of another context's execution stream; the
-  intended path is the explicit `confirm-pick` command (row 7), which keeps
-  this service the one that decides whether consumption is legal.
+  `warehouse.fulfillment.events` **yet**. The decided direction (2026-10-06,
+  [ADR 0032](/docs/adr/0032), *Proposed*) reverses the earlier "explicit
+  `confirm-pick` command" stance: a pick-completion event will be consumed
+  here (idempotent consumer, existing `ConfirmPick` use case) rather than
+  fulfillment-execution or wes-work-planning calling REST/MCP — still no
+  shared types, and this service remains the one that decides whether
+  consumption is legal. Blocked until the event carries a reservation
+  correlation and the picked quantity.
 
 ## This service's edges, in prose
 
@@ -134,7 +141,8 @@ own invariants.
 ### Read-only callers
 
 `wes-work-planning` and `fulfillment-execution` read product classification
-master data; `network-fulfillment` reads usable inventory to answer
+master data (they can move to the published `ProductClassified` event,
+[ADR 0031](/docs/adr/0031), whenever they choose); `network-fulfillment` reads usable inventory to answer
 availability for its external network; `warehouse-ops-agent` reads
 reservations by demand reference for the Order Lifecycle console, the Flow &
 Accuracy report, and two MCP read tools. Each caller translates the response
@@ -162,7 +170,9 @@ dependency of a stow. See
 The synchronous `GET /locations/{locationCode}/classification` of ADR 0009
 survives as `LOCATION_LOOKUP_MODE=http`, the rollback. The binary's default
 remains `permissive` (no lookup), so a deployment that sets neither mode
-enforces no placement rules at all.
+enforces no placement rules at all. **Decided 2026-10-06: kept permissive**
+(ADR 0013/0020) — a cold facility cache would reject every receipt, and the
+`warehouse-infra` cluster already injects `kafka`.
 
 **What is still not built:** `StowStock` only confirms that the bin exists in
 this service's own `LocationRepo` — it does not validate the bin against

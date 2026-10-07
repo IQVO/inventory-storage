@@ -96,6 +96,7 @@ sequenceDiagram
     Note over INV: facility location cache maps slot to zone, hazmat and temperature class
     IC->>INV: cmd: RegisterBin PUT /bins/{binId}
     IC->>INV: cmd: ClassifyProduct PUT /products/{sku}/classification
+    Note over INV: evt: com.warehouse.wms.inventory-storage.product.ProductClassified on warehouse.inventory.events and warehouse.inventory.analytics (ADR 0031), no consumer yet, the projector ignores it
     IC->>INV: cmd: ReceiveStock POST /stock/receive
     INV-)PJ: evt: com.warehouse.wms.inventory-storage.stock.StockReceived on warehouse.inventory.analytics
     IC->>INV: cmd: StowStock POST /stock/stow
@@ -108,7 +109,7 @@ Source: `internal/adapters/outbound/facilitycache/consumer.go`,
 `receive_stock.go`, `stow_stock.go`, `internal/adapters/outbound/kafka/analytics_publisher.go`.
 "Inventory control" is whoever drives these routes — an operator or the
 `e2e-tests` warehouse-day simulator; no sibling context does.
-Omitted: `LocationRecorded` and `ProductClassified` (never published) and
+Omitted: `LocationRecorded` (in-process only by decision — no consumer) and
 the 409 rejections.
 
 ## 4. Availability, cycle count and the accuracy report

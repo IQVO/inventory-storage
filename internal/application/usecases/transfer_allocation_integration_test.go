@@ -128,6 +128,16 @@ func transferSharedEnv(t *testing.T) *transferTestEnv {
 		if err != nil {
 			t.Fatalf("resolve kafka brokers: %v", err)
 		}
+		// A broker that accepts connections is NOT yet a usable group
+		// coordinator: the first group request creates __consumer_offsets
+		// (50 partitions) and answers [15] GroupCoordinatorNotAvailable
+		// until it exists. A consumer that hits that window sits in
+		// kafka-go's fixed 5 s JoinGroupBackoff per attempt, which on a
+		// loaded CI runner exceeded runConsumerUntil's budget (the
+		// "timed out waiting for the transfer consumer to settle; Run:
+		// (still running)" flake). Wait for readiness here, once, instead
+		// of racing it inside the first test's timed window.
+		waitForGroupCoordinator(t, brokers[0])
 		transferSharedBrokers = brokers
 	}
 
@@ -169,6 +179,34 @@ func bootSharedPostgresForTransfers(ctx context.Context, t *testing.T) (*pgxpool
 }
 
 var transferPostgresContainer testcontainers.Container
+
+// waitForGroupCoordinator blocks until the broker can serve group
+// coordination (the internal __consumer_offsets topic exists and its
+// coordinator partition has a leader). It polls FindCoordinator for a
+// throwaway group — the very request whose [15] answer a cold broker
+// gives — and returns on the first success; the deadline only bounds a
+// broker that never becomes ready, it is not a sleep.
+func waitForGroupCoordinator(t *testing.T, broker string) {
+	t.Helper()
+	client := &kafkago.Client{Addr: kafkago.TCP(broker), Timeout: 10 * time.Second}
+	deadline := time.Now().Add(2 * time.Minute)
+	var last string
+	for time.Now().Before(deadline) {
+		resp, err := client.FindCoordinator(context.Background(), &kafkago.FindCoordinatorRequest{
+			Addr: kafkago.TCP(broker), Key: "transfer-itest-coordinator-warmup", KeyType: kafkago.CoordinatorKeyTypeConsumer,
+		})
+		switch {
+		case err != nil:
+			last = err.Error()
+		case resp.Error != nil:
+			last = resp.Error.Error()
+		default:
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("kafka group coordinator never became available on %s: %s", broker, last)
+}
 
 // createTransferTopic creates topic with numPartitions partitions on
 // broker and waits until the metadata is propagated. Creation errors
@@ -350,26 +388,40 @@ func TestIntegration_TransferAllocation_DuplicateCommand_OneReservationOneDecrem
 	env := transferSharedEnv(t)
 	ctx := context.Background()
 
-	site, _ := shared.NewSiteID("SITE-A")
-	seedTransferStock(t, env, "su-dup", "SKU-DUP", site, 10)
+	// Every identifier carries a per-run suffix: the Postgres container
+	// is shared by the whole package run, so fixed ids made the test
+	// non-repeatable (-count=N) and let other scenarios' rows leak into
+	// its global counts.
+	run := uniqueRun()
+	unitID, sku, transferID, lineID := "su-dup-"+run, "SKU-DUP-"+run, "tr-dup-"+run, "tl-dup-"+run
+	ce1, ce2 := "ce-dup-1-"+run, "ce-dup-2-"+run
 
-	consumer := wireTransferConsumer(t, env, "transfer-itest-dup")
+	site, _ := shared.NewSiteID("SITE-A")
+	seedTransferStock(t, env, unitID, sku, site, 10)
+
+	group := "transfer-itest-dup-" + run
+	consumer := wireTransferConsumer(t, env, group)
 
 	// The SAME CloudEvent id twice (a genuine broker redelivery), plus a
 	// NEW id for the same line (a planning retry): all must collapse to
 	// one decision.
-	publishTransferCommand(t, env.topic, env.brokers, "ce-dup-1", "tr-dup", "tl-dup", "SITE-A", "SKU-DUP", 6)
-	publishTransferCommand(t, env.topic, env.brokers, "ce-dup-1", "tr-dup", "tl-dup", "SITE-A", "SKU-DUP", 6)
-	publishTransferCommand(t, env.topic, env.brokers, "ce-dup-2", "tr-dup", "tl-dup", "SITE-A", "SKU-DUP", 6)
+	publishTransferCommand(t, env.topic, env.brokers, ce1, transferID, lineID, "SITE-A", sku, 6)
+	publishTransferCommand(t, env.topic, env.brokers, ce1, transferID, lineID, "SITE-A", sku, 6)
+	publishTransferCommand(t, env.topic, env.brokers, ce2, transferID, lineID, "SITE-A", sku, 6)
 
-	// Settled when the ledger row exists AND the reply event hit the outbox.
+	// Settled when the ledger row exists, the reply event hit the
+	// outbox, AND the group has committed past all three commands — the
+	// assertions below are about what the DUPLICATES did, so they must
+	// have been consumed (not merely the first command) before we look.
 	runConsumerUntil(t, consumer, func() bool {
-		return transferLedgerOutcome(t, env, "tl-dup") != "" && outboxTransferEvents(t, env) >= 1
+		return transferLedgerOutcome(t, env, lineID) != "" &&
+			outboxEventsForLine(t, env, "TransferStockAllocated", lineID) >= 1 &&
+			groupLag(env, group) == 0
 	})
 
 	// Ledger: exactly one row, ALLOCATED.
 	var ledgerRows int
-	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM transfer_allocations WHERE transfer_line_id = $1`, "tl-dup").Scan(&ledgerRows); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM transfer_allocations WHERE transfer_line_id = $1`, lineID).Scan(&ledgerRows); err != nil {
 		t.Fatalf("count ledger: %v", err)
 	}
 	if ledgerRows != 1 {
@@ -378,7 +430,7 @@ func TestIntegration_TransferAllocation_DuplicateCommand_OneReservationOneDecrem
 
 	// Reservations: exactly one for the transfer's demandRef.
 	var resRows int
-	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE demand_ref = $1`, usecases.TransferDemandRef("tr-dup", "tl-dup")).Scan(&resRows); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE demand_ref = $1`, usecases.TransferDemandRef(transferID, lineID)).Scan(&resRows); err != nil {
 		t.Fatalf("count reservations: %v", err)
 	}
 	if resRows != 1 {
@@ -386,18 +438,12 @@ func TestIntegration_TransferAllocation_DuplicateCommand_OneReservationOneDecrem
 	}
 
 	// Stock: usable fell by exactly 6, once.
-	if got := usableAt(t, env, "su-dup"); got != 4 {
+	if got := usableAt(t, env, unitID); got != 4 {
 		t.Fatalf("usable after duplicate commands = %d, want 4 (one decrement of 6)", got)
 	}
 
 	// Exactly ONE reply event for the line: the duplicates republished nothing.
-	var allocatedEvents int
-	if err := env.pool.QueryRow(ctx,
-		`SELECT count(*) FROM outbox_events WHERE event_type = 'com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated'`,
-	).Scan(&allocatedEvents); err != nil {
-		t.Fatalf("count outbox allocated events: %v", err)
-	}
-	if allocatedEvents != 1 {
+	if allocatedEvents := outboxEventsForLine(t, env, "TransferStockAllocated", lineID); allocatedEvents != 1 {
 		t.Fatalf("TransferStockAllocated outbox rows = %d, want exactly 1 (replays republish nothing)", allocatedEvents)
 	}
 }
@@ -407,20 +453,22 @@ func TestIntegration_TransferAllocation_DuplicateCommand_OneReservationOneDecrem
 func TestIntegration_TransferAllocation_OtherSiteStockUntouched(t *testing.T) {
 	env := transferSharedEnv(t)
 
+	run := uniqueRun()
+	unitA, unitB, sku, lineID := "su-a-"+run, "su-b-"+run, "SKU-SITES-"+run, "tl-sites-"+run
 	siteA, _ := shared.NewSiteID("SITE-A")
 	siteB, _ := shared.NewSiteID("SITE-B")
-	seedTransferStock(t, env, "su-a", "SKU-SITES", siteA, 10)
-	seedTransferStock(t, env, "su-b", "SKU-SITES", siteB, 10)
+	seedTransferStock(t, env, unitA, sku, siteA, 10)
+	seedTransferStock(t, env, unitB, sku, siteB, 10)
 
-	consumer := wireTransferConsumer(t, env, "transfer-itest-sites")
-	publishTransferCommand(t, env.topic, env.brokers, "ce-sites-1", "tr-sites", "tl-sites", "SITE-A", "SKU-SITES", 7)
+	consumer := wireTransferConsumer(t, env, "transfer-itest-sites-"+run)
+	publishTransferCommand(t, env.topic, env.brokers, "ce-sites-1-"+run, "tr-sites-"+run, lineID, "SITE-A", sku, 7)
 
-	runConsumerUntil(t, consumer, func() bool { return transferLedgerOutcome(t, env, "tl-sites") != "" })
+	runConsumerUntil(t, consumer, func() bool { return transferLedgerOutcome(t, env, lineID) != "" })
 
-	if got := usableAt(t, env, "su-a"); got != 3 {
+	if got := usableAt(t, env, unitA); got != 3 {
 		t.Fatalf("origin site usable = %d, want 3", got)
 	}
-	if got := usableAt(t, env, "su-b"); got != 10 {
+	if got := usableAt(t, env, unitB); got != 10 {
 		t.Fatalf("other site usable = %d, want 10 (untouched)", got)
 	}
 }
@@ -431,17 +479,19 @@ func TestIntegration_TransferAllocation_InsufficientStock_OneRejection(t *testin
 	env := transferSharedEnv(t)
 	ctx := context.Background()
 
+	run := uniqueRun()
+	unitID, sku, transferID, lineID := "su-ins-"+run, "SKU-INS-"+run, "tr-ins-"+run, "tl-ins-"+run
 	siteA, _ := shared.NewSiteID("SITE-A")
-	seedTransferStock(t, env, "su-ins", "SKU-INS", siteA, 3)
+	seedTransferStock(t, env, unitID, sku, siteA, 3)
 
-	consumer := wireTransferConsumer(t, env, "transfer-itest-ins")
-	publishTransferCommand(t, env.topic, env.brokers, "ce-ins-1", "tr-ins", "tl-ins", "SITE-A", "SKU-INS", 6)
+	consumer := wireTransferConsumer(t, env, "transfer-itest-ins-"+run)
+	publishTransferCommand(t, env.topic, env.brokers, "ce-ins-1-"+run, transferID, lineID, "SITE-A", sku, 6)
 
-	runConsumerUntil(t, consumer, func() bool { return transferLedgerOutcome(t, env, "tl-ins") != "" })
+	runConsumerUntil(t, consumer, func() bool { return transferLedgerOutcome(t, env, lineID) != "" })
 
 	var outcome, reason string
 	if err := env.pool.QueryRow(ctx,
-		`SELECT outcome, rejection_reason FROM transfer_allocations WHERE transfer_line_id = $1`, "tl-ins",
+		`SELECT outcome, rejection_reason FROM transfer_allocations WHERE transfer_line_id = $1`, lineID,
 	).Scan(&outcome, &reason); err != nil {
 		t.Fatalf("read ledger: %v", err)
 	}
@@ -450,40 +500,29 @@ func TestIntegration_TransferAllocation_InsufficientStock_OneRejection(t *testin
 	}
 
 	// Exactly one rejection reply event.
-	var rejectedEvents int
-	if err := env.pool.QueryRow(ctx,
-		`SELECT count(*) FROM outbox_events WHERE event_type = 'com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected'`,
-	).Scan(&rejectedEvents); err != nil {
-		t.Fatalf("count outbox rejected events: %v", err)
-	}
-	if rejectedEvents != 1 {
+	if rejectedEvents := outboxEventsForLine(t, env, "TransferStockAllocationRejected", lineID); rejectedEvents != 1 {
 		t.Fatalf("TransferStockAllocationRejected outbox rows = %d, want exactly 1", rejectedEvents)
 	}
 
 	// A replay of the same command (new CE id, same line) changes
 	// nothing. The ledger is already decided so its outcome cannot
 	// signal consumption; give the consumer a bounded window instead.
-	publishTransferCommand(t, env.topic, env.brokers, "ce-ins-2", "tr-ins", "tl-ins", "SITE-A", "SKU-INS", 6)
+	publishTransferCommand(t, env.topic, env.brokers, "ce-ins-2-"+run, transferID, lineID, "SITE-A", sku, 6)
 	time.Sleep(3 * time.Second)
 
 	var rows int
 	if err := env.pool.QueryRow(ctx,
-		`SELECT count(*) FROM transfer_allocations WHERE transfer_line_id = $1`, "tl-ins",
+		`SELECT count(*) FROM transfer_allocations WHERE transfer_line_id = $1`, lineID,
 	).Scan(&rows); err != nil {
 		t.Fatalf("count ledger: %v", err)
 	}
 	if rows != 1 {
 		t.Fatalf("ledger rows after replay = %d, want exactly 1", rows)
 	}
-	if got := usableAt(t, env, "su-ins"); got != 3 {
+	if got := usableAt(t, env, unitID); got != 3 {
 		t.Fatalf("usable after rejection = %d, want 3 (untouched)", got)
 	}
-	if err := env.pool.QueryRow(ctx,
-		`SELECT count(*) FROM outbox_events WHERE event_type = 'com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected'`,
-	).Scan(&rejectedEvents); err != nil {
-		t.Fatalf("recount rejected events: %v", err)
-	}
-	if rejectedEvents != 1 {
+	if rejectedEvents := outboxEventsForLine(t, env, "TransferStockAllocationRejected", lineID); rejectedEvents != 1 {
 		t.Fatalf("rejection events after replay = %d, want still exactly 1", rejectedEvents)
 	}
 }
@@ -501,8 +540,10 @@ func TestIntegration_TransferAllocation_OutboxFailureRollsEverythingBack(t *test
 	transfers := postgres.NewTransferAllocationRepo(env.pool)
 	uow := postgres.NewUnitOfWork(env.pool)
 
+	run := uniqueRun()
+	unitID, skuStr, transferID, lineID := "su-rb-"+run, "SKU-RB-"+run, "tr-rb-"+run, "tl-rb-"+run
 	siteA, _ := shared.NewSiteID("SITE-A")
-	seedTransferStock(t, env, "su-rb", "SKU-RB", siteA, 10)
+	seedTransferStock(t, env, unitID, skuStr, siteA, 10)
 
 	// failingTransferEncoder forces the outbox encode step to fail so
 	// the transaction's LAST write aborts after the earlier ones — the
@@ -526,20 +567,20 @@ func TestIntegration_TransferAllocation_OutboxFailureRollsEverythingBack(t *test
 		t.Fatalf("count outbox before: %v", err)
 	}
 
-	sku, _ := shared.NewSKU("SKU-RB")
+	sku, _ := shared.NewSKU(skuStr)
 	if _, err := uc.Execute(ctx, usecases.TransferCommand{
-		TransferID: "tr-rb", TransferLineID: "tl-rb", OriginSiteID: siteA, SKU: sku, Quantity: mustQty(t, 6),
+		TransferID: transferID, TransferLineID: lineID, OriginSiteID: siteA, SKU: sku, Quantity: mustQty(t, 6),
 	}); err == nil {
 		t.Fatal("expected the outbox failure to surface as an error")
 	}
 
 	// Stock: no decrement survived.
-	if got := usableAt(t, env, "su-rb"); got != 10 {
+	if got := usableAt(t, env, unitID); got != 10 {
 		t.Fatalf("usable after rolled-back allocation = %d, want 10", got)
 	}
 	// Reservation: none was created.
 	var resRows int
-	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE demand_ref = $1`, usecases.TransferDemandRef("tr-rb", "tl-rb")).Scan(&resRows); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE demand_ref = $1`, usecases.TransferDemandRef(transferID, lineID)).Scan(&resRows); err != nil {
 		t.Fatalf("count reservations: %v", err)
 	}
 	if resRows != 0 {
@@ -547,7 +588,7 @@ func TestIntegration_TransferAllocation_OutboxFailureRollsEverythingBack(t *test
 	}
 	// Ledger: no row was written.
 	var ledgerRows int
-	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM transfer_allocations WHERE transfer_line_id = $1`, "tl-rb").Scan(&ledgerRows); err != nil {
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM transfer_allocations WHERE transfer_line_id = $1`, lineID).Scan(&ledgerRows); err != nil {
 		t.Fatalf("count ledger: %v", err)
 	}
 	if ledgerRows != 0 {
@@ -615,15 +656,77 @@ func transferLedgerOutcome(t *testing.T, env *transferTestEnv, lineID string) st
 	return *outcome
 }
 
-// outboxTransferEvents counts the transfer reply events in the outbox
-// (published or not — the row's existence is the durable fact).
-func outboxTransferEvents(t *testing.T, env *transferTestEnv) int {
+// uniqueRun returns a per-invocation suffix for ids, so a test never
+// collides with its own earlier run (-count=N) or with another test's
+// rows on the shared database.
+func uniqueRun() string { return fmt.Sprintf("%d", time.Now().UnixNano()) }
+
+// outboxEventsForLine counts the outbox rows of one transfer reply event
+// type that belong to ONE transfer line (published or not — the row's
+// existence is the durable fact). Scoping by line, not by type alone,
+// keeps the count independent of every other scenario on the shared
+// database. The CloudEvent sits in outbox_events.value as JSON bytes.
+func outboxEventsForLine(t *testing.T, env *transferTestEnv, eventName, lineID string) int {
 	t.Helper()
 	var n int
-	if err := env.pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM outbox_events WHERE event_type LIKE 'com.warehouse.wms.inventory-storage.reservation.TransferStock%'`,
+	if err := env.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM outbox_events
+		WHERE event_type = $1
+		  AND convert_from(value, 'UTF8')::jsonb -> 'data' ->> 'transfer_line_id' = $2`,
+		"com.warehouse.wms.inventory-storage.reservation."+eventName, lineID,
 	).Scan(&n); err != nil {
-		t.Fatalf("count outbox transfer events: %v", err)
+		t.Fatalf("count outbox %s events for %s: %v", eventName, lineID, err)
 	}
 	return n
+}
+
+// groupLag returns how many messages of env.topic the consumer group has
+// not yet committed past (sum over partitions of end offset minus the
+// committed offset). Any lookup error returns -1 ("not known to be
+// caught up"), so a caller polling for 0 simply keeps waiting.
+func groupLag(env *transferTestEnv, group string) int64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addr := kafkago.TCP(env.brokers[0])
+	client := &kafkago.Client{Addr: addr, Timeout: 5 * time.Second}
+
+	meta, err := client.Metadata(ctx, &kafkago.MetadataRequest{Addr: addr, Topics: []string{env.topic}})
+	if err != nil || len(meta.Topics) != 1 || meta.Topics[0].Error != nil {
+		return -1
+	}
+	var parts []int
+	ends := map[string][]kafkago.OffsetRequest{}
+	for _, p := range meta.Topics[0].Partitions {
+		parts = append(parts, p.ID)
+		ends[env.topic] = append(ends[env.topic], kafkago.LastOffsetOf(p.ID))
+	}
+	end, err := client.ListOffsets(ctx, &kafkago.ListOffsetsRequest{Addr: addr, Topics: ends})
+	if err != nil {
+		return -1
+	}
+	committed, err := client.OffsetFetch(ctx, &kafkago.OffsetFetchRequest{
+		Addr: addr, GroupID: group, Topics: map[string][]int{env.topic: parts},
+	})
+	if err != nil {
+		return -1
+	}
+	done := map[int]int64{}
+	for _, p := range committed.Topics[env.topic] {
+		if p.Error != nil {
+			return -1
+		}
+		if p.CommittedOffset > 0 {
+			done[p.Partition] = p.CommittedOffset
+		}
+	}
+	var lag int64
+	for _, p := range end.Topics[env.topic] {
+		if p.Error != nil {
+			return -1
+		}
+		if d := p.LastOffset - done[p.Partition]; d > 0 {
+			lag += d
+		}
+	}
+	return lag
 }

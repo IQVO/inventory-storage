@@ -124,7 +124,7 @@ The aggregate itself raises nothing; the use cases build these from it
 | --- | --- | --- |
 | StockReceived | `com.warehouse.wms.inventory-storage.stock.StockReceived` | `ReceiveStock` (no unit exists yet) |
 | ItemStowed | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | `StowStock` |
-| LocationRecorded | not published (would be `...stock.LocationRecorded`) | `StowStock` |
+| LocationRecorded | not published (would be `...stock.LocationRecorded`) — **decided 2026-10-06: stays in-process**, no consumer | `StowStock` |
 | ItemUnlocated | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | `RunCycleCount` |
 
 ### 8. Throughput (estimate)
@@ -418,12 +418,14 @@ Unclassified SKUs, unknown bins and unclassified occupants are **fail-open**.
 
 | Event | Full CloudEvents `type` | Topics |
 | --- | --- | --- |
-| ProductClassified | not published (would be `com.warehouse.wms.inventory-storage.product.ProductClassified`) | none — goes through `EventPublisher`, but neither Kafka encoder maps it |
+| ProductClassified | `com.warehouse.wms.inventory-storage.product.ProductClassified` (subject and Kafka key = SKU; `data` = `{sku, handling_tags, temperature_class?, dot_hazard_class?}`, a full-state replacement) | `warehouse.inventory.events` and `warehouse.inventory.analytics`, through the outbox in the same transaction as the save — **published since 2026-10-06**, [ADR 0031](/docs/adr/0031) |
 
 ### 8. Throughput (estimate)
 
 Low writes (catalogue changes), high reads: every classified-SKU stow and
-every sibling's `GET /products/{sku}/classification`.
+every sibling's `GET /products/{sku}/classification` — siblings can now keep a
+local copy from the published `ProductClassified` event instead
+([ADR 0031](/docs/adr/0031)); the REST read stays.
 
 ### 9. Size (estimate)
 

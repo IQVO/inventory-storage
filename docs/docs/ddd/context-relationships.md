@@ -116,10 +116,22 @@ classification master data (`GET /products/{sku}/classification`).
 
 Strategically that is right: `fulfillment-execution` owns the *task* lifecycle
 and needs work to do, not stock truth. The accounting consequence of a pick
-reaches this service as an explicit `POST /reservations/{id}/confirm-pick`
-call, which is a deliberate command, not an event this service happens to
-overhear. (No sibling bounded context issues that command today; only the
-`e2e-tests` warehouse-day simulator does.)
+reaches this service as a **pick-completion event**, not as a synchronous
+call. **Decided 2026-10-06 ([ADR 0032](/docs/adr/0032), *Proposed*):** this
+service will consume a pick-completion integration event published by
+`fulfillment-execution` and confirm the matching reservation itself (the
+existing `ConfirmPick` use case); neither `fulfillment-execution` nor
+`wes-work-planning` ever calls `POST /reservations/{id}/confirm-pick`. It is
+blocked today because no published event carries a reservation correlation
+(`reservation_id` or `demand_ref` + `sku`) and the picked quantity —
+`TaskCompleted` carries only `task_id`, `station_id`, `work_unit_id`,
+`associate_id`, `duration_seconds` and `task_type`. Until then only the
+`e2e-tests` warehouse-day simulator issues the command.
+
+The read of product classification master data
+(`GET /products/{sku}/classification`) can likewise be replaced by the
+published `ProductClassified` event ([ADR 0031](/docs/adr/0031)); moving off
+polling is `fulfillment-execution`'s own call.
 
 ### inventory-storage ↔ workforce-management — **no relationship**
 
