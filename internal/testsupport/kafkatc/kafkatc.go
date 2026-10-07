@@ -94,7 +94,14 @@ func WaitForGroupCoordinator(ctx context.Context, addr string) error {
 	ctx, cancel := context.WithTimeout(ctx, coordinatorReadyBudget)
 	defer cancel()
 
-	client := &kafkago.Client{Addr: kafkago.TCP(addr), Timeout: 10 * time.Second}
+	// A dedicated Transport, NOT kafka-go's process-global DefaultTransport:
+	// the default one caches cluster metadata (all topics, ~6 s TTL), so a
+	// warm-up poll through it would leave every later writer in the test
+	// binary with a stale view that lacks the topics created right after
+	// ("Unknown Topic Or Partition" for a brand-new topic).
+	transport := &kafkago.Transport{}
+	defer transport.CloseIdleConnections()
+	client := &kafkago.Client{Addr: kafkago.TCP(addr), Timeout: 10 * time.Second, Transport: transport}
 	var last string
 	for {
 		resp, err := client.FindCoordinator(ctx, &kafkago.FindCoordinatorRequest{

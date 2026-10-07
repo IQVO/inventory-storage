@@ -34,7 +34,10 @@ func TestStart_ReturnsAGroupCoordinatorReadyBroker(t *testing.T) {
 	}
 
 	// A FRESH group key, one single un-retried request: it must succeed now.
-	client := &kafkago.Client{Addr: kafkago.TCP(broker.Addrs[0]), Timeout: 10 * time.Second}
+	// (Dedicated transport: see WaitForGroupCoordinator.)
+	transport := &kafkago.Transport{}
+	defer transport.CloseIdleConnections()
+	client := &kafkago.Client{Addr: kafkago.TCP(broker.Addrs[0]), Timeout: 10 * time.Second, Transport: transport}
 	resp, err := client.FindCoordinator(context.Background(), &kafkago.FindCoordinatorRequest{
 		Addr: kafkago.TCP(broker.Addrs[0]), Key: fmt.Sprintf("kafkatc-fresh-%d", time.Now().UnixNano()),
 		KeyType: kafkago.CoordinatorKeyTypeConsumer,
@@ -48,7 +51,8 @@ func TestStart_ReturnsAGroupCoordinatorReadyBroker(t *testing.T) {
 
 	// And a real consumer group joins and reads end to end.
 	topic := fmt.Sprintf("kafkatc.itest-%d", time.Now().UnixNano())
-	w := &kafkago.Writer{Addr: kafkago.TCP(broker.Addrs...), Topic: topic, AllowAutoTopicCreation: true}
+	createTopic(t, broker.Addrs[0], topic)
+	w := &kafkago.Writer{Addr: kafkago.TCP(broker.Addrs...), Topic: topic}
 	defer func() { _ = w.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -67,4 +71,26 @@ func TestStart_ReturnsAGroupCoordinatorReadyBroker(t *testing.T) {
 	if string(msg.Value) != "v" {
 		t.Fatalf("read %q, want %q", msg.Value, "v")
 	}
+}
+
+// createTopic creates a 1-partition topic explicitly (the fleet's tests never
+// rely on auto-creation) and waits until its partition is readable.
+func createTopic(t *testing.T, addr, topic string) {
+	t.Helper()
+	conn, err := kafkago.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial %s: %v", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := conn.CreateTopics(kafkago.TopicConfig{Topic: topic, NumPartitions: 1, ReplicationFactor: 1}); err != nil {
+		t.Fatalf("create topic %s: %v", topic, err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if parts, err := conn.ReadPartitions(topic); err == nil && len(parts) > 0 {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("topic %s never became readable", topic)
 }
