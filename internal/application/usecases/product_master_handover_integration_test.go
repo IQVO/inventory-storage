@@ -22,8 +22,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	kafkago "github.com/segmentio/kafka-go"
-	"github.com/testcontainers/testcontainers-go"
-	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 
 	inboundkafka "github.com/claudioed/inventory-storage/internal/adapters/inbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
@@ -33,6 +31,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
+	"github.com/claudioed/inventory-storage/internal/testsupport/kafkatc"
 )
 
 // publishProductMasterClassified writes one CloudEvent exactly as
@@ -115,16 +114,15 @@ func productMasterTestEnv(t *testing.T, topic string) *transferTestEnv {
 		}
 		transferSharedPool = pool
 	}
-	container, err := tckafka.Run(ctx, "confluentinc/confluent-local:7.6.1", tckafka.WithClusterID("product-master-itest"))
+	// kafkatc.Start returns only once the broker is a usable group coordinator
+	// (a cold broker's [15] + kafka-go's fixed 5 s JoinGroupBackoff would
+	// otherwise eat the consumer's 45 s settle window).
+	broker, err := kafkatc.Start(ctx, "product-master-itest")
 	if err != nil {
-		t.Fatalf("start kafka container: %v", err)
+		t.Fatalf("%v", err)
 	}
-	t.Cleanup(func() { _ = testcontainers.TerminateContainer(container) })
-	brokers, err := container.Brokers(ctx)
-	if err != nil {
-		t.Fatalf("resolve kafka brokers: %v", err)
-	}
-	waitForGroupCoordinator(t, brokers[0])
+	t.Cleanup(func() { _ = broker.Terminate() })
+	brokers := broker.Addrs
 	createTransferTopic(t, brokers[0], topic, 2)
 	return &transferTestEnv{pool: transferSharedPool, brokers: brokers, topic: topic}
 }
