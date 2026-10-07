@@ -65,6 +65,32 @@ type ReservationMetrics interface {
 	ReservationRevoked(ctx context.Context)
 }
 
+// Outcomes ConfirmPicksForOrder reports to PickConfirmationMetrics, one per
+// reservation it looked at (ADR 0035).
+const (
+	// PickOutcomeConfirmed: an ACTIVE reservation was confirmed as picked.
+	PickOutcomeConfirmed = "confirmed"
+	// PickOutcomeExpired: the reservation had expired (before, or lazily on
+	// this lookup) so the completion could not confirm it. Skipped, never an
+	// error: alert on this one, it is stock that went back to usable while the
+	// physical pick still happened.
+	PickOutcomeExpired = "expired"
+	// PickOutcomeAlreadyPicked: already CONFIRMED (a redelivery, or the REST
+	// route got there first).
+	PickOutcomeAlreadyPicked = "already_picked"
+	// PickOutcomeRevoked: REVOKED before the pick completed.
+	PickOutcomeRevoked = "revoked"
+)
+
+// PickConfirmationMetrics records what the TaskCompleted consumer did with
+// each reservation of a completed order, so skipped (expired) confirmations
+// are observable. Use cases treat a nil value as "not instrumented".
+type PickConfirmationMetrics interface {
+	// PickConfirmation adds n to the counter for outcome (one of the
+	// PickOutcome* constants).
+	PickConfirmation(ctx context.Context, outcome string, n int)
+}
+
 // Clock abstracts current time so use cases and tests are deterministic.
 type Clock interface {
 	Now() time.Time
