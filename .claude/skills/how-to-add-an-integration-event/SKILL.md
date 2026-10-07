@@ -87,10 +87,11 @@ the adapter layer). In the Kafka publisher adapter:
 Add a golden exact-JSON case to `internal/adapters/outbound/kafka/golden_test.go`
 (all CloudEvents attributes + `content-type` header) — never a real broker
 in a unit test. If this event
-now needs a `_integration_test.go` asserting real delivery, it MUST use
-testcontainers (see the fitness test `TestKafkaIntegrationTestsUseTestcontainers`
-in `internal/architecture/` — a skip-gated `KAFKA_BROKERS` test or a
-hardcoded `localhost:9092` fails CI).
+now needs a `_integration_test.go` asserting real delivery, it MUST start its
+broker through the shared `internal/testsupport/kafkatc` helper (testcontainers,
+cold-broker safe; see the fitness test `TestKafkaIntegrationTestsUseTestcontainers`
+in `internal/architecture/` — a skip-gated `KAFKA_BROKERS` test, a hardcoded
+`localhost:9092`, or starting the Kafka module directly fails CI).
 
 ## Consuming an integration event from a sibling context
 
