@@ -11,6 +11,8 @@
 //	housekeeping.go idempotency-key / outbox retention sweeper
 //	lookup.go       LocationClassificationLookup adapter selection
 //	transfer.go     transfer allocation command consumer (Phase 2)
+//	productmaster.go product-master classification consumer (ADR 0033)
+//	republish.go    republish-product-classifications one-shot subcommand
 //	server.go       use-case + HTTP server wiring
 //	shutdown.go     signal handling and graceful drain
 package main
@@ -28,6 +30,11 @@ import (
 )
 
 func main() {
+	// A subcommand (e.g. republish-product-classifications, ADR 0033) runs
+	// once and exits instead of starting the service.
+	if len(os.Args) > 1 {
+		os.Exit(runCommand(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+	}
 	if err := run(); err != nil {
 		slog.Error("service exited with error", "error", err)
 		os.Exit(1)
