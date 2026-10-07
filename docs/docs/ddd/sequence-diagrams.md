@@ -537,7 +537,7 @@ Source: `internal/adapters/inbound/kafka/analytics_consumer.go`,
 `postgres_projection.go`, `internal/adapters/inbound/http/reports_handler.go`.
 Omitted: tracing spans and the freshness endpoint.
 
-## 13. ConfirmPicksForOrder — fulfillment-execution's `TaskCompleted` (ADR 0035)
+## 13. ConfirmPicksForOrder — fulfillment-execution's `TaskCompleted`, confirm on the last pick (ADR 0035)
 
 ```mermaid
 sequenceDiagram
@@ -547,6 +547,7 @@ sequenceDiagram
     participant UC as ConfirmPicksForOrder
     participant CP as ConfirmPick
     participant PE as processed_events
+    participant PP as order_pick_progress
     participant RR as ReservationRepo
     participant OB as Outbox
     participant DLQ as warehouse.fulfillment.events.dlq
@@ -566,23 +567,35 @@ sequenceDiagram
             rect rgb(235, 235, 235)
                 UC->>PE: Claim(task-completed-confirm-pick, eventId)
                 alt already claimed
-                    UC-->>CON: DUPLICATE, nothing changes
+                    UC-->>CON: DUPLICATE, the counter is not touched
                 else first delivery
                     UC->>RR: FindByDemandRef(orderRef)
-                    loop each reservation, in id order
-                        alt CONFIRMED or REVOKED
-                            UC->>UC: skip and count
-                        else EXPIRED, or ACTIVE past its timeout
-                            UC->>UC: lazy expiry returns the stock, skip, count, WARN
-                        else ACTIVE
-                            UC->>CP: Execute(reservationId)
-                            CP->>OB: StockUnit.Pick, Bin.Release, Publish StockPicked
+                    Note over UC: needed = ACTIVE + CONFIRMED reservations (REVOKED and EXPIRED do not count)
+                    alt no reservation, or needed is 0
+                        UC-->>CON: no-op, no progress row is left
+                    else
+                        UC->>PP: upsert picked_tasks + 1 (same transaction as the claim)
+                        alt picked_tasks is below needed
+                            UC-->>CON: AWAITING_LAST_PICK, nothing is confirmed
+                        else picked_tasks reached needed but no ACTIVE reservation is left
+                            UC-->>CON: NOTHING_TO_CONFIRM
+                        else the LAST pick
+                            loop each reservation, in id order
+                                alt CONFIRMED or REVOKED
+                                    UC->>UC: skip and count
+                                else EXPIRED, or ACTIVE past its timeout
+                                    UC->>UC: lazy expiry returns the stock, skip, count, WARN
+                                else ACTIVE
+                                    UC->>CP: Execute(reservationId)
+                                    CP->>OB: StockUnit.Pick, Bin.Release, Publish StockPicked
+                                end
+                            end
                         end
                     end
                 end
             end
         end
-        alt transient failure, rolled back with the claim
+        alt transient failure, rolled back with the claim and the counter
             CON->>CON: capped backoff, retry the same message, 5 attempts
             CON->>DLQ: then dead-letter, and only then commit
         else settled
@@ -591,10 +604,20 @@ sequenceDiagram
     end
 ```
 
-No reservation for the order (a transfer or a non-inventory order) settles as
-a successful no-op. Granularity is the order: a Task carries no SKU or quantity,
-so short picks are not modelled. Source:
+A PICK task is per order **line** and every one carries the same `order_ref`,
+while a `Reservation` stores only `sku`, `quantity` and `demandRef` (no line), so
+a task cannot be mapped to one reservation. The consumer therefore counts the
+order's completed PICK tasks and confirms only on the **last** one: confirming
+early would mark unpicked lines as picked with no undo, confirming late is safe
+(the reservation keeps the stock unavailable, and expires lazily if it is never
+confirmed). The counter row is deleted by the housekeeping sweeper after
+`ORDER_PICK_PROGRESS_RETENTION` (default 30 days). A redelivered event id is
+stopped by the claim before the counter, so it can never be counted twice. No
+reservation for the order (a transfer or a non-inventory order) settles as a
+successful no-op. Short picks are not modelled (a Task carries no SKU or
+quantity). Source:
 `internal/adapters/inbound/kafka/task_completed_consumer.go`,
 `internal/application/usecases/confirm_picks_for_order.go`, `confirm_pick.go`,
+`internal/adapters/outbound/postgres/order_pick_progress_repo.go`, `sweeper.go`,
 `cmd/inventory/confirmpick.go`. Omitted: the `bootretry` around the first
 broker dial and tracing spans.

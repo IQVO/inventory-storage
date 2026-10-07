@@ -119,10 +119,10 @@ flowchart LR
     RBD["Reservations by demandRef"]:::readmodel
     FE["fulfillment-execution"]:::external
     TCE["TaskCompleted<br/>task_type PICK, order_ref"]:::event
-    CPO["ConfirmPicksForOrder<br/>dedupe on CloudEvents id, one UnitOfWork"]:::command
+    CPO["ConfirmPicksForOrder<br/>dedupe on CloudEvents id + per-order pick counter, one UnitOfWork"]:::command
     H5["Decided 2026-10-06: lazy expiry kept (ADR 0003)<br/>no sweeper; an unread expired hold<br/>keeps stock until read"]:::decided
     H6["Replay guard is best-effort,<br/>concurrent first attempts can both pass"]:::hotspot
-    H7["Decided 2026-10-06: confirm-pick is event-driven, at order granularity<br/>TaskCompleted consumed here, no sync call (ADR 0035)"]:::decided
+    H7["Decided 2026-10-06: confirm-pick is event-driven, on the order's LAST pick<br/>one PICK task per line, Reservation has no line (ADR 0035)"]:::decided
     H9["Short picks are not modelled<br/>a Task carries no SKU or quantity (ADR 0035)"]:::hotspot
 
     OM --> RSV --> RG --> RES
@@ -135,7 +135,7 @@ flowchart LR
     RES --> RR --> WP
     PK --> CPK --> LE
     FE --> TCE --> CPO
-    CPO -->|"each ACTIVE reservation of the order"| CPK
+    CPO -->|"only on the LAST pick: each ACTIVE reservation of the order"| CPK
     CPK --> RES
     CPK --> BIN
     RES --> SP
@@ -240,6 +240,6 @@ Omitted: the clean-count branch (only `CycleCountCompleted` with
 | H4 | ~~`ProductClassified` is raised but never published~~ **Resolved 2026-10-06**: published through the outbox on both topics (ADR 0031); `LocationRecorded` stays in-process (no consumer) | [ADR 0031](/docs/adr/0031), [Domain Events](./domain-events.md) |
 | H5 | **Decided 2026-10-06: kept** (ADR 0003) — no background sweeper for timed-out reservations; expiry stays lazy | [Domain Events](./domain-events.md#lazy-expiry-no-sweeper-resolved-at-the-next-read); ADR 0003 |
 | H6 | The `ReserveStock` replay guard is best-effort under concurrency | code comment on `activeReservationFor` in `reserve_stock.go` |
-| H7 | **Decided 2026-10-06: event-driven, at order granularity** (ADR 0035, supersedes ADR 0032) — picks are confirmed from fulfillment-execution's `TaskCompleted` (PICK, `order_ref`), never a sync REST/MCP call; every ACTIVE reservation whose `demand_ref` is the order is confirmed in one transaction with the event's dedupe claim; an expired one is skipped and counted | [ADR 0035](/docs/adr/0035), [Context Relationships](./context-relationships.md) |
+| H7 | **Decided 2026-10-06 (corrected by decision 17a): event-driven, confirmed on the order's LAST pick** (ADR 0035, supersedes ADR 0032) — picks are confirmed from fulfillment-execution's `TaskCompleted` (PICK, `order_ref`), never a sync REST/MCP call. A PICK task is per order line and a Reservation has no line identity, so the consumer counts the order's completed PICK tasks (`order_pick_progress`, same transaction as the event's dedupe claim) and confirms every ACTIVE reservation whose `demand_ref` is the order only when the count reaches ACTIVE + CONFIRMED reservations (REVOKED, EXPIRED do not count); early picks only record progress (confirming early cannot be undone, late is safe). An expired one is skipped and counted. Per-line correlation (order-management sends `line_no`, Reservation stores it) is the recorded future path | [ADR 0035](/docs/adr/0035), [Context Relationships](./context-relationships.md) |
 | H8 | Cycle-count overage is reported, never reconciled | `run_cycle_count.go` comment; [Use Cases](./use-cases.md) |
-| H9 | Short picks are not modelled: a Task carries no SKU or quantity, so the whole reserved quantity of every ACTIVE line is confirmed (needs per-line quantities in wes-work-planning's WorkUnit and fulfillment-execution's Task) | [ADR 0035](/docs/adr/0035) |
+| H9 | Short picks are not modelled: a Task carries no SKU or quantity, so on the last pick the whole reserved quantity of every ACTIVE line is confirmed (needs per-line quantities in wes-work-planning's WorkUnit and fulfillment-execution's Task) | [ADR 0035](/docs/adr/0035) |

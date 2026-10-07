@@ -112,7 +112,7 @@ cycle count that finds stock missing must always be able to say so.
 | Stow | `NewStockUnit` | `StowStock` — `POST /stock/stow` |
 | Reserve | `Reserve` | `ReserveStock` — `POST /reservations` |
 | Release reservation | `ReleaseReservation` | `RevokeReservation` (`DELETE /reservations/{id}`, MCP `revoke_reservation`), lazy expiry |
-| Pick | `Pick` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted` ([ADR 0035](/docs/adr/0035)) |
+| Pick | `Pick` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on the order's last `TaskCompleted` ([ADR 0035](/docs/adr/0035)) |
 | Mark unlocated | `MarkUnlocated` | `RunCycleCount` — `POST /bins/{binId}/cycle-count` |
 
 ### 7. Created Events
@@ -212,7 +212,7 @@ a bin is never deleted.
 | --- | --- | --- |
 | Register / resize | `NewBin`, `Resize` | `RegisterBin` — `PUT /bins/{binId}` |
 | Occupy | `Occupy` | `StowStock` — `POST /stock/stow` |
-| Release | `Release` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted` ([ADR 0035](/docs/adr/0035)) |
+| Release | `Release` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on the order's last `TaskCompleted` ([ADR 0035](/docs/adr/0035)) |
 
 ### 7. Created Events
 
@@ -311,7 +311,7 @@ returns `ErrAlreadyResolved`.
 | --- | --- | --- |
 | Reserve | `New` | `ReserveStock` — `POST /reservations` (Idempotency-Key) |
 | Revoke | `Revoke` | `RevokeReservation` — `DELETE /reservations/{id}`, MCP `revoke_reservation` |
-| Confirm pick | `Confirm` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted` ([ADR 0035](/docs/adr/0035)) |
+| Confirm pick | `Confirm` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on the order's last `TaskCompleted` ([ADR 0035](/docs/adr/0035)) |
 | Expire | `Expire` | lazy, inside the four read paths above |
 
 ### 7. Created Events

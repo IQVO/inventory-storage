@@ -92,7 +92,7 @@ Typos, broken links and formatting are of course fair game.
 | [0032](./0032-confirm-pick-event-driven.md) | Confirm picks from a pick-completion event, not from a REST call | Superseded by [0035](./0035-confirm-pick-from-task-completed.md) |
 | [0033](./0033-destination-transfer-receipt-custody.md) | Destination transfer receipt custody — stage, quarantine, stow | Accepted |
 | [0034](./0034-product-master-owns-classification.md) | product-master owns product classification; this service keeps a local copy | Accepted |
-| [0035](./0035-confirm-pick-from-task-completed.md) | Confirm picks from fulfillment-execution's TaskCompleted, at order granularity | Accepted |
+| [0035](./0035-confirm-pick-from-task-completed.md) | Confirm an order's picks from fulfillment-execution's TaskCompleted, on the last pick | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

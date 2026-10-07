@@ -120,14 +120,17 @@ and needs work to do, not stock truth. The accounting consequence of a pick
 reaches this service as an **event**, never as a synchronous call.
 **Decided 2026-10-06, implemented by [ADR 0035](/docs/adr/0035) (supersedes ADR
 0032):** for a `PICK` task with an `order_ref` (the OrderId, = a reservation's
-`demand_ref`), `ConfirmPicksForOrder` confirms every `ACTIVE` reservation of the
-order through the existing `ConfirmPick` use case, idempotently and atomically
-with the event's dedupe claim; neither `fulfillment-execution` nor
+`demand_ref`), `ConfirmPicksForOrder` counts the order's completed PICK tasks (one
+per order line, in the same transaction as the event's dedupe claim) and, when the
+**last** one completes, confirms every `ACTIVE` reservation of the order through
+the existing `ConfirmPick` use case; earlier picks only record progress, because a
+`Reservation` has no line identity and confirming early would mark unpicked lines
+as picked. Neither `fulfillment-execution` nor
 `wes-work-planning` ever calls `POST /reservations/{id}/confirm-pick`.
 `order_ref` is an additive optional field of `TaskCompleted` v1 that
 fulfillment-execution adds; a message without it is a no-op, and the consumer is
-off by default (`TASK_COMPLETED_CONSUMER_MODE`). Granularity is the order because
-a Task carries no SKU or quantity, so **short picks are not modelled**. The
+off by default (`TASK_COMPLETED_CONSUMER_MODE`). A Task carries no SKU or quantity,
+so **short picks are not modelled**. The
 `e2e-tests` warehouse-day simulator and operators still use the REST route.
 
 The read of product classification master data

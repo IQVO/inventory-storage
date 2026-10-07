@@ -189,10 +189,11 @@ config:
   # database.* and kafka.enabled.
   productMasterConsumerGroup: ""
   # TaskCompleted confirm-pick consumer (ADR-0035). "kafka" enables consuming
-  # fulfillment-execution's TaskCompleted from warehouse.fulfillment.events and
-  # confirming every ACTIVE reservation of the completed PICK task's order
-  # (order_ref); requires database.* and kafka.enabled (the claim and the
-  # confirmations are only atomic through the Postgres UnitOfWork/outbox) and
+  # fulfillment-execution's TaskCompleted from warehouse.fulfillment.events,
+  # counting each PICK task per order (order_ref) and confirming every ACTIVE
+  # reservation of the order when its LAST pick completes (one PICK task per
+  # order line); requires database.* and kafka.enabled (the claim, the counter
+  # and the confirmations are only atomic through the Postgres UnitOfWork/outbox) and
   # EVENT_PUBLISHER=kafka for StockPicked to leave the service. Default off.
   # taskCompletedConsumerGroup overrides the group id (default
   # inventory-storage-confirm-pick). Poison / exhausted messages go to

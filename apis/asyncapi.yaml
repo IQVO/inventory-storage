@@ -68,7 +68,8 @@ info:
     copy of every SKU's classification that StowStock reads. Applying it
     raises no event here. It also consumes fulfillment-execution's
     `TaskCompleted` from `warehouse.fulfillment.events` (channel below, ADR
-    0035) to confirm the completed PICK task's order's reservations as picked;
+    0035) to confirm a completed order's reservations as picked once the order's
+    LAST PICK task completes (one PICK task per order line, counted per order);
     that raises this service's own `StockPicked` (analytics topic) per
     reservation.
 
@@ -258,25 +259,35 @@ channels:
       `warehouse.fulfillment.events.dlq`.
     publish:
       operationId: confirmPicksFromTaskCompleted
-      summary: Confirm an order's picked reservations from TaskCompleted.
+      summary: Confirm an order's picked reservations on the order's last TaskCompleted.
       description: >
         At-least-once, fixed group: FetchMessage, then CommitMessages only after
-        the message settles. For `task_type = PICK` with a non-empty `order_ref`
-        (the OrderId order-management reserved against, stored here as
-        `demand_ref`), every reservation with that `demand_ref` that is ACTIVE is
-        confirmed through the existing ConfirmPick logic (stock decremented, bin
-        capacity released, `StockPicked` raised). The CloudEvents `id` claim in
-        `processed_events` and all confirmations commit in ONE transaction, so a
-        failure rolls everything back and the redelivery is applied in full; a
-        redelivered id, or a second PICK event for the same order, confirms
-        nothing new. Reservations already CONFIRMED or REVOKED are skipped; an
+        the message settles. A PICK task is per order LINE and every one carries
+        the same `order_ref`, while a reservation has no line identity (only
+        sku, quantity and `demand_ref`), so a task cannot be matched to one
+        reservation. For `task_type = PICK` with a non-empty `order_ref` (the
+        OrderId order-management reserved against, stored here as `demand_ref`)
+        the pick is COUNTED for the order (table `order_pick_progress`); only
+        when the count reaches the order's ACTIVE + CONFIRMED reservations (REVOKED
+        and EXPIRED are not awaited), i.e. on the LAST pick, is every ACTIVE
+        reservation with that `demand_ref` confirmed through the existing
+        ConfirmPick logic (stock decremented, bin capacity released, `StockPicked`
+        raised). Earlier picks only record progress and settle as successful
+        no-ops. The CloudEvents `id` claim in `processed_events`, the counter
+        increment and all confirmations commit in ONE transaction, so a failure
+        rolls everything back and the redelivery is applied in full; a
+        redelivered id never advances the counter, and a further PICK event for
+        an already confirmed order confirms nothing new. Counter rows older than
+        `ORDER_PICK_PROGRESS_RETENTION` (default 720h) are swept. Reservations
+        already CONFIRMED or REVOKED are skipped; an
         EXPIRED one (ADR 0003) is skipped, logged and counted
         (`inventory.pick_confirmations{outcome=expired}`), never an error. No
         reservations for the order (a transfer or non-inventory order), a
         non-PICK task, a missing `order_ref` (a producer that predates the field)
-        and every other event type are successful no-ops. Granularity is the
-        ORDER: a Task carries no SKU or quantity, so SHORT PICKS ARE NOT MODELLED
-        and the first PICK completion for an order confirms all of its lines.
+        and every other event type are successful no-ops. A Task carries no SKU
+        or quantity, so SHORT PICKS ARE NOT MODELLED. The per-line path
+        (order-management sends `line_no`, Reservation stores it, the event
+        carries it) is recorded in ADR 0035.
         A transient failure retries the same message with capped backoff (5
         attempts), then dead-letters it; an undecodable payload is dead-lettered
         at once; a message that is not a CloudEvent is skipped with a sampled
@@ -503,7 +514,7 @@ components:
     FulfillmentTaskCompleted:
       name: FulfillmentTaskCompleted
       title: Task Completed (from fulfillment-execution, consumed)
-      summary: A station finished a claimed task; for a PICK task the order's reservations are confirmed as picked.
+      summary: A station finished a claimed task; the last PICK task of an order makes this service confirm the order's reservations as picked.
       description: >
         CONSUMED, not produced (ADR 0035). Pinned by fulfillment-execution's
         `apis/asyncapi.yaml`: type
@@ -523,7 +534,7 @@ components:
         $ref: "#/components/schemas/FulfillmentTaskCompletedEvent"
       examples:
         - name: pickTaskCompleted
-          summary: The PICK task of order ORD-1001 completed.
+          summary: One PICK task (one order line) of order ORD-1001 completed.
           payload:
             specversion: "1.0"
             id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
@@ -1378,9 +1389,11 @@ components:
               type: string
               description: >
                 The completed task's order reference = the OrderId order-management
-                reserved against (this service's reservation `demand_ref`). Additive
+                reserved against (this service's reservation `demand_ref`). Every
+                PICK task of an order (one per order line) carries the same value;
+                this service counts them and confirms on the last one. Additive
                 and optional (ADR 0035): omitted when empty, in which case nothing
-                is confirmed.
+                is counted or confirmed.
 
     StockReservedEvent:
       description: >
