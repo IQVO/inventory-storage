@@ -53,6 +53,25 @@ and the replay — and the readiness gate — moves past it.
 | `FACILITY_LAYOUT_BASE_URL` | *(unset)* | Base URL for the `http` mode client, e.g. `http://facility-layout:80`. |
 | `KAFKA_BROKERS` | *(unset)* | Required by `kafka` mode — startup fails if it is missing. |
 
+**A second Kafka topic, picks confirmed from an event (ADR 0035).** The
+physical decrement of reserved stock is not an HTTP command in production:
+with `TASK_COMPLETED_CONSUMER_MODE=kafka` (default `off`) this service consumes
+`com.warehouse.wes.fulfillment-execution.task.TaskCompleted` from
+`warehouse.fulfillment.events` under the fixed group
+`TASK_COMPLETED_CONSUMER_GROUP` (default `inventory-storage-confirm-pick`). For
+a `PICK` task with the additive optional `order_ref` it confirms every ACTIVE
+reservation whose `demand_ref` is that order through the existing `ConfirmPick`
+use case, in one transaction with the CloudEvents-id claim; a redelivery changes
+nothing, an expired reservation is skipped and counted
+(`inventory.pick_confirmations`), and short picks are not modelled. Poison and
+exhausted messages go to `warehouse.fulfillment.events.dlq`. See
+[ADR 0035](/docs/adr/0035).
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `TASK_COMPLETED_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`; `EVENT_PUBLISHER=kafka` for `StockPicked` to leave the service). |
+| `TASK_COMPLETED_CONSUMER_GROUP` | `inventory-storage-confirm-pick` | Consumer group id. |
+
 ## Configuration
 
 | Env var | Default | Purpose |

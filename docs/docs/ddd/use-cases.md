@@ -6,7 +6,7 @@ description: The eleven application-layer use cases, their collaborators, and th
 
 # Use Cases
 
-Eleven use cases, one struct each, in `internal/application/usecases`. Each
+Twelve use cases, one struct each, in `internal/application/usecases`. Each
 depends only on the domain and on `application/ports` — never on an adapter.
 Dependencies are plain struct fields, wired once per binary in
 `cmd/inventory/main.go` (REST) and `cmd/mcp/main.go` (MCP, which wires
@@ -25,6 +25,7 @@ Dependencies are plain struct fields, wired once per binary in
 | 9 | `GetReservationsByDemandRef` | `GET /reservations?demandRef=` | — | `ReservationExpired` via lazy expiry only |
 | 10 | `RegisterBin` | `PUT /bins/{binId}` | — | — (local topology master data, ADR 0025) |
 | 11 | `GetBin` | `GET /bins/{binId}` | — | — (read) |
+| 12 | `ConfirmPicksForOrder` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted`, ADR 0035) | — | `StockPicked` per confirmed reservation via `ConfirmPick` (+ `ReservationExpired` via lazy expiry) |
 
 `GET /products/{sku}/classification` (deprecated, ADR 0034) has no use case
 of its own: the HTTP adapter reads `ProductClassificationRepo` (the local
@@ -221,13 +222,12 @@ for a future stow. It then saves the reservation and publishes `StockPicked`.
 **Fails when:** reservation unknown (404), already resolved (409), expired
 (409 `ErrExpired`), a referenced stock unit or bin is missing (404).
 
-**Trigger.** Today only operators and the `e2e-tests` simulator call
-`POST /reservations/{id}/confirm-pick`. Decided 2026-10-06
-([ADR 0032](/docs/adr/0032), *Proposed*): in production the trigger is a
-pick-completion event from fulfillment-execution consumed by an idempotent
-Kafka consumer that calls this use case — never a sync REST/MCP call from a
-sibling; blocked until that event carries a reservation correlation and the
-picked quantity.
+**Trigger.** Operators and the `e2e-tests` simulator call
+`POST /reservations/{id}/confirm-pick`. In production the trigger is
+fulfillment-execution's `TaskCompleted`, consumed by `ConfirmPicksForOrder`
+(#12 below), which calls this use case once per reservation — never a sync
+REST/MCP call from a sibling. Decided 2026-10-06, implemented by
+[ADR 0035](/docs/adr/0035) (supersedes ADR 0032).
 
 ## 6. GetUsable(sku)
 
@@ -356,6 +356,45 @@ adds `available = capacity - occupied`.
 
 **Fails when:** empty bin id (400), unknown bin (404 `bin-not-found`) —
 unlike `GetUsable`, there is no meaningful "empty" bin to return.
+
+## 12. ConfirmPicksForOrder(eventId, taskType, orderRef) (ADR 0035)
+
+Turns "the PICK task for order X completed" into the physical decrement of
+that order's reserved stock. It is the use case behind the
+`warehouse.fulfillment.events` consumer; fulfillment-execution's
+`TaskCompleted` carries `task_type` and the additive optional `order_ref`,
+which is the OrderId order-management reserved against (a reservation's
+`demand_ref`).
+
+**Collaborators:** `ReservationRepo` (`FindByDemandRef`), `ConfirmPick` (reused
+for every confirmation, its rules are not duplicated), `StockRepo`,
+`EventPublisher`, `Clock` (lazy expiry), `ProcessedEventRepo`, `UnitOfWork`,
+`PickConfirmationMetrics`.
+
+**Does nothing** (a successful no-op) when `task_type` is not exactly `PICK`,
+when `order_ref` is empty (a producer that predates the field), or when no
+reservation carries that `demand_ref` (a transfer, whose demand ref is
+namespaced, or a non-inventory order).
+
+**Per reservation of the order:** `ACTIVE` is confirmed through `ConfirmPick`;
+`CONFIRMED` and `REVOKED` are skipped; `EXPIRED` — or `ACTIVE` past its
+timeout, which lazy expiry resolves first (stock returned, `ReservationExpired`
+raised) — is skipped, logged and counted in
+`inventory.pick_confirmations{outcome=expired}`, never an error.
+
+**Atomic and idempotent:** the CloudEvents `id` claim in `processed_events`
+(consumer `task-completed-confirm-pick`) and every confirmation commit in ONE
+unit of work, so a failure un-claims the id and the redelivery is applied in
+full. A redelivered id is skipped by the claim; a new id for the same order only
+finds reservations that are no longer `ACTIVE`.
+
+**Fails when:** the event has no id (`ErrMalformedPickCompletion`, which the
+consumer dead-letters at once); a database error is transient and retried (5
+attempts, then dead-lettered).
+
+**Limitation:** short picks are not modelled. A Task carries no SKU or quantity,
+so confirmation is per order and the whole reserved quantity of every `ACTIVE`
+line is picked.
 
 ## Cross-cutting patterns
 

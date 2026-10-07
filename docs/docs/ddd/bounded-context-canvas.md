@@ -66,7 +66,8 @@ truth for SKU handling classification (hazmat, temperature, DOT class).
 | Inbound dock (operator, simulator) | StowStock | Command | REST `POST /stock/stow` | OHS |
 | Inventory control (operator, simulator) | RunCycleCount | Command | REST `POST /bins/{binId}/cycle-count` | OHS |
 | product-master | ProductClassified (local copy, ADR 0034) | Event | Kafka `warehouse.product-master.events` → `ApplyProductClassification` | Conformist (product-master's Published Language); `PUT /products/{sku}/classification` answers 410 |
-| Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/confirm-pick` | OHS — no sibling context calls it; **decided 2026-10-06**: production confirmation will come from fulfillment-execution's pick-completion event, consumed here (ADR 0032, *Proposed*, blocked on the event's fields) |
+| Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/confirm-pick` | OHS — no sibling context calls it; **decided 2026-10-06: event-driven** — production confirmation comes from fulfillment-execution's `TaskCompleted` (next row), consumed here ([ADR 0035](/docs/adr/0035)) |
+| fulfillment-execution | TaskCompleted (PICK, `order_ref`) | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` → `ConfirmPicksForOrder` → `ConfirmPick` per ACTIVE reservation of the order (`TASK_COMPLETED_CONSUMER_MODE=kafka`, default off) | Conformist (fulfillment-execution's Published Language); order granularity, short picks not modelled ([ADR 0035](/docs/adr/0035)) |
 | Operator, `inventory-mfe` | GetBin, GetUsable | Query | REST `GET /bins/{binId}`, `GET /inventory/{sku}/usable` | OHS |
 | Kubernetes | liveness / readiness | Query | REST `GET /healthz`, `GET /readyz` | — |
 
@@ -157,9 +158,14 @@ The terms that carry the model:
   not only against its own `LocationRepo`?
 - ~~Who should call `POST /reservations/{id}/confirm-pick` in production?~~
   **Decided 2026-10-06: nobody** — this context consumes fulfillment-execution's
-  pick-completion event and confirms the reservation itself; no sync REST/MCP
-  call from siblings ([ADR 0032](/docs/adr/0032), *Proposed*: the event does not
-  yet carry a reservation correlation, SKU or picked quantity).
+  `TaskCompleted` (PICK, additive `order_ref`) and confirms every ACTIVE
+  reservation of the order itself, idempotently and atomically; no sync REST/MCP
+  call from siblings ([ADR 0035](/docs/adr/0035), supersedes ADR 0032).
+- Short picks: a Task carries no SKU or quantity, so confirmation is per order
+  and the whole reserved quantity is picked. Modelling a short pick needs
+  per-line quantities in work-planning's WorkUnit and fulfillment-execution's
+  Task, and a rule for the remainder — explicit limitation of
+  [ADR 0035](/docs/adr/0035), not yet decided.
 - ~~Should the default `LOCATION_LOOKUP_MODE` stay `permissive`?~~
   **Decided 2026-10-06: kept** (ADR 0013/0020) — a cold facility cache would
   reject every receipt; the cluster already injects `kafka`.

@@ -2,7 +2,7 @@
 title: Domain Message Flow
 sidebar_label: Domain Message Flow
 sidebar_position: 6
-description: ddd-crew Domain Message Flow Modelling for inventory-storage — four business scenarios with every command, query and event between contexts, numbered, using only real routes, MCP tools and CloudEvents types.
+description: ddd-crew Domain Message Flow Modelling for inventory-storage — five business scenarios with every command, query and event between contexts, numbered, using only real routes, MCP tools and CloudEvents types.
 ---
 
 # Domain Message Flow
@@ -148,3 +148,31 @@ Source: `network-fulfillment/internal/adapters/outbound/inventoryclient/client.g
 binaries, drawn separately because they talk to it only through the
 analytics topic. Omitted: the overage branch (no `ItemUnlocated`) and the
 MCP report tool.
+
+## 5. A completed pick confirms the order's reservations
+
+The physical pick is reported by `fulfillment-execution`; this context turns it
+into the decrement of the order's reserved stock without anyone calling it. The
+reservations were made in scenario 1 with `demandRef` = the OrderId.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant WP as wes-work-planning
+    participant FE as fulfillment-execution
+    participant INV as inventory-storage
+    participant PJ as inventory-projector
+    WP-)FE: evt: com.warehouse.wes.work-planning.workunit.WorkReleased on warehouse.work-planning.events
+    Note over FE: Task created, its order reference is the OrderId
+    FE-)INV: evt: com.warehouse.wes.fulfillment-execution.task.TaskCompleted on warehouse.fulfillment.events
+    Note over INV: PICK with order_ref: claim the CloudEvents id, then ConfirmPick for every ACTIVE reservation of the order, one transaction (ADR 0035)
+    Note over INV: expired, revoked or already picked reservations are skipped, no reservations is a no-op
+    INV-)PJ: evt: com.warehouse.wms.inventory-storage.reservation.StockPicked on warehouse.inventory.analytics
+```
+
+Source: this repo's `internal/adapters/inbound/kafka/task_completed_consumer.go`,
+`internal/application/usecases/confirm_picks_for_order.go`, `confirm_pick.go`;
+`fulfillment-execution`'s `TaskCompleted` publisher (it adds the optional
+`order_ref`). The consumer is off by default (`TASK_COMPLETED_CONSUMER_MODE`).
+Granularity is the order and short picks are not modelled, because a Task
+carries no SKU or quantity. Omitted: the DLQ and the redelivery branch.

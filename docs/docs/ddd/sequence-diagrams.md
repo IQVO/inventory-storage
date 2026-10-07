@@ -2,7 +2,7 @@
 title: Sequence Diagrams
 sidebar_label: Sequence Diagrams
 sidebar_position: 10
-description: UML sequence diagrams for every command use case exposed over REST, MCP and Kafka, plus the outbox relay and both consumers — derived from the use-case function bodies, with idempotency, version checks, transaction boundaries and error branches.
+description: UML sequence diagrams for every command use case exposed over REST, MCP and Kafka, plus the outbox relay and the Kafka consumers — derived from the use-case function bodies, with idempotency, version checks, transaction boundaries and error branches.
 ---
 
 # Sequence Diagrams
@@ -242,7 +242,7 @@ sequenceDiagram
     participant SR as StockRepo
     participant LR as LocationRepo
     participant OB as Outbox
-    Note over C,H: Decided 2026-10-06 (ADR 0032, Proposed): in production the trigger<br/>becomes a pick-completion event consumed here. This REST route stays<br/>for operators and the simulator. No sync call from sibling contexts.
+    Note over C,H: Decided 2026-10-06 (ADR 0035): in production the trigger is fulfillment-execution's<br/>TaskCompleted, consumed here (diagram 13). This REST route stays for operators<br/>and the simulator. No sync call from sibling contexts.
     C->>H: POST /reservations/id/confirm-pick
     H->>UC: Execute(reservationId)
     UC->>RR: FindByID(id)
@@ -536,3 +536,65 @@ Source: `internal/adapters/inbound/kafka/analytics_consumer.go`,
 `internal/adapters/outbound/analyticsstore/consumed_events_repo.go`,
 `postgres_projection.go`, `internal/adapters/inbound/http/reports_handler.go`.
 Omitted: tracing spans and the freshness endpoint.
+
+## 13. ConfirmPicksForOrder — fulfillment-execution's `TaskCompleted` (ADR 0035)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K as warehouse.fulfillment.events
+    participant CON as TaskCompletedConsumer
+    participant UC as ConfirmPicksForOrder
+    participant CP as ConfirmPick
+    participant PE as processed_events
+    participant RR as ReservationRepo
+    participant OB as Outbox
+    participant DLQ as warehouse.fulfillment.events.dlq
+    K->>CON: FetchMessage
+    alt not a CloudEvent
+        CON->>K: CommitMessages, skip with a sampled WARN
+    else other type
+        CON->>K: CommitMessages
+    else TaskCompleted with an undecodable payload
+        CON->>DLQ: raw message plus x-dlq headers
+        CON->>K: CommitMessages, only after the DLQ write succeeded
+    else TaskCompleted
+        CON->>UC: Execute(eventId, taskType, orderRef)
+        alt task_type is not PICK or order_ref is empty
+            UC-->>CON: IGNORED, nothing claimed
+        else PICK for an order
+            rect rgb(235, 235, 235)
+                UC->>PE: Claim(task-completed-confirm-pick, eventId)
+                alt already claimed
+                    UC-->>CON: DUPLICATE, nothing changes
+                else first delivery
+                    UC->>RR: FindByDemandRef(orderRef)
+                    loop each reservation, in id order
+                        alt CONFIRMED or REVOKED
+                            UC->>UC: skip and count
+                        else EXPIRED, or ACTIVE past its timeout
+                            UC->>UC: lazy expiry returns the stock, skip, count, WARN
+                        else ACTIVE
+                            UC->>CP: Execute(reservationId)
+                            CP->>OB: StockUnit.Pick, Bin.Release, Publish StockPicked
+                        end
+                    end
+                end
+            end
+        end
+        alt transient failure, rolled back with the claim
+            CON->>CON: capped backoff, retry the same message, 5 attempts
+            CON->>DLQ: then dead-letter, and only then commit
+        else settled
+            CON->>K: CommitMessages
+        end
+    end
+```
+
+No reservation for the order (a transfer or a non-inventory order) settles as
+a successful no-op. Granularity is the order: a Task carries no SKU or quantity,
+so short picks are not modelled. Source:
+`internal/adapters/inbound/kafka/task_completed_consumer.go`,
+`internal/application/usecases/confirm_picks_for_order.go`, `confirm_pick.go`,
+`cmd/inventory/confirmpick.go`. Omitted: the `bootretry` around the first
+broker dial and tracing spans.
