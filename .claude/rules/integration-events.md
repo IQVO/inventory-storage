@@ -170,7 +170,8 @@ not the event stream.
 - Dispatches ONLY on the full type
   `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` with `task_type`
   `PICK` and a non-empty `order_ref` (the ORDER id = a reservation's `demand_ref`;
-  fulfillment-execution ADR-0040); everything else is committed past.
+  fulfillment-execution's order-ref decision, documented in that repo);
+  everything else is committed past.
 - `ConfirmPicksForOrder` claims the CloudEvents `id` in `processed_events`
   (consumer `task-completed-confirm-pick`), counts the pick in
   `order_pick_progress` and, only when the count reaches the order's
