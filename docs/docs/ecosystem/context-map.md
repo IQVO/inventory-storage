@@ -32,6 +32,7 @@ flowchart LR
     OM["order-management<br/>WMS"]
     FE["fulfillment-execution<br/>Core · WES"]
     NF["network-fulfillment"]
+    NIP["network-inventory-planning"]
     OA["warehouse-ops-agent<br/>console BFF + agent"]
     WM["workforce-management<br/>Supporting"]
 
@@ -43,6 +44,8 @@ flowchart LR
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST POST /reservations, DELETE /reservations/id · LIVE"| OM
     FE -.->|"U OHS+PL to D CF<br/>Kafka warehouse.fulfillment.events<br/>TaskCompleted (PICK, order_ref) · WIRED, OFF BY DEFAULT, ADR 0035"| INV
     INV -->|"U OHS+PL to D ACL<br/>REST GET /inventory/sku/usable · LIVE"| NF
+    NIP -->|"U OHS+PL to D CF<br/>Kafka warehouse.network-inventory-planning.events<br/>TransferAllocationRequested · LIVE, ADR 0030"| INV
+    INV -->|"U OHS+PL to D<br/>Kafka warehouse.inventory.events<br/>transfer replies, receipt and stow facts · LIVE"| NIP
     INV -->|"U OHS+PL to D CF<br/>REST GET /reservations?demandRef, reports REST,<br/>MCP check_availability, get_bin_occupancy · LIVE"| OA
     INV ~~~ WM
 
@@ -50,7 +53,7 @@ flowchart LR
     classDef other fill:#1e293b,stroke:#475569,color:#fff;
     classDef absent fill:#e2e8f0,stroke:#94a3b8,color:#334155,stroke-dasharray: 5 5;
     class INV this;
-    class FL,PM,WP,OM,FE,NF,OA other;
+    class FL,PM,WP,OM,FE,NF,NIP,OA other;
     class WM absent;
 ```
 
@@ -93,6 +96,8 @@ bounded context).
 | 8 | `inventory-storage` → `network-fulfillment` | OHS + PL / ACL | REST `GET /inventory/{sku}/usable` | there: `internal/adapters/outbound/inventoryclient/client.go`, `INVENTORY_STORAGE_URL` (default `http://localhost:8080`, no mode switch) | **Live** |
 | 9 | `inventory-storage` → `warehouse-ops-agent` | OHS + PL / CF | REST `GET /reservations?demandRef=`; reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP (Streamable HTTP) `check_availability`, `get_bin_occupancy` | there: `internal/adapters/outbound/restclient/clients.go`, `reports_clients.go`, `internal/adapters/outbound/mcpclient/inventory_storage.go`; `INVENTORY_STORAGE_REST_URL`, `INVENTORY_STORAGE_REPORTS_REST_URL`, `INVENTORY_STORAGE_MCP_ENDPOINT` | **Live**, read-only; the MCP write tool `revoke_reservation` exists here but the agent does not call it |
 | 10 | `inventory-storage` ↔ `workforce-management` | Separate Ways | — | no client, topic or type in either repo | **Deliberately absent** |
+| 11 | `network-inventory-planning` → `inventory-storage` | OHS + PL / CF | Kafka `warehouse.network-inventory-planning.events`: `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` (a command, ADR 0030) | here: `internal/adapters/inbound/kafka/transfer_consumer.go` (`TRANSFER_ALLOCATION_CONSUMER_MODE`, group `TRANSFER_ALLOCATION_CONSUMER_GROUP`, default `inventory-storage-transfer-allocation`) | **Live** (`warehouse-infra` sets `kafka`); binary default `off` |
+| 12 | `inventory-storage` → `network-inventory-planning` | OHS + PL / — | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated`, `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected` (ADR 0030), `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged`, `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` (ADR 0033) | here: `internal/adapters/outbound/kafka/publisher.go` (via outbox relay); there: `internal/adapters/inbound/kafka/transfer_reply_consumer.go` | **Live** |
 
 All REST and MCP surfaces are unauthenticated (ADR 0015). Every Kafka
 message is CloudEvents 1.0 structured mode (ADR 0024).
