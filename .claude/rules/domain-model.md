@@ -91,10 +91,14 @@ the one-shot `republish-product-classifications` backfill re-emits it
 2. `StowStock(sku, qty, binId)` -> validates item+location scan, respects
    capacity, enforces hazmat/temperature placement rules AND same-bin DOT
    segregation for classified SKUs
-3. `ReserveStock(sku, qty, demandRef)` -> revocable Reservation against
+3. `ReserveStock(sku, qty, demandRef, lineNo?)` -> revocable Reservation against
    usable. Replay guard matches (demandRef, sku, qty): one demand holds one
    ACTIVE reservation per line/SKU, so a different SKU or quantity under the
-   same demandRef is a new reservation, never a retry
+   same demandRef is a new reservation, never a retry. The optional `lineNo`
+   (>= 1; 0 or negative is 400 `invalid-line-no`) is stored on the reservation
+   (nullable `line_no`, ADR-0036) and compared by the replay guard when the
+   request names one; adding it to a key first used without it is 422
+   `idempotency-key-reused`
 4. `RevokeReservation(reservationId)` -> returns qty to usable
 5. `ConfirmPick(reservationId)` -> consumes reservation, StockPicked. Called
    by `POST /reservations/{id}/confirm-pick` and, for a completed order, by
@@ -112,17 +116,18 @@ the one-shot `republish-product-classifications` backfill re-emits it
    `ClassifyProduct` is removed; `PUT /products/{sku}/classification` is 410.
    `RepublishProductClassifications` is the one-shot stage-B backfill
    (re-emits every row as the legacy `ProductClassified` through the outbox).
-9. `ConfirmPicksForOrder(eventId, taskType, orderRef)` -> the fulfillment
-   `TaskCompleted` consumer's use case (ADR-0035): for a PICK with an order
-   ref, claims the event id, counts the pick (`order_pick_progress`) and, on the
-   order's LAST pick, confirms its ACTIVE reservations via `ConfirmPick`, all in
-   ONE UnitOfWork. Earlier picks only record progress. Short picks are not
+9. `ConfirmPicksForOrder(eventId, taskType, orderRef, lineNo?)` -> the fulfillment
+   `TaskCompleted` consumer's use case (ADR-0035, ADR-0036): for a PICK with an
+   order ref, claims the event id and, when `lineNo` names a stored line,
+   confirms exactly that line's ACTIVE reservation via `ConfirmPick`; otherwise
+   counts the pick (`order_pick_progress`) and confirms the order's ACTIVE
+   reservations on its LAST pick. All in ONE UnitOfWork. Short picks are not
    modelled.
-9. `RegisterBin(binId, capacity)` -> idempotent, declarative bin
+10. `RegisterBin(binId, capacity) -> idempotent, declarative bin
    registration: creates an absent bin, no-ops on same capacity, resizes
    otherwise via `Bin.Resize` (rejects below occupancy). No domain event —
    local topology master data (ADR-0025)
-10. `GetBin(binId)` -> bin capacity/occupancy read model
+11. `GetBin(binId)` -> bin capacity/occupancy read model
 
 ## Design notes (from README)
 

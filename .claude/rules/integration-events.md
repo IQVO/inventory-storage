@@ -172,15 +172,24 @@ not the event stream.
   `PICK` and a non-empty `order_ref` (the ORDER id = a reservation's `demand_ref`;
   fulfillment-execution's order-ref decision, documented in that repo);
   everything else is committed past.
-- `ConfirmPicksForOrder` claims the CloudEvents `id` in `processed_events`
-  (consumer `task-completed-confirm-pick`), counts the pick in
-  `order_pick_progress` and, only when the count reaches the order's
-  confirmable reservations (ACTIVE + CONFIRMED), confirms every ACTIVE one via
-  `ConfirmPick` — all in ONE UnitOfWork. A PICK task is per order LINE and a
-  Reservation has no line identity, so confirmation happens on the LAST pick:
-  late is safe (the reservation holds the stock), early would mark unpicked
-  lines as picked. Short picks are not modelled. Expired reservations are
-  skipped and counted (`inventory.pick_confirmations{outcome=expired}`).
+- The event may carry an optional positive integer `line_no` (a non-positive one
+  is dead-lettered as malformed). `ConfirmPicksForOrder` claims the CloudEvents
+  `id` in `processed_events` (consumer `task-completed-confirm-pick`) and
+  decides in ONE UnitOfWork:
+  - PER-LINE path (ADR-0036): the event names a line and a reservation of the
+    order stores that `line_no` -> confirm exactly that line's ACTIVE
+    reservation via `ConfirmPick` (outcome `LINE_SETTLED`); NO
+    `order_pick_progress` row is written. Reservations carry `line_no` because
+    order-management sends `lineNo` when it reserves.
+  - COUNTING fallback (ADR-0035): no `line_no` on the event, or only line-less
+    (pre-`line_no`) reservations -> count the pick in `order_pick_progress` and
+    confirm the order's ACTIVE reservations only when the count reaches the
+    confirmable ones (ACTIVE + CONFIRMED), i.e. on the LAST pick: late is safe
+    (the reservation holds the stock), early would mark unpicked lines as
+    picked. A line no reservation carries and no line-less reservation left is
+    `LINE_NOT_FOUND`, a successful no-op.
+  Short picks are not modelled. Expired reservations are skipped and counted
+  (`inventory.pick_confirmations{outcome=expired}`).
 - The sweeper deletes `order_pick_progress` rows older than
   `ORDER_PICK_PROGRESS_RETENTION` (default 720h; chart
   `config.orderPickProgressRetention`; `0` disables).
