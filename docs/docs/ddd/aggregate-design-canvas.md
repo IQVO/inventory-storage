@@ -294,7 +294,7 @@ returns `ErrAlreadyResolved`.
 | R5 | Must allocate against something | `New` → `reservation.ErrNoAllocations` | `TestNew_RequiresAtLeastOneAllocation` |
 | R6 | One active reservation per (demandRef, SKU, quantity, and line when the request names one) — best effort; an ACTIVE reservation with no line still answers a line-aware retry | `ReserveStock.activeReservationFor` / `isReplayOf` (use case, not DB-enforced) | `reserve_stock_multi_line_test.go`, `reserve_stock_line_test.go` |
 | R7 | Empty `demandRef` is rejected | HTTP handler → `400 missing-demand-ref` | `server_test.go` |
-| R8 | `lineNo`, when present, is at least 1 | `NewForLine` → `reservation.ErrInvalidLineNo`; HTTP handler → `400 invalid-line-no`; column `CHECK (line_no IS NULL OR line_no >= 1)` | `TestNewForLine_RejectsANonPositiveLineNo`, `TestReserveStock_Endpoint_NonPositiveLineNo_Rejected` |
+| R8 | `lineNo`, when present, is between 1 and 2147483647 (the 32-bit `line_no` column) | `reservation.ValidLineNo` in `NewForLine` → `reservation.ErrInvalidLineNo`; HTTP handler → `400 invalid-line-no`; TaskCompleted `line_no` outside the range → `ErrMalformedPickCompletion` (dead-lettered); column `INTEGER CHECK (line_no IS NULL OR line_no >= 1)` | `TestNewForLine_RejectsANonPositiveLineNo`, `TestNewForLine_LineNoBoundaryTable`, `TestReserveStock_Endpoint_NonPositiveLineNo_Rejected`, `TestReserveStock_Endpoint_LineNoBoundaryTable` |
 
 ### 5. Corrective Policies
 

@@ -71,6 +71,33 @@ func TestNewForLine_RejectsANonPositiveLineNo(t *testing.T) {
 	}
 }
 
+// A line number is valid iff 1 <= n <= 2147483647 (the 32-bit line_no column).
+func TestNewForLine_LineNoBoundaryTable(t *testing.T) {
+	sku, _ := shared.NewSKU("SKU-1")
+	cases := []struct {
+		n    int
+		want bool
+	}{
+		{0, false},
+		{1, true},
+		{2147483647, true},
+		{2147483648, false},
+		{9223372036854775807, false},
+	}
+	for _, c := range cases {
+		r, err := NewForLine("r-1", sku, mustQty(t, 5), "order-1", intPtr(c.n), lineAllocs(t), time.Unix(0, 0), time.Hour)
+		if c.want {
+			if err != nil || r == nil || r.LineNo() == nil || *r.LineNo() != c.n {
+				t.Errorf("lineNo %d: got (%v, %v), want accepted", c.n, r, err)
+			}
+			continue
+		}
+		if !errors.Is(err, ErrInvalidLineNo) {
+			t.Errorf("lineNo %d: err = %v, want ErrInvalidLineNo", c.n, err)
+		}
+	}
+}
+
 // The aggregate must not alias the caller's pointer: mutating the argument
 // afterwards cannot change a stored reservation.
 func TestNewForLine_CopiesTheLineNo(t *testing.T) {

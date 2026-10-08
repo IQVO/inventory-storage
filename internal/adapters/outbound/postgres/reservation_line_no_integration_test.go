@@ -111,4 +111,16 @@ func TestPostgres_Reservation_LineNoRoundTrip(t *testing.T) {
 			t.Errorf("line_no = %d was accepted by the database, want the CHECK constraint to reject it", bad)
 		}
 	}
+
+	// The column is a 32-bit INTEGER: the largest valid line number
+	// round-trips, one more is refused by the database (which is why the
+	// domain/edge/consumer must never let it through).
+	max := reservation.MaxLineNo
+	maxID := save(&max, 3*time.Second)
+	if r, err := repo.FindByID(ctx, maxID); err != nil || r == nil || r.LineNo() == nil || *r.LineNo() != 2147483647 {
+		t.Fatalf("FindByID of line 2147483647 = %v, %v", r, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE reservations SET line_no = $1 WHERE id = $2`, int64(2147483648), legacyID); err == nil {
+		t.Errorf("line_no = 2147483648 was accepted by the database, want integer out of range")
+	}
 }

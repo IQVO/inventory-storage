@@ -557,12 +557,12 @@ paths:
                     detail: demandRef must not be empty
                     instance: /reservations
                 invalidLineNo:
-                  summary: lineNo is 0 or negative (ADR 0036)
+                  summary: lineNo is 0, negative or above 2147483647 (ADR 0036)
                   value:
                     type: https://errors.inventory-storage.warehouse-systems.dev/invalid-line-no
-                    title: lineNo must be at least 1
+                    title: lineNo must be between 1 and 2147483647
                     status: 400
-                    detail: lineNo must be an integer >= 1 when present
+                    detail: lineNo must be an integer between 1 and 2147483647 when present
                     instance: /reservations
                 idempotencyKeyRequired:
                   summary: Idempotency-Key header missing (ADR 0018)
@@ -1845,8 +1845,9 @@ components:
             sent it is stored on the reservation and returned as `lineNo`,
             and it lets the TaskCompleted consumer confirm exactly the
             picked line instead of counting picks (ADR 0035). Omit it, or
-            send null, when unknown. 0, negative values and values above
-            2147483647 are rejected with 400 `invalid-line-no`. Because it is part of the request
+            send null, when unknown. Valid range is 1 to 2147483647 (a
+            32-bit integer); 0, negative values and values above 2147483647
+            are rejected with 400 `invalid-line-no`. Because it is part of the request
             body, adding it to a request whose Idempotency-Key was first
             used WITHOUT it is a different body (422
             `idempotency-key-reused`).
@@ -2080,8 +2081,10 @@ components:
           type: integer
           format: int32
           minimum: 1
+          maximum: 2147483647
           description: >
-            The order line this reservation is for (ADR 0036). Omitted when
+            The order line this reservation is for (ADR 0036), 1 to 2147483647
+            (32-bit). Omitted when
             unknown (a reservation made before the field existed, or by a
             client that does not send it).
           example: 1

@@ -41,7 +41,7 @@ erDiagram
         TIMESTAMPTZ created_at
         TIMESTAMPTZ expires_at
         INTEGER version "default 1"
-        INTEGER line_no "nullable order line, CHECK line_no >= 1 (0035, ADR 0036)"
+        INTEGER line_no "nullable order line, 32-bit: 1..2147483647 (CHECK >= 1, 0035, ADR 0036)"
     }
     reservation_allocations {
         TEXT reservation_id PK,FK "REFERENCES reservations"
