@@ -137,6 +137,11 @@ product-master ADR 0003 stage E.
      `warehouse.product-master.events`, source `/warehouse/product-master`;
      the local classification copy, ADR 0034 — every other product-master
      type on that topic is ignored)
+   - `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` (topic
+     `warehouse.inbound-receiving.events`, source
+     `/warehouse/inbound-receiving`; `condition=Good` lines are booked as
+     staged stock through ReceiveStock, ADR 0037 — every other
+     inbound-receiving type on that topic is ignored)
    - its own nine analytics types above (projector).
 3. Dedupe on the CloudEvents `id` (the projector's
    `analytics_processed_events.event_id` column is now populated from `id`).
@@ -153,6 +158,7 @@ com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered       -> i
 com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned   -> inventory-storage
 com.warehouse.wms.facility-layout.zone.ZoneRegistered                       -> inventory-storage
 com.warehouse.wms.product-master.product.ProductClassified                  -> inventory-storage (ADR 0034)
+com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived             -> inventory-storage (ADR 0037)
 com.warehouse.wms.inventory-storage.product.ProductClassified               -> product-master (legacy importer, backfill only)
 com.warehouse.wms.inventory-storage.reservation.StockReserved               -> wes-work-planning
 com.warehouse.wms.inventory-storage.reservation.ReservationRevoked          -> wes-work-planning
