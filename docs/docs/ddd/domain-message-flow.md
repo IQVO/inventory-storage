@@ -29,7 +29,7 @@ sequenceDiagram
     participant WP as wes-work-planning
     OM->>INV: qry: GET /products/{sku}/classification
     Note over OM,INV: 200 handling tags, temperature class, DOT class, or 404 unclassified
-    OM->>INV: cmd: ReserveStock POST /reservations with Idempotency-Key per order line
+    OM->>INV: cmd: ReserveStock POST /reservations with Idempotency-Key per order line (demandRef, optional lineNo, ADR 0036)
     Note over INV: replay guard, then reserve first-fit against usable
     Note over OM,INV: 201 reservation with allocations and pick locations, or 409 insufficient-usable
     INV-)WP: evt: com.warehouse.wms.inventory-storage.reservation.StockReserved on warehouse.inventory.events
@@ -149,12 +149,13 @@ binaries, drawn separately because they talk to it only through the
 analytics topic. Omitted: the overage branch (no `ItemUnlocated`) and the
 MCP report tool.
 
-## 5. The last completed pick confirms the order's reservations
+## 5. A completed pick confirms exactly its own line's reservation
 
 The physical pick is reported by `fulfillment-execution`, one PICK task per order
-**line**, every one carrying the order's reference; this context turns the **last**
-of them into the decrement of the order's reserved stock without anyone calling it.
-The reservations were made in scenario 1 with `demandRef` = the OrderId.
+**line**, every one carrying the order's reference and (since ADR 0036) the line
+number; this context turns **each** of them into the decrement of that line's
+reserved stock without anyone calling it. The reservations were made in scenario 1
+with `demandRef` = the OrderId and `lineNo` = the order line.
 
 ```mermaid
 sequenceDiagram
@@ -163,23 +164,25 @@ sequenceDiagram
     participant FE as fulfillment-execution
     participant INV as inventory-storage
     participant PJ as inventory-projector
-    WP-)FE: evt: com.warehouse.wes.work-planning.workunit.WorkReleased on warehouse.work-planning.events (one per order line)
-    Note over FE: One PICK task per line, its order reference is the OrderId
+    WP-)FE: evt: com.warehouse.wes.work-planning.workunit.WorkReleased on warehouse.work-planning.events (one per order line, carries line_no)
+    Note over FE: One PICK task per line, its order reference is the OrderId, it remembers the line_no
     loop each line's PICK task, in any order
-        FE-)INV: evt: com.warehouse.wes.fulfillment-execution.task.TaskCompleted on warehouse.fulfillment.events
-        Note over INV: PICK with order_ref: claim the CloudEvents id and count the pick (order_pick_progress), one transaction (ADR 0035)
+        FE-)INV: evt: com.warehouse.wes.fulfillment-execution.task.TaskCompleted on warehouse.fulfillment.events (order_ref, line_no)
+        Note over INV: PICK with order_ref and line_no: claim the CloudEvents id and ConfirmPick the ACTIVE reservation of (order_ref, line_no), one transaction (ADR 0036)
+        INV-)PJ: evt: com.warehouse.wms.inventory-storage.reservation.StockPicked on warehouse.inventory.analytics (for that line only)
     end
-    Note over INV: Only when the count reaches the order's ACTIVE + CONFIRMED reservations (the LAST pick): ConfirmPick for every ACTIVE reservation, same transaction
-    Note over INV: earlier picks only record progress, expired, revoked or already picked reservations are skipped, no reservations is a no-op
-    INV-)PJ: evt: com.warehouse.wms.inventory-storage.reservation.StockPicked on warehouse.inventory.analytics (after the last pick)
+    Note over INV: other lines stay ACTIVE until their own pick arrives, expired, revoked or already picked reservations are skipped, no reservations is a no-op
+    Note over INV: fallback (ADR 0035): an event without line_no, or reservations without line_no, are counted per order and confirmed on the LAST pick
 ```
 
 Source: this repo's `internal/adapters/inbound/kafka/task_completed_consumer.go`,
 `internal/application/usecases/confirm_picks_for_order.go`, `confirm_pick.go`;
 `fulfillment-execution`'s `TaskCompleted` publisher (it adds the optional
-`order_ref`). The consumer is off by default (`TASK_COMPLETED_CONSUMER_MODE`).
-A `Reservation` has no line identity (only `sku`, `quantity`, `demandRef`), so a
-task cannot be matched to one reservation: confirming on the first pick would
-mark unpicked lines as picked with no undo, confirming on the last is safe. Short
-picks are not modelled, because a Task carries no SKU or quantity. Omitted: the
-DLQ and the redelivery branch.
+`order_ref` and `line_no`). The consumer is off by default
+(`TASK_COMPLETED_CONSUMER_MODE`). A `Reservation` stores the order line it was
+made for (`line_no`, sent by order-management as `lineNo`), so lines 1 and 3 being
+picked confirms exactly lines 1 and 3 and leaves line 2 `ACTIVE`. Reservations
+created before `line_no` existed, and `TaskCompleted` events from a producer that
+does not send it, keep the older counting (confirm on the order's last pick, never
+early). Short picks are not modelled, because a Task carries no SKU or quantity.
+Omitted: the DLQ and the redelivery branch.

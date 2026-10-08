@@ -40,7 +40,7 @@ flowchart LR
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST POST /reservations, DELETE /reservations/id,<br/>GET /products/sku/classification · LIVE"| OM
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST GET /products/sku/classification · LIVE"| WP
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST GET /products/sku/classification · LIVE"| FE
-    FE -.->|"U OHS+PL to D CF<br/>Kafka warehouse.fulfillment.events<br/>TaskCompleted (PICK, order_ref) · WIRED, OFF BY DEFAULT, ADR 0035"| INV
+    FE -.->|"U OHS+PL to D CF<br/>Kafka warehouse.fulfillment.events<br/>TaskCompleted (PICK, order_ref, line_no) · WIRED, OFF BY DEFAULT, ADR 0035/0036"| INV
     INV -->|"U OHS+PL to D ACL<br/>REST GET /inventory/sku/usable · LIVE"| NF
     INV -->|"U OHS+PL to D CF<br/>REST GET /reservations?demandRef, reports REST,<br/>MCP check_availability, get_bin_occupancy · LIVE"| OA
     INV ~~~ WM
@@ -59,7 +59,7 @@ downstream customer of this service's Open Host Service. The dashed arrow is
 wired in code but not selected in any deployed configuration (the
 `fulfillment-execution` → `inventory-storage` edge is built here and off by
 default, `TASK_COMPLETED_CONSUMER_MODE`; it acts once fulfillment-execution
-publishes the additive `order_ref` — ADR 0035); the
+publishes the additive `order_ref` and `line_no` — ADR 0035, ADR 0036); the
 unconnected `workforce-management` node is a deliberate Separate Ways.
 Path parameters are written without braces in the diagram (`/reservations/id`
 for `/reservations/{id}`).
@@ -84,7 +84,7 @@ bounded context).
 | 4 | `inventory-storage` → `order-management` | OHS + PL / C/S + ACL | REST `POST /reservations` (with `Idempotency-Key`), `DELETE /reservations/{id}`, `GET /products/{sku}/classification` | there: `internal/adapters/outbound/inventorystorage/client.go`, `internal/adapters/outbound/productclassification/client.go`; gated by `INVENTORY_STORAGE_MODE` / `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** in the cluster; caller default `permissive` |
 | 5 | `inventory-storage` → `wes-work-planning` | OHS + PL / C/S + ACL | REST `GET /products/{sku}/classification` | there: `internal/adapters/outbound/productclassification/client.go`; `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** when the caller sets `http` |
 | 6 | `inventory-storage` → `fulfillment-execution` | OHS + PL / C/S + ACL | REST `GET /products/{sku}/classification` | there: `internal/adapters/outbound/productclassification/client.go`; `PRODUCT_CLASSIFICATION_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** when the caller sets `http` |
-| 7 | `fulfillment-execution` → `inventory-storage` | OHS + PL / CF | **Decided 2026-10-06, built ([ADR 0035](/docs/adr/0035), supersedes ADR 0032)**: Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`. For `task_type=PICK` with the additive optional `order_ref` (the OrderId = a reservation's `demand_ref`) this service confirms every ACTIVE reservation of the order itself, on the order's **last** completed PICK task (one task per order line, counted in `order_pick_progress`; early picks only record progress), idempotently and atomically. No sync call: the REST route `POST /reservations/{id}/confirm-pick` stays for operators and the simulator. Confirms on the last pick, **short picks not modelled** (a Task has no SKU or quantity) | here: `internal/adapters/inbound/kafka/task_completed_consumer.go`, `internal/application/usecases/confirm_picks_for_order.go` (fixed group `inventory-storage-confirm-pick`, DLQ `warehouse.fulfillment.events.dlq`); there: `TaskCompleted` publisher, which adds `order_ref` in a sibling change (a message without it is a no-op here) | **Wired, off by default** (`TASK_COMPLETED_CONSUMER_MODE=kafka`; needs `DATABASE_URL`, `KAFKA_BROKERS`, and `EVENT_PUBLISHER=kafka` for `StockPicked` to leave the service) |
+| 7 | `fulfillment-execution` → `inventory-storage` | OHS + PL / CF | **Decided 2026-10-06, built ([ADR 0035](/docs/adr/0035), supersedes ADR 0032); per line since 2026-10-07 ([ADR 0036](/docs/adr/0036))**: Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`. For `task_type=PICK` with the additive optional `order_ref` (the OrderId = a reservation's `demand_ref`) and `line_no` this service confirms exactly the ACTIVE reservation of (`order_ref`, `line_no`) itself (the reservation stores `line_no`, sent by order-management as `lineNo`; the order's other lines stay ACTIVE), idempotently and atomically; a task without `line_no`, or a reservation without one, falls back to ADR 0035's counting (`order_pick_progress`, confirm on the order's **last** completed PICK task, never early). No sync call: the REST route `POST /reservations/{id}/confirm-pick` stays for operators and the simulator. **Short picks not modelled** (a Task has no SKU or quantity) | here: `internal/adapters/inbound/kafka/task_completed_consumer.go`, `internal/application/usecases/confirm_picks_for_order.go` (fixed group `inventory-storage-confirm-pick`, DLQ `warehouse.fulfillment.events.dlq`); there: `TaskCompleted` publisher, which adds `order_ref` and `line_no` in sibling changes (a message without `order_ref` is a no-op here, one without `line_no` takes the counting fallback) | **Wired, off by default** (`TASK_COMPLETED_CONSUMER_MODE=kafka`; needs `DATABASE_URL`, `KAFKA_BROKERS`, and `EVENT_PUBLISHER=kafka` for `StockPicked` to leave the service) |
 | 8 | `inventory-storage` → `network-fulfillment` | OHS + PL / ACL | REST `GET /inventory/{sku}/usable` | there: `internal/adapters/outbound/inventoryclient/client.go`, `INVENTORY_STORAGE_URL` (default `http://localhost:8080`, no mode switch) | **Live** |
 | 9 | `inventory-storage` → `warehouse-ops-agent` | OHS + PL / CF | REST `GET /reservations?demandRef=`; reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP (Streamable HTTP) `check_availability`, `get_bin_occupancy` | there: `internal/adapters/outbound/restclient/clients.go`, `reports_clients.go`, `internal/adapters/outbound/mcpclient/inventory_storage.go`; `INVENTORY_STORAGE_REST_URL`, `INVENTORY_STORAGE_REPORTS_REST_URL`, `INVENTORY_STORAGE_MCP_ENDPOINT` | **Live**, read-only; the MCP write tool `revoke_reservation` exists here but the agent does not call it |
 | 10 | `inventory-storage` ↔ `workforce-management` | Separate Ways | — | no client, topic or type in either repo | **Deliberately absent** |
@@ -125,7 +125,9 @@ an observed usable count per SKU, with no concept of a bin.
 
 This service's only synchronous **command** caller among the sibling
 contexts: order allocation reserves stock with `POST /reservations` (one
-call per order line, with a derived `Idempotency-Key`), cancellation
+call per order line, with a derived `Idempotency-Key`; since
+[ADR 0036](/docs/adr/0036) the call can carry the optional `lineNo` of that order
+line, which this service stores and returns), cancellation
 revokes it with `DELETE /reservations/{id}`, and order intake reads
 `GET /products/{sku}/classification`. Every call runs through this service's
 own invariants.
@@ -153,11 +155,14 @@ into the physical decrement of the order's reserved stock through its own
 `ConfirmPick` use case — fulfillment-execution and wes-work-planning never call
 REST/MCP here, and this service stays the one that decides whether a
 confirmation is legal (an expired or revoked reservation is skipped, ADR 0003).
-A PICK task is per order line, so the order's picks are counted
-(`order_pick_progress`) and the reservations are confirmed when the **last** one
-completes. The correlation is one additive field, `order_ref`; nothing else on the topic
+A PICK task is per order line. It names its line (`line_no`) and the reservation of
+that line stores the same number (order-management sends `lineNo`), so the pick
+confirms exactly its own line's reservation; a task or reservation without a line
+falls back to counting the order's picks (`order_pick_progress`) and confirming
+when the **last** one completes. The correlation is two additive fields,
+`order_ref` and `line_no`; nothing else on the topic
 is read, and the other types on it are committed past. See
-[ADR 0035](/docs/adr/0035).
+[ADR 0036](/docs/adr/0036) and [ADR 0035](/docs/adr/0035).
 
 ### ← `facility-layout` (live: Kafka-fed local read model)
 

@@ -296,7 +296,14 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.ReserveStock.Execute(r.Context(), sku, qty, req.DemandRef)
+	// lineNo is optional (ADR 0036); when given it must be a line number,
+	// i.e. at least 1.
+	if req.LineNo != nil && *req.LineNo < 1 {
+		writeProblem(w, http.StatusBadRequest, problemInfo{"invalid-line-no", "lineNo must be at least 1"}, "lineNo must be an integer >= 1 when present", r.URL.Path)
+		return
+	}
+
+	res, err := s.ReserveStock.ExecuteForLine(r.Context(), sku, qty, req.DemandRef, req.LineNo)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -529,6 +536,7 @@ func toReservationResponse(res *reservation.Reservation) reservationResponse {
 		SKU:         res.SKU().String(),
 		Quantity:    res.Quantity().Int(),
 		DemandRef:   res.DemandRef(),
+		LineNo:      res.LineNo(),
 		Status:      string(res.Status()),
 		Allocations: allocations,
 		CreatedAt:   res.CreatedAt().Format(timeFormat),

@@ -537,7 +537,7 @@ Source: `internal/adapters/inbound/kafka/analytics_consumer.go`,
 `postgres_projection.go`, `internal/adapters/inbound/http/reports_handler.go`.
 Omitted: tracing spans and the freshness endpoint.
 
-## 13. ConfirmPicksForOrder — fulfillment-execution's `TaskCompleted`, confirm on the last pick (ADR 0035)
+## 13. ConfirmPicksForOrder — fulfillment-execution's `TaskCompleted`, confirm exactly the picked line (ADR 0036; counting fallback ADR 0035)
 
 ```mermaid
 sequenceDiagram
@@ -556,38 +556,60 @@ sequenceDiagram
         CON->>K: CommitMessages, skip with a sampled WARN
     else other type
         CON->>K: CommitMessages
-    else TaskCompleted with an undecodable payload
+    else TaskCompleted with an undecodable payload (incl. a non-integer line_no)
         CON->>DLQ: raw message plus x-dlq headers
         CON->>K: CommitMessages, only after the DLQ write succeeded
     else TaskCompleted
-        CON->>UC: Execute(eventId, taskType, orderRef)
+        CON->>UC: Execute(eventId, taskType, orderRef, lineNo?)
         alt task_type is not PICK or order_ref is empty
             UC-->>CON: IGNORED, nothing claimed
+        else line_no below 1
+            UC-->>CON: malformed, dead-lettered like any poison message
         else PICK for an order
             rect rgb(235, 235, 235)
                 UC->>PE: Claim(task-completed-confirm-pick, eventId)
                 alt already claimed
-                    UC-->>CON: DUPLICATE, the counter is not touched
+                    UC-->>CON: DUPLICATE, nothing is touched
                 else first delivery
                     UC->>RR: FindByDemandRef(orderRef)
-                    Note over UC: needed = ACTIVE + CONFIRMED reservations (REVOKED and EXPIRED do not count)
-                    alt no reservation, or needed is 0
-                        UC-->>CON: no-op, no progress row is left
-                    else
-                        UC->>PP: upsert picked_tasks + 1 (same transaction as the claim)
-                        alt picked_tasks is below needed
-                            UC-->>CON: AWAITING_LAST_PICK, nothing is confirmed
-                        else picked_tasks reached needed but no ACTIVE reservation is left
-                            UC-->>CON: NOTHING_TO_CONFIRM
-                        else the LAST pick
-                            loop each reservation, in id order
-                                alt CONFIRMED or REVOKED
-                                    UC->>UC: skip and count
-                                else EXPIRED, or ACTIVE past its timeout
-                                    UC->>UC: lazy expiry returns the stock, skip, count, WARN
-                                else ACTIVE
-                                    UC->>CP: Execute(reservationId)
-                                    CP->>OB: StockUnit.Pick, Bin.Release, Publish StockPicked
+                    alt no reservation for the order
+                        UC-->>CON: NO_RESERVATIONS, a no-op
+                    else line_no present and some reservation has that line_no
+                        Note over UC: PER-LINE path (ADR 0036): only that line, nothing is counted
+                        loop each reservation of (orderRef, line_no), in id order
+                            alt CONFIRMED or REVOKED
+                                UC->>UC: skip and count
+                            else EXPIRED, or ACTIVE past its timeout
+                                UC->>UC: lazy expiry returns the stock, skip, count, WARN
+                            else ACTIVE
+                                UC->>CP: Execute(reservationId)
+                                CP->>OB: StockUnit.Pick, Bin.Release, Publish StockPicked
+                            end
+                        end
+                        UC-->>CON: LINE_SETTLED, other lines stay ACTIVE
+                    else line_no present, none has it, and no reservation lacks a line_no
+                        UC-->>CON: LINE_NOT_FOUND, a no-op
+                    else no line_no, or line_no present and only legacy reservations (line_no NULL) can serve it
+                        Note over UC: COUNTING fallback (ADR 0035), over all reservations when the event has no line_no, over the line-less ones only when it has one
+                        Note over UC: needed = ACTIVE + CONFIRMED (REVOKED and EXPIRED do not count)
+                        alt needed is 0
+                            UC-->>CON: NOTHING_TO_CONFIRM, no progress row is left
+                        else
+                            UC->>PP: upsert picked_tasks + 1 (same transaction as the claim)
+                            alt picked_tasks is below needed
+                                UC-->>CON: AWAITING_LAST_PICK, nothing is confirmed
+                            else picked_tasks reached needed but no ACTIVE reservation is left
+                                UC-->>CON: NOTHING_TO_CONFIRM
+                            else the LAST pick
+                                loop each counted reservation, in id order
+                                    alt CONFIRMED or REVOKED
+                                        UC->>UC: skip and count
+                                    else EXPIRED, or ACTIVE past its timeout
+                                        UC->>UC: lazy expiry returns the stock, skip, count, WARN
+                                    else ACTIVE
+                                        UC->>CP: Execute(reservationId)
+                                        CP->>OB: StockUnit.Pick, Bin.Release, Publish StockPicked
+                                    end
                                 end
                             end
                         end
@@ -595,7 +617,7 @@ sequenceDiagram
                 end
             end
         end
-        alt transient failure, rolled back with the claim and the counter
+        alt transient failure, rolled back with the claim (and the counter)
             CON->>CON: capped backoff, retry the same message, 5 attempts
             CON->>DLQ: then dead-letter, and only then commit
         else settled
@@ -604,15 +626,21 @@ sequenceDiagram
     end
 ```
 
-A PICK task is per order **line** and every one carries the same `order_ref`,
-while a `Reservation` stores only `sku`, `quantity` and `demandRef` (no line), so
-a task cannot be mapped to one reservation. The consumer therefore counts the
-order's completed PICK tasks and confirms only on the **last** one: confirming
-early would mark unpicked lines as picked with no undo, confirming late is safe
-(the reservation keeps the stock unavailable, and expires lazily if it is never
-confirmed). The counter row is deleted by the housekeeping sweeper after
-`ORDER_PICK_PROGRESS_RETENTION` (default 30 days). A redelivered event id is
-stopped by the claim before the counter, so it can never be counted twice. No
+A PICK task is per order **line**. Since ADR 0036 the `Reservation` stores the
+order line it was made for (`reservations.line_no`, sent by order-management as
+`lineNo`) and `TaskCompleted` carries the task's `line_no`, so a pick confirms
+**exactly its own line**: lines 1 and 3 picked, line 2 not, confirms 1 and 3 and
+leaves 2 `ACTIVE` with its stock still reserved. Nothing is counted on that path
+and no `order_pick_progress` row is written, so ADR 0035's "one pick early"
+edge (a revoked or expired line shifting the count) is closed for line-aware
+events. The counting of ADR 0035 stays as the backward-compatible fallback: for
+an event without `line_no`, or for reservations made before `line_no` existed
+(`NULL`), the consumer counts the order's completed PICK tasks and confirms only
+on the **last** one (confirming early would mark unpicked lines as picked with no
+undo, confirming late is safe: the reservation keeps the stock unavailable, and
+expires lazily if it is never confirmed). The counter row is deleted by the
+housekeeping sweeper after `ORDER_PICK_PROGRESS_RETENTION` (default 30 days). A
+redelivered event id is stopped by the claim before anything is touched. No
 reservation for the order (a transfer or a non-inventory order) settles as a
 successful no-op. Short picks are not modelled (a Task carries no SKU or
 quantity). Source:
