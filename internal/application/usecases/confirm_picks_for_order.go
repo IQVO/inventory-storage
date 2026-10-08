@@ -157,7 +157,7 @@ func (uc *ConfirmPicksForOrder) Execute(ctx context.Context, in PickCompletion) 
 	if in.EventID == "" {
 		return ConfirmPicksResult{}, fmt.Errorf("%w: empty event id", ErrMalformedPickCompletion)
 	}
-	if in.LineNo != nil && *in.LineNo < 1 {
+	if in.LineNo != nil && !reservation.ValidLineNo(*in.LineNo) {
 		return ConfirmPicksResult{}, fmt.Errorf("%w: line_no %d is not a line number", ErrMalformedPickCompletion, *in.LineNo)
 	}
 

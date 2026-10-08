@@ -6,6 +6,7 @@ package reservation
 
 import (
 	"errors"
+	"math"
 	"time"
 
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -15,8 +16,15 @@ var (
 	ErrAlreadyResolved = errors.New("reservation is already resolved (confirmed, revoked, or expired)")
 	ErrExpired         = errors.New("reservation has expired")
 	ErrNoAllocations   = errors.New("reservation requires at least one allocation")
-	ErrInvalidLineNo   = errors.New("reservation line number must be at least 1")
+	ErrInvalidLineNo   = errors.New("reservation line number must be between 1 and 2147483647")
 )
+
+// MaxLineNo is the largest valid line number: the line_no columns are 32-bit
+// INTEGERs (migration 0035), so anything above would fail at the database.
+const MaxLineNo = math.MaxInt32
+
+// ValidLineNo reports whether n is a valid order line number: 1..MaxLineNo.
+func ValidLineNo(n int) bool { return n >= 1 && n <= MaxLineNo }
 
 // Status is the lifecycle stage of a Reservation.
 type Status string
@@ -73,9 +81,9 @@ func New(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, 
 
 // NewForLine is New for a reservation that knows which order line it serves
 // (decision 18, ADR 0036). lineNo is optional: nil means unknown; a non-nil
-// value must be at least 1 (ErrInvalidLineNo). The value is copied.
+// value must be between 1 and MaxLineNo (ErrInvalidLineNo). The value is copied.
 func NewForLine(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, lineNo *int, allocations []Allocation, createdAt time.Time, timeout time.Duration) (*Reservation, error) {
-	if lineNo != nil && *lineNo < 1 {
+	if lineNo != nil && !ValidLineNo(*lineNo) {
 		return nil, ErrInvalidLineNo
 	}
 	if len(allocations) == 0 {

@@ -363,6 +363,30 @@ func TestConfirmPicksForOrder_PerLine_NonPositiveLineIsMalformed(t *testing.T) {
 	}
 }
 
+// A line_no above the 32-bit column (2147483647) is malformed exactly like a
+// non-positive one; the boundary 1 and 2147483647 are well-formed.
+func TestConfirmPicksForOrder_PerLine_LineNoAboveInt32IsMalformed(t *testing.T) {
+	for _, n := range []int{2147483648, 9223372036854775807} {
+		f := newConfirmPicksFixture(t)
+		f.reserveNumbered(t, "LINE-1", "order-1", ptr(1), time.Hour)
+
+		_, err := f.uc.Execute(context.Background(), lineCompleted("ce-1", "order-1", n))
+		if !errors.Is(err, usecases.ErrMalformedPickCompletion) {
+			t.Fatalf("line_no %d: err = %v, want ErrMalformedPickCompletion", n, err)
+		}
+		if len(f.claims.claimed) != 0 || f.status(t, "LINE-1") != reservation.StatusActive {
+			t.Fatalf("line_no %d: a malformed event changed state", n)
+		}
+	}
+	for _, n := range []int{1, 2147483647} {
+		f := newConfirmPicksFixture(t)
+		f.reserveNumbered(t, "LINE-1", "order-1", ptr(1), time.Hour)
+		if _, err := f.uc.Execute(context.Background(), lineCompleted("ce-1", "order-1", n)); errors.Is(err, usecases.ErrMalformedPickCompletion) {
+			t.Fatalf("line_no %d must be well-formed, got %v", n, err)
+		}
+	}
+}
+
 func TestConfirmPicksForOrder_PerLine_NonPickAndNoOrderRefAreStillIgnored(t *testing.T) {
 	f := newConfirmPicksFixture(t)
 	f.reserveNumbered(t, "LINE-1", "order-1", ptr(1), time.Hour)

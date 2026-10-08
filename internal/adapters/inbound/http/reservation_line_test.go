@@ -96,6 +96,45 @@ func TestReserveStock_Endpoint_NonPositiveLineNo_Rejected(t *testing.T) {
 	}
 }
 
+// lineNo is valid iff 1 <= n <= 2147483647 (the 32-bit line_no column): the
+// boundaries 1 and 2147483647 are accepted; 0, 2147483648 and the int64 max
+// are a 400 invalid-line-no that reserves nothing.
+func TestReserveStock_Endpoint_LineNoBoundaryTable(t *testing.T) {
+	cases := []struct {
+		n    int64
+		want int
+	}{
+		{0, http.StatusBadRequest},
+		{1, http.StatusCreated},
+		{2147483647, http.StatusCreated},
+		{2147483648, http.StatusBadRequest},
+		{9223372036854775807, http.StatusBadRequest},
+	}
+	for _, c := range cases {
+		ts := seededLineServer(t)
+		rec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 2, "demandRef": "order-bound", "lineNo": c.n})
+		if rec.Code != c.want {
+			t.Fatalf("lineNo %d: expected %d, got %d: %s", c.n, c.want, rec.Code, rec.Body.String())
+		}
+		if c.want == http.StatusCreated {
+			var got lineReservation
+			_ = json.Unmarshal(rec.Body.Bytes(), &got)
+			if got.LineNo == nil || int64(*got.LineNo) != c.n {
+				t.Fatalf("lineNo %d: echoed %v", c.n, got.LineNo)
+			}
+			continue
+		}
+		assertProblemDetails(t, rec, http.StatusBadRequest, "invalid-line-no", "/reservations")
+		if !strings.Contains(rec.Body.String(), "2147483647") {
+			t.Fatalf("lineNo %d: problem should state the range, got %s", c.n, rec.Body.String())
+		}
+		usable := ts.do(t, http.MethodGet, "/inventory/SKU-1/usable", nil)
+		if !strings.Contains(usable.Body.String(), `"usable":30`) {
+			t.Fatalf("lineNo %d: a rejected reservation must not reserve stock, got %s", c.n, usable.Body.String())
+		}
+	}
+}
+
 // A non-integer lineNo is a malformed body (the existing 400).
 func TestReserveStock_Endpoint_NonIntegerLineNo_IsMalformed(t *testing.T) {
 	ts := seededLineServer(t)
