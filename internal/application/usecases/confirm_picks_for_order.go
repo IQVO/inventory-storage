@@ -37,6 +37,12 @@ type PickCompletion struct {
 	// order-management reserved against (demand_ref). Empty when the
 	// producer predates the field or the task could not be found.
 	OrderRef string
+	// LineNo is the order line this PICK task was for, when the producer
+	// sends it (decision 18, ADR 0036); nil when unknown. With it the pick
+	// confirms exactly that line's reservation; without it, or when no
+	// reservation of the order carries a line, the ADR 0035 last-pick
+	// counting applies.
+	LineNo *int
 }
 
 // ConfirmPicksOutcome says what ConfirmPicksForOrder did with one event.
@@ -59,6 +65,14 @@ const (
 	// PicksProcessed: this was the last pick; the order's reservations were
 	// walked, see the counts.
 	PicksProcessed ConfirmPicksOutcome = "PROCESSED"
+	// PicksLineSettled: the event named a line and the reservations of that
+	// line were walked, see the counts (per-line path, ADR 0036). Nothing
+	// was counted.
+	PicksLineSettled ConfirmPicksOutcome = "LINE_SETTLED"
+	// PicksLineNotFound: the event named a line but no reservation of the
+	// order carries it, and the order has no line-less reservation to fall
+	// back to. A successful no-op.
+	PicksLineNotFound ConfirmPicksOutcome = "LINE_NOT_FOUND"
 )
 
 // ConfirmPicksResult is the per-event summary: where the order's pick count
@@ -87,19 +101,27 @@ type reservationConfirmer interface {
 	Execute(ctx context.Context, reservationID string) error
 }
 
-// ConfirmPicksForOrder turns "the LAST PICK task for order X completed" into
-// the physical decrement of every ACTIVE reservation whose demand_ref is X
-// (ADR 0035, superseding ADR 0032).
+// ConfirmPicksForOrder turns a completed PICK task for order X into the
+// physical decrement of the right ACTIVE reservations of X.
 //
-// A PICK task is per order LINE and every one publishes the same order_ref,
-// while a Reservation has no line identity (only sku, quantity, demand_ref),
-// so a task cannot be mapped to one reservation. The order's picks are
-// counted instead (order_pick_progress) and the reservations are confirmed
-// when the count reaches needed = ACTIVE + CONFIRMED reservations (REVOKED and
-// EXPIRED never get picked). Earlier picks only record progress: confirming
-// then would mark unpicked lines as picked with no undo, whereas confirming
-// late is safe (the reservation keeps the stock unavailable meanwhile).
-// Short picks are not modelled.
+// Per-line path (decision 18, ADR 0036). When the event carries the task's
+// line_no, exactly the ACTIVE reservation(s) with (demand_ref = X, line_no =
+// that line) are confirmed through ConfirmPick; CONFIRMED, REVOKED and EXPIRED
+// ones are skipped (expired counted). Nothing is counted: a line that was not
+// picked is never touched, so the "one pick early" edge of ADR 0035 does not
+// exist for line-aware events.
+//
+// Counting path (ADR 0035, kept as the backward-compatible fallback). When
+// the event has no line_no, or the event names a line that none of the
+// order's reservations carries but the order has reservations made before
+// line_no existed (NULL), the pick is counted against THOSE reservations
+// (order_pick_progress) and they are confirmed when the count reaches
+// needed = ACTIVE + CONFIRMED (REVOKED and EXPIRED never get picked). A PICK
+// task is per order LINE and every one publishes the same order_ref, so
+// without a line a task cannot be mapped to one reservation; earlier picks
+// only record progress, because confirming then would mark unpicked lines as
+// picked with no undo, whereas confirming late is safe (the reservation keeps
+// the stock unavailable meanwhile). Short picks are not modelled.
 //
 // The CloudEvents id claim, the counter increment and every ConfirmPick write
 // (stock, bin, reservation, outbox rows) run in ONE UnitOfWork, so a failure
@@ -135,6 +157,9 @@ func (uc *ConfirmPicksForOrder) Execute(ctx context.Context, in PickCompletion) 
 	if in.EventID == "" {
 		return ConfirmPicksResult{}, fmt.Errorf("%w: empty event id", ErrMalformedPickCompletion)
 	}
+	if in.LineNo != nil && *in.LineNo < 1 {
+		return ConfirmPicksResult{}, fmt.Errorf("%w: line_no %d is not a line number", ErrMalformedPickCompletion, *in.LineNo)
+	}
 
 	var result ConfirmPicksResult
 	err := atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
@@ -149,7 +174,7 @@ func (uc *ConfirmPicksForOrder) Execute(ctx context.Context, in PickCompletion) 
 			result.Outcome = PicksDuplicate
 			return nil
 		}
-		return uc.countAndConfirm(ctx, in.OrderRef, &result)
+		return uc.confirm(ctx, in, &result)
 	})
 	if err != nil {
 		return ConfirmPicksResult{}, err
@@ -158,10 +183,12 @@ func (uc *ConfirmPicksForOrder) Execute(ctx context.Context, in PickCompletion) 
 	return result, nil
 }
 
-// countAndConfirm runs inside the claim's transaction: it counts this pick for
-// orderRef and, when it is the order's last, confirms the ACTIVE reservations.
-func (uc *ConfirmPicksForOrder) countAndConfirm(ctx context.Context, orderRef string, result *ConfirmPicksResult) error {
-	reservations, err := uc.Reservations.FindByDemandRef(ctx, orderRef)
+// confirm runs inside the claim's transaction. It picks the per-line path when
+// the event names a line some reservation of the order carries, and otherwise
+// the ADR 0035 counting path (over the line-less reservations only when the
+// event named a line).
+func (uc *ConfirmPicksForOrder) confirm(ctx context.Context, in PickCompletion, result *ConfirmPicksResult) error {
+	reservations, err := uc.Reservations.FindByDemandRef(ctx, in.OrderRef)
 	if err != nil {
 		return err
 	}
@@ -172,6 +199,59 @@ func (uc *ConfirmPicksForOrder) countAndConfirm(ctx context.Context, orderRef st
 	// Deterministic order, so concurrent handlers lock rows alike.
 	sort.Slice(reservations, func(i, j int) bool { return reservations[i].ID() < reservations[j].ID() })
 
+	if in.LineNo != nil {
+		if line := forLine(reservations, *in.LineNo); len(line) > 0 {
+			return uc.settleLine(ctx, line, result)
+		}
+		// No reservation carries this line: only reservations made before
+		// line_no existed can still be served, by counting (ADR 0035).
+		reservations = withoutLine(reservations)
+		if len(reservations) == 0 {
+			result.Outcome = PicksLineNotFound
+			return nil
+		}
+	}
+	return uc.countAndConfirm(ctx, in.OrderRef, reservations, result)
+}
+
+// forLine returns the reservations stored for order line lineNo.
+func forLine(reservations []*reservation.Reservation, lineNo int) []*reservation.Reservation {
+	var out []*reservation.Reservation
+	for _, res := range reservations {
+		if n := res.LineNo(); n != nil && *n == lineNo {
+			out = append(out, res)
+		}
+	}
+	return out
+}
+
+// withoutLine returns the reservations that carry no line number.
+func withoutLine(reservations []*reservation.Reservation) []*reservation.Reservation {
+	var out []*reservation.Reservation
+	for _, res := range reservations {
+		if res.LineNo() == nil {
+			out = append(out, res)
+		}
+	}
+	return out
+}
+
+// settleLine is the per-line path: it walks the line's reservations, confirming
+// the ACTIVE ones and counting the rest, and writes no order_pick_progress row.
+func (uc *ConfirmPicksForOrder) settleLine(ctx context.Context, line []*reservation.Reservation, result *ConfirmPicksResult) error {
+	result.Outcome = PicksLineSettled
+	for _, res := range line {
+		if err := uc.settle(ctx, res, result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// countAndConfirm runs inside the claim's transaction: it counts this pick for
+// orderRef against reservations (the whole order, or only its line-less
+// reservations) and, when it is the last, confirms the ACTIVE ones.
+func (uc *ConfirmPicksForOrder) countAndConfirm(ctx context.Context, orderRef string, reservations []*reservation.Reservation, result *ConfirmPicksResult) error {
 	needed, active := confirmable(reservations)
 	if needed == 0 {
 		// Every reservation is REVOKED or EXPIRED: nothing can ever be

@@ -10,7 +10,7 @@ sidebar_position: 35
 
 ## Status
 
-**Accepted** (2026-10-07). Supersedes [ADR 0032](./0032-confirm-pick-event-driven.md)
+**Accepted** (2026-10-07); per-line path added by [ADR 0036](./0036-per-line-confirm-pick.md). Supersedes [ADR 0032](./0032-confirm-pick-event-driven.md)
 (Proposed, 2026-10-06): its direction (event-driven, no synchronous cross-context
 call) is kept and implemented here; its "missing fields" finding is resolved by
 the correlation below. Audit decisions 17 and 17a (17a corrects 17: the first

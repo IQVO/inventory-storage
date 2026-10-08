@@ -1,0 +1,11 @@
+-- Order line number on a reservation (ADR 0036, audit decision 18).
+--
+-- order-management reserves one reservation per order line and now says WHICH
+-- line in POST /reservations (lineNo). Storing it lets the TaskCompleted
+-- consumer confirm exactly the picked line instead of counting picks
+-- (ADR 0035).
+--
+-- Additive and nullable: every existing row keeps line_no NULL ("unknown"),
+-- which the consumer still handles with the ADR 0035 last-pick counting. No
+-- backfill: the line number was never stored, so any guess would be invented.
+ALTER TABLE reservations ADD COLUMN line_no INTEGER CHECK (line_no IS NULL OR line_no >= 1);

@@ -33,11 +33,21 @@ type ReserveStock struct {
 }
 
 func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Quantity, demandRef string) (*reservation.Reservation, error) {
-	if qty.Int() <= 0 {
-		return nil, shared.ErrZeroQuantity
+	return uc.ExecuteForLine(ctx, sku, qty, demandRef, nil)
+}
+
+// ExecuteForLine is Execute for a reservation that names the order line it
+// serves (decision 18, ADR 0036). lineNo is optional (nil = unknown, exactly
+// Execute); a non-nil value below 1 is rejected with
+// reservation.ErrInvalidLineNo before anything is read or written. The line
+// is stored on the Reservation so the TaskCompleted consumer can confirm
+// exactly the picked line.
+func (uc *ReserveStock) ExecuteForLine(ctx context.Context, sku shared.SKU, qty shared.Quantity, demandRef string, lineNo *int) (*reservation.Reservation, error) {
+	if err := validateReserveInput(qty, lineNo); err != nil {
+		return nil, err
 	}
 
-	res, err := uc.activeReservationFor(ctx, demandRef, sku, qty)
+	res, err := uc.activeReservationFor(ctx, demandRef, sku, qty, lineNo)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +76,7 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 	}
 
 	now := uc.Clock.Now()
-	res, err = reservation.New(id, sku, qty, demandRef, allocations, now, timeout)
+	res, err = reservation.NewForLine(id, sku, qty, demandRef, lineNo, allocations, now, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -101,6 +111,18 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 	return res, nil
 }
 
+// validateReserveInput rejects a reserve request that can never succeed, before
+// anything is read or written.
+func validateReserveInput(qty shared.Quantity, lineNo *int) error {
+	if qty.Int() <= 0 {
+		return shared.ErrZeroQuantity
+	}
+	if lineNo != nil && *lineNo < 1 {
+		return reservation.ErrInvalidLineNo
+	}
+	return nil
+}
+
 // activeReservationFor implements the idempotency guard for Execute:
 // a client-side retry after a dropped response (e.g. the first call's
 // Reservation was created and stock allocated, but the response never
@@ -121,7 +143,7 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 // pass it before either has saved. Closing that window would need a DB-level
 // constraint; see REST_AUDIT.md's idempotency notes for the accepted scope
 // here. It returns nil when no ACTIVE reservation remains for demandRef.
-func (uc *ReserveStock) activeReservationFor(ctx context.Context, demandRef string, sku shared.SKU, qty shared.Quantity) (*reservation.Reservation, error) {
+func (uc *ReserveStock) activeReservationFor(ctx context.Context, demandRef string, sku shared.SKU, qty shared.Quantity, lineNo *int) (*reservation.Reservation, error) {
 	existing, err := uc.Reservations.FindByDemandRef(ctx, demandRef)
 	if err != nil {
 		return nil, err
@@ -137,15 +159,15 @@ func (uc *ReserveStock) activeReservationFor(ctx context.Context, demandRef stri
 		return nil, err
 	}
 	for _, res := range existing {
-		if res.Status() == reservation.StatusActive && isReplayOf(res, sku, qty) {
+		if res.Status() == reservation.StatusActive && isReplayOf(res, sku, qty, lineNo) {
 			return res, nil
 		}
 	}
 	return nil, nil
 }
 
-// isReplayOf reports whether res is what a replay of reserve(sku, qty)
-// would have created. A demandRef names a DEMAND (e.g. an order), and one
+// isReplayOf reports whether res is what a replay of reserve(sku, qty,
+// lineNo) would have created. A demandRef names a DEMAND (e.g. an order), and one
 // demand legitimately holds several ACTIVE reservations at once -- one per
 // order line / SKU. Matching on demandRef alone handed line 2's request
 // back line 1's reservation (a different SKU), so every line after the
@@ -153,8 +175,22 @@ func (uc *ReserveStock) activeReservationFor(ctx context.Context, demandRef stri
 // was reported as allocated, and cancelling the order revoked the same
 // reservation twice (observed live in the warehouse-day simulation).
 // Only an identical (sku, quantity) request is treated as the retry.
-func isReplayOf(res *reservation.Reservation, sku shared.SKU, qty shared.Quantity) bool {
-	return res.SKU() == sku && res.Quantity() == qty
+//
+// When the request names its line (ADR 0036) the line must also agree, so
+// two lines of one order that share SKU and quantity stay two reservations.
+// An ACTIVE reservation with NO line (made before the field existed) still
+// answers a line-aware retry: handing it back is the conservative choice
+// over holding the same stock twice. A request without a line matches as it
+// always did.
+func isReplayOf(res *reservation.Reservation, sku shared.SKU, qty shared.Quantity, lineNo *int) bool {
+	if res.SKU() != sku || res.Quantity() != qty {
+		return false
+	}
+	have := res.LineNo()
+	if lineNo == nil || have == nil {
+		return true
+	}
+	return *have == *lineNo
 }
 
 // allocate reserves qty across the given stock units, greedily drawing from

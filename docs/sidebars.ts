@@ -113,6 +113,7 @@ const sidebars: SidebarsConfig = {
         'adr/0033-destination-transfer-receipt-custody',
         'adr/0034-product-master-owns-classification',
         'adr/0035-confirm-pick-from-task-completed',
+        'adr/0036-per-line-confirm-pick',
       ],
     },
   ],

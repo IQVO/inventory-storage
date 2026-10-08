@@ -33,6 +33,9 @@ type reserveStockRequest struct {
 	SKU       string `json:"sku"`
 	Quantity  int    `json:"quantity"`
 	DemandRef string `json:"demandRef"`
+	// LineNo is the optional order line this reservation is for (ADR 0036).
+	// A pointer so absent/null (unknown) is distinguishable from an invalid 0.
+	LineNo *int `json:"lineNo"`
 }
 
 type allocationResponse struct {
@@ -45,10 +48,13 @@ type allocationResponse struct {
 }
 
 type reservationResponse struct {
-	ID          string               `json:"id"`
-	SKU         string               `json:"sku"`
-	Quantity    int                  `json:"quantity"`
-	DemandRef   string               `json:"demandRef"`
+	ID        string `json:"id"`
+	SKU       string `json:"sku"`
+	Quantity  int    `json:"quantity"`
+	DemandRef string `json:"demandRef"`
+	// LineNo is the order line this reservation is for; omitted when unknown
+	// (a reservation made without one, ADR 0036).
+	LineNo      *int                 `json:"lineNo,omitempty"`
 	Status      string               `json:"status"`
 	Allocations []allocationResponse `json:"allocations"`
 	CreatedAt   string               `json:"createdAt"`

@@ -57,6 +57,13 @@ type cpLine struct {
 // database, exactly what lazy expiry leaves behind).
 func cpSeedLine(t *testing.T, env *transferTestEnv, run, label, demandRef string, stowed, reserved int, clock *memory.FixedClock) cpLine {
 	t.Helper()
+	return cpSeedLineNo(t, env, run, label, demandRef, nil, stowed, reserved, clock)
+}
+
+// cpSeedLineNo is cpSeedLine for a reservation made as order line lineNo
+// (decision 18); nil seeds a legacy reservation without a line.
+func cpSeedLineNo(t *testing.T, env *transferTestEnv, run, label, demandRef string, lineNo *int, stowed, reserved int, clock *memory.FixedClock) cpLine {
+	t.Helper()
 	ctx := context.Background()
 	line := cpLine{sku: fmt.Sprintf("SKU-CP-%s-%s", label, run), stowed: stowed, reserved: reserved}
 	binID := saveBin(t, env, fmt.Sprintf("BIN-CP-%s-%s", label, run))
@@ -82,7 +89,7 @@ func cpSeedLine(t *testing.T, env *transferTestEnv, run, label, demandRef string
 		clk = clock
 	}
 	reserve := &usecases.ReserveStock{Stock: stockRepo, Reservations: reservations, Events: events.NewBufferedPublisher(), Clock: clk, UnitOfWork: uow}
-	res, err := reserve.Execute(ctx, shared.SKU(line.sku), mustQty(t, reserved), demandRef)
+	res, err := reserve.ExecuteForLine(ctx, shared.SKU(line.sku), mustQty(t, reserved), demandRef, lineNo)
 	if err != nil {
 		t.Fatalf("reserve %s: %v", line.sku, err)
 	}

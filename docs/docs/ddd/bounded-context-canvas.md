@@ -69,7 +69,7 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | Inventory control (operator, simulator) | RunCycleCount | Command | REST `POST /bins/{binId}/cycle-count` | OHS |
 | product-master | ProductClassified (local copy, ADR 0034) | Event | Kafka `warehouse.product-master.events` → `ApplyProductClassification` | Conformist (product-master's Published Language); `PUT /products/{sku}/classification` answers 410 |
 | Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/confirm-pick` | OHS — no sibling context calls it; **decided 2026-10-06: event-driven** — production confirmation comes from fulfillment-execution's `TaskCompleted` (next row), consumed here ([ADR 0035](/docs/adr/0035)) |
-| fulfillment-execution | TaskCompleted (PICK, `order_ref`) | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` → `ConfirmPicksForOrder` → counts the order's picks, `ConfirmPick` per ACTIVE reservation on the order's last pick (`TASK_COMPLETED_CONSUMER_MODE=kafka`, default off) | Conformist (fulfillment-execution's Published Language); confirms on the last pick of the order, short picks not modelled ([ADR 0035](/docs/adr/0035)) |
+| fulfillment-execution | TaskCompleted (PICK, `order_ref`, `line_no`) | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` → `ConfirmPicksForOrder` → with `line_no`, `ConfirmPick` for exactly that line's ACTIVE reservation; without it, counts the order's picks and confirms on the order's last pick (`TASK_COMPLETED_CONSUMER_MODE=kafka`, default off) | Conformist (fulfillment-execution's Published Language); per-line confirm, counting fallback, short picks not modelled ([ADR 0036](/docs/adr/0036), [ADR 0035](/docs/adr/0035)) |
 | Operator, `inventory-mfe` | GetBin, GetUsable | Query | REST `GET /bins/{binId}`, `GET /inventory/{sku}/usable` | OHS |
 | Kubernetes | liveness / readiness | Query | REST `GET /healthz`, `GET /readyz` | — |
 
@@ -163,18 +163,22 @@ The terms that carry the model:
   not only against its own `LocationRepo`?
 - ~~Who should call `POST /reservations/{id}/confirm-pick` in production?~~
   **Decided 2026-10-06: nobody** — this context consumes fulfillment-execution's
-  `TaskCompleted` (PICK, additive `order_ref`) and confirms the order's ACTIVE
-  reservations itself, on the order's **last** pick (one PICK task per line, counted
-  in `order_pick_progress`), idempotently and atomically; no sync REST/MCP
-  call from siblings ([ADR 0035](/docs/adr/0035), supersedes ADR 0032).
-- Short picks: a Task carries no SKU or quantity, so on the last pick the whole
+  `TaskCompleted` (PICK, additive `order_ref`) and confirms the reservations
+  itself, idempotently and atomically; no sync REST/MCP call from siblings
+  ([ADR 0035](/docs/adr/0035), supersedes ADR 0032). **Decided 2026-10-07 (audit
+  decision 18): per line** — with the additive `line_no` on `TaskCompleted`, and
+  the `line_no` that `Reservation` now stores (order-management sends `lineNo`),
+  exactly the picked line's reservation is confirmed ([ADR 0036](/docs/adr/0036));
+  the ADR 0035 counting (confirm on the order's **last** pick, never early) stays
+  as the fallback for events or reservations without a line.
+- Short picks: a Task carries no SKU or quantity, so a confirmed line's whole
   reserved quantity is picked. Modelling a short pick needs
   per-line quantities in work-planning's WorkUnit and fulfillment-execution's
   Task, and a rule for the remainder — explicit limitation of
   [ADR 0035](/docs/adr/0035), not yet decided.
-- Per-line confirmation (order-management sends `line_no`, `Reservation` stores it,
-  `TaskCompleted` carries it) would replace the pick counter; recorded as the future
-  path in [ADR 0035](/docs/adr/0035), not scheduled.
+- ~~Per-line confirmation (order-management sends `line_no`, `Reservation` stores it,
+  `TaskCompleted` carries it)?~~ **Decided 2026-10-07: built** ([ADR 0036](/docs/adr/0036));
+  the pick counter remains only as the backward-compatible fallback.
 - ~~Should the default `LOCATION_LOOKUP_MODE` stay `permissive`?~~
   **Decided 2026-10-06: kept** (ADR 0013/0020) — a cold facility cache would
   reject every receipt; the cluster already injects `kafka`.

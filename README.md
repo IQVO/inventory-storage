@@ -204,10 +204,11 @@ curl -s -i -X POST localhost:8080/stock/stow \
 
 curl -s -i -X POST localhost:8080/reservations \
   -H 'Idempotency-Key: 8b1a...' \
-  -d '{"sku":"SKU-1","quantity":6,"demandRef":"order-42"}'
+  -d '{"sku":"SKU-1","quantity":6,"demandRef":"order-42","lineNo":1}'
 # => 201 Created, Location: /reservations/<id>, body {"id":"res-...", ...,
-#    "allocations":[{"stockUnitId":"su-...","binId":"A-1-1","quantity":6}]}
-#    Every allocation names its pick location (binId) — ADR-0025.
+#    "lineNo":1, "allocations":[{"stockUnitId":"su-...","binId":"A-1-1","quantity":6}]}
+#    Every allocation names its pick location (binId) — ADR-0025. lineNo is
+#    optional (>= 1; omitted from the response when unknown) — ADR-0036.
 # A retry with the SAME Idempotency-Key + body returns this exact response
 # again without creating a second reservation (ADR-0018); omitting the
 # header entirely on these two routes is a 400.
@@ -412,36 +413,41 @@ running pod's relay publishes; safe to re-run:
 kubectl -n warehouse-systems exec deploy/inventory-storage -- ./inventory republish-product-classifications
 ```
 
-### Consumed: fulfillment-execution's TaskCompleted → confirm picks on the last pick (ADR-0035)
+### Consumed: fulfillment-execution's TaskCompleted → confirm exactly the picked line (ADR-0036; counting fallback ADR-0035)
 
 Nothing calls `POST /reservations/{id}/confirm-pick` in production, so picks are
 confirmed from an event instead (no synchronous call into this context). On
 `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` from
 `warehouse.fulfillment.events`, for a `task_type` of `PICK` with a non-empty
-`order_ref` (the OrderId, = a reservation's `demand_ref`), the pick is **counted**
-for the order (`order_pick_progress`). A PICK task is per order **line** and a
-reservation has no line identity (only `sku`, `quantity`, `demand_ref`), so a task
-cannot be matched to one reservation; when the count reaches the order's
-ACTIVE + CONFIRMED reservations (REVOKED and EXPIRED are not awaited), i.e. on the
-**last** pick, every **ACTIVE** reservation of that order is confirmed through the
-existing `ConfirmPick` logic: stock decremented, bin capacity released,
-`StockPicked` raised. Earlier picks only record progress (confirming early would
-mark unpicked lines as picked with no undo; confirming late is safe). The
-CloudEvents `id` claim (`processed_events`), the counter increment and all
-confirmations commit in **one transaction**; a redelivery (or an extra PICK event
-for an already confirmed order) confirms nothing new and never double-counts.
-CONFIRMED/REVOKED reservations are skipped, an EXPIRED one
+`order_ref` (the OrderId, = a reservation's `demand_ref`):
+
+- **With the additive optional `line_no`** (ADR-0036) the ACTIVE reservation of
+  (`order_ref`, `line_no`) is confirmed through the existing `ConfirmPick` logic:
+  stock decremented, bin capacity released, `StockPicked` raised. A `Reservation`
+  stores its line (`line_no`, sent by order-management as `lineNo` on
+  `POST /reservations`), so the order's other lines stay ACTIVE until their own pick
+  arrives and nothing is counted (no `order_pick_progress` row).
+- **Without `line_no`, or for reservations made before it existed** (NULL), the
+  ADR-0035 fallback **counts** the pick for the order (`order_pick_progress`) and,
+  when the count reaches the ACTIVE + CONFIRMED reservations (REVOKED and EXPIRED
+  are not awaited), i.e. on the **last** pick, confirms every ACTIVE one. Earlier
+  picks only record progress (confirming early would mark unpicked lines as picked
+  with no undo; confirming late is safe).
+
+The CloudEvents `id` claim (`processed_events`), the counter increment (fallback
+only) and all confirmations commit in **one transaction**; a redelivery (or an
+extra PICK event for an already confirmed line or order) confirms nothing new and
+never double-counts. CONFIRMED/REVOKED reservations are skipped, an EXPIRED one
 (ADR-0003) is skipped, logged and counted in
 `inventory.pick_confirmations{outcome=expired}`, never an error; an order with
-no reservations is a successful no-op. Counter rows older than
+no reservations is a successful no-op; a `line_no` that is not an integer >= 1 is
+dead-lettered. Counter rows older than
 `ORDER_PICK_PROGRESS_RETENTION` (default `720h`) are swept (see Housekeeping).
 
 **Limitation: short picks are not modelled.** A Task carries no SKU or
-quantity, so on the last pick the whole reserved quantity of every ACTIVE line is
-confirmed. Short picks need per-line quantities in
-work-planning's WorkUnit and fulfillment-execution's Task; the per-line path
-(order-management sends `line_no`, `Reservation` stores it, the event carries it) is
-recorded in ADR-0035.
+quantity, so the whole reserved quantity of a confirmed line is picked. Short
+picks need per-line quantities in work-planning's WorkUnit and
+fulfillment-execution's Task and a business rule for the remainder.
 
 A transient failure retries the same message (capped backoff, 5 attempts), then
 dead-letters it to `warehouse.fulfillment.events.dlq`; a malformed payload is

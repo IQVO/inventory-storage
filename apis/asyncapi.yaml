@@ -259,35 +259,53 @@ channels:
       `warehouse.fulfillment.events.dlq`.
     publish:
       operationId: confirmPicksFromTaskCompleted
-      summary: Confirm an order's picked reservations on the order's last TaskCompleted.
+      summary: Confirm the picked line's reservation (line_no), or fall back to confirming the order on its last TaskCompleted.
       description: >
         At-least-once, fixed group: FetchMessage, then CommitMessages only after
-        the message settles. A PICK task is per order LINE and every one carries
-        the same `order_ref`, while a reservation has no line identity (only
-        sku, quantity and `demand_ref`), so a task cannot be matched to one
-        reservation. For `task_type = PICK` with a non-empty `order_ref` (the
-        OrderId order-management reserved against, stored here as `demand_ref`)
-        the pick is COUNTED for the order (table `order_pick_progress`); only
-        when the count reaches the order's ACTIVE + CONFIRMED reservations (REVOKED
-        and EXPIRED are not awaited), i.e. on the LAST pick, is every ACTIVE
-        reservation with that `demand_ref` confirmed through the existing
-        ConfirmPick logic (stock decremented, bin capacity released, `StockPicked`
-        raised). Earlier picks only record progress and settle as successful
-        no-ops. The CloudEvents `id` claim in `processed_events`, the counter
-        increment and all confirmations commit in ONE transaction, so a failure
-        rolls everything back and the redelivery is applied in full; a
-        redelivered id never advances the counter, and a further PICK event for
-        an already confirmed order confirms nothing new. Counter rows older than
-        `ORDER_PICK_PROGRESS_RETENTION` (default 720h) are swept. Reservations
-        already CONFIRMED or REVOKED are skipped; an
-        EXPIRED one (ADR 0003) is skipped, logged and counted
-        (`inventory.pick_confirmations{outcome=expired}`), never an error. No
-        reservations for the order (a transfer or non-inventory order), a
-        non-PICK task, a missing `order_ref` (a producer that predates the field)
-        and every other event type are successful no-ops. A Task carries no SKU
-        or quantity, so SHORT PICKS ARE NOT MODELLED. The per-line path
-        (order-management sends `line_no`, Reservation stores it, the event
-        carries it) is recorded in ADR 0035.
+        the message settles. For `task_type = PICK` with a non-empty `order_ref`
+        (the OrderId order-management reserved against, stored here as
+        `demand_ref`) there are two paths.
+
+
+        PER-LINE (ADR 0036, audit decision 18): when the event carries the
+        additive `line_no`, exactly the ACTIVE reservation(s) with
+        `demand_ref = order_ref` and `line_no` equal to the event's are
+        confirmed through the existing ConfirmPick logic (stock decremented, bin
+        capacity released, `StockPicked` raised); normally exactly one, since
+        earlier attempts of the line are REVOKED. CONFIRMED and REVOKED ones are
+        skipped; an EXPIRED one (ADR 0003) is skipped, logged and counted
+        (`inventory.pick_confirmations{outcome=expired}`), never an error. Other
+        lines of the order are never touched, so a line whose pick has not
+        arrived stays ACTIVE and reserved. Nothing is counted on this path (no
+        `order_pick_progress` row).
+
+
+        COUNTING FALLBACK (ADR 0035, kept for backward compatibility): when the
+        event has no `line_no`, or names a line that no reservation of the order
+        carries but the order has reservations created before `line_no` existed
+        (NULL), the pick is COUNTED for the order (table
+        `order_pick_progress`) against those reservations only; when the count
+        reaches their ACTIVE + CONFIRMED number (REVOKED and EXPIRED are not
+        awaited), i.e. on the LAST pick, every ACTIVE one is confirmed. Earlier
+        picks only record progress and settle as successful no-ops. Counter rows
+        older than `ORDER_PICK_PROGRESS_RETENTION` (default 720h) are swept.
+        The "one pick early" edge of that counting does not exist on the
+        per-line path.
+
+
+        The CloudEvents `id` claim in `processed_events`, the counter increment
+        (fallback only) and all confirmations commit in ONE transaction, so a
+        failure rolls everything back and the redelivery is applied in full; a
+        redelivered id is a no-op, and a further PICK event for an already
+        confirmed line confirms nothing new. No reservations for the order (a
+        transfer or non-inventory order), a line with no reservation and no
+        line-less ones to fall back to, a non-PICK task, a missing `order_ref`
+        (a producer that predates the field) and every other event type are
+        successful no-ops. A Task carries no SKU or quantity, so SHORT PICKS ARE
+        NOT MODELLED. A `line_no` that is not an integer >= 1 is a malformed
+        payload: dead-lettered at once.
+
+
         A transient failure retries the same message with capped backoff (5
         attempts), then dead-letters it; an undecodable payload is dead-lettered
         at once; a message that is not a CloudEvent is skipped with a sampled
@@ -514,18 +532,21 @@ components:
     FulfillmentTaskCompleted:
       name: FulfillmentTaskCompleted
       title: Task Completed (from fulfillment-execution, consumed)
-      summary: A station finished a claimed task; the last PICK task of an order makes this service confirm the order's reservations as picked.
+      summary: A station finished a claimed task; a PICK task makes this service confirm the picked line's reservation (or, without a line, the order's on its last pick).
       description: >
-        CONSUMED, not produced (ADR 0035). Pinned by fulfillment-execution's
+        CONSUMED, not produced (ADR 0035, ADR 0036). Pinned by fulfillment-execution's
         `apis/asyncapi.yaml`: type
         `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`,
         `source=/warehouse/fulfillment-execution`, subject and Kafka key = task
-        id. This service reads only `task_id`, `task_type` and `order_ref`;
-        every other field (`station_id`, `work_unit_id`, `associate_id`,
-        `duration_seconds`) is ignored. `order_ref` is the additive optional
-        field of ADR 0035 (v1, omitted when empty): the task's order reference,
-        i.e. the OrderId order-management used as `demand_ref`. A message without
-        it, or with any `task_type` other than `PICK`, is a successful no-op.
+        id. This service reads only `task_id`, `task_type`, `order_ref` and
+        `line_no`; every other field (`station_id`, `work_unit_id`,
+        `associate_id`, `duration_seconds`) is ignored. `order_ref` is the
+        additive optional field of ADR 0035 (v1, omitted when empty): the task's
+        order reference, i.e. the OrderId order-management used as `demand_ref`.
+        `line_no` is the additive optional field of ADR 0036 (v1, omitted when
+        unknown): the order line the task was for. A message without
+        `order_ref`, or with any `task_type` other than `PICK`, is a successful
+        no-op; one without `line_no` takes the ADR 0035 counting path.
       contentType: application/cloudevents+json
       tags:
         - name: fulfillment-execution
@@ -533,8 +554,28 @@ components:
       payload:
         $ref: "#/components/schemas/FulfillmentTaskCompletedEvent"
       examples:
+        - name: pickTaskCompletedForLine
+          summary: The PICK task for line 2 of order ORD-1001 completed (per-line path, ADR 0036).
+          payload:
+            specversion: "1.0"
+            id: 7a2d3b4c-5e6f-4071-9b8c-0d1e2f3a4b5c
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted
+            subject: task-8a20
+            time: "2026-10-06T15:01:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:fulfillment-execution:events:TaskCompleted:v1
+            data:
+              task_id: task-8a20
+              station_id: station-03
+              work_unit_id: wu-8a20
+              associate_id: worker-42
+              duration_seconds: 120
+              task_type: PICK
+              order_ref: ORD-1001
+              line_no: 2
         - name: pickTaskCompleted
-          summary: One PICK task (one order line) of order ORD-1001 completed.
+          summary: One PICK task (one order line) of order ORD-1001 completed, from a producer that does not send line_no (counting fallback, ADR 0035).
           payload:
             specversion: "1.0"
             id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
@@ -1390,10 +1431,19 @@ components:
               description: >
                 The completed task's order reference = the OrderId order-management
                 reserved against (this service's reservation `demand_ref`). Every
-                PICK task of an order (one per order line) carries the same value;
-                this service counts them and confirms on the last one. Additive
-                and optional (ADR 0035): omitted when empty, in which case nothing
-                is counted or confirmed.
+                PICK task of an order (one per order line) carries the same value.
+                Additive and optional (ADR 0035): omitted when empty, in which case
+                nothing is counted or confirmed.
+            line_no:
+              type: integer
+              minimum: 1
+              description: >
+                The order line this task was for (the `line_no` the reservation of
+                that line was made with). Additive and optional (ADR 0036): omitted
+                when unknown. When present, exactly the ACTIVE reservation(s) of
+                (`order_ref`, `line_no`) are confirmed and nothing is counted; when
+                absent the ADR 0035 last-pick counting applies. A value below 1 or
+                a non-integer is a malformed payload (dead-lettered).
 
     StockReservedEvent:
       description: >
