@@ -129,6 +129,19 @@ func TestIntegration_InboundReceipt_GoodLineBecomesStagedStock(t *testing.T) {
 
 	analytics := outboundkafka.NewAnalyticsPublisher(env.brokers, postgres.NewReservationRepo(env.pool), nil)
 	t.Cleanup(func() { _ = analytics.Close() })
+	// The Postgres pool is shared by the whole package and other tests drain
+	// the WHOLE outbox through their own broker, which has no analytics topic:
+	// leave none of this test's rows behind, pass or fail.
+	t.Cleanup(func() {
+		for _, sku := range []string{goodSKU, damagedSKU, invalidSKU} {
+			if _, err := env.pool.Exec(context.Background(), `
+				DELETE FROM outbox_events
+				WHERE topic = $1 AND convert_from(value, 'UTF8')::jsonb -> 'data' ->> 'sku' = $2`,
+				outboundkafka.AnalyticsTopic, sku); err != nil {
+				t.Errorf("clean outbox rows of %s: %v", sku, err)
+			}
+		}
+	})
 	uow := postgres.NewUnitOfWork(env.pool)
 	book := &usecases.BookInboundReceiptLine{
 		Receive: &usecases.ReceiveStock{
