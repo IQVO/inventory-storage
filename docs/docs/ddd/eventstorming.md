@@ -89,9 +89,9 @@ flowchart LR
 
 Source: `internal/application/usecases/register_bin.go`, `apply_product_classification.go`,
 `receive_stock.go`, `stow_stock.go`, `internal/adapters/outbound/facilitycache/consumer.go`,
+`internal/adapters/inbound/kafka/product_master_consumer.go`,
 `internal/domain/product/segregation.go`,
-`internal/adapters/outbound/kafka/publisher.go` and `analytics_publisher.go`
-(`ProductClassified`).
+`internal/adapters/outbound/kafka/publisher.go` and `analytics_publisher.go`.
 Omitted: the rejection paths (they raise no event) and the HTTP fallback
 lookup.
 
@@ -237,7 +237,7 @@ Omitted: the clean-count branch (only `CycleCountCompleted` with
 | H1 | A bin id is never validated against facility-layout's slot catalogue | [Context Map](/docs/ecosystem/context-map), "What is still not built" |
 | H2 | `Fragile`, `Oversized`, `HighValue` carry no placement rule | [Context Map](/docs/ecosystem/context-map); ADR 0009 |
 | H3 | **Decided 2026-10-06: kept permissive** (ADR 0013/0020) — the binary default `LOCATION_LOOKUP_MODE=permissive` stays: a cold facility cache would reject every receipt, and the cluster already injects `kafka` | `cmd/inventory/main.go` `buildLocationLookup`; ADR 0013, ADR 0020 |
-| H4 | ~~`ProductClassified` is raised but never published~~ **Resolved 2026-10-06**: published through the outbox on both topics (ADR 0031); `LocationRecorded` stays in-process (no consumer) | [ADR 0031](/docs/adr/0031), [Domain Events](./domain-events.md) |
+| H4 | ~~`ProductClassified` is raised but never published~~ **Resolved 2026-10-06**: published through the outbox on both topics (ADR 0031); `LocationRecorded` stays in-process (no consumer). **Superseded by ADR 0034**: product-master owns classification; this service's `ProductClassified` is now emitted only by the one-shot backfill | [ADR 0031](/docs/adr/0031), [ADR 0034](/docs/adr/0034), [Domain Events](./domain-events.md) |
 | H5 | **Decided 2026-10-06: kept** (ADR 0003) — no background sweeper for timed-out reservations; expiry stays lazy | [Domain Events](./domain-events.md#lazy-expiry-no-sweeper-resolved-at-the-next-read); ADR 0003 |
 | H6 | The `ReserveStock` replay guard is best-effort under concurrency | code comment on `activeReservationFor` in `reserve_stock.go` |
 | H7 | **Decided 2026-10-06 (corrected by decision 17a): event-driven, confirmed on the order's LAST pick** (ADR 0035, supersedes ADR 0032) — picks are confirmed from fulfillment-execution's `TaskCompleted` (PICK, `order_ref`), never a sync REST/MCP call. A PICK task is per order line and a Reservation has no line identity, so the consumer counts the order's completed PICK tasks (`order_pick_progress`, same transaction as the event's dedupe claim) and confirms every ACTIVE reservation whose `demand_ref` is the order only when the count reaches ACTIVE + CONFIRMED reservations (REVOKED, EXPIRED do not count); early picks only record progress (confirming early cannot be undone, late is safe). An expired one is skipped and counted. Per-line correlation (order-management sends `line_no`, Reservation stores it) is the recorded future path | [ADR 0035](/docs/adr/0035), [Context Relationships](./context-relationships.md) |
