@@ -3,8 +3,10 @@
 // drops in wherever the log or Postgres outbox publisher is used today.
 //
 // Only the reservation-lifecycle events (StockReserved, ReservationRevoked),
-// the two transfer replies, and ProductClassified (SKU master data, ADR 0031)
-// are part of the published integration contract (see CLAUDE.md's
+// the transfer replies, and the receipt/stow facts (ADR 0030, ADR 0033) are
+// part of the published integration contract; the legacy ProductClassified
+// (ADR 0031) is emitted only by the one-shot republish-product-classifications
+// backfill since ADR 0034 handed SKU master data to product-master (see CLAUDE.md's
 // Cross-service integration section and apis/asyncapi.yaml); every other
 // domain event is a local concern and is not forwarded here.
 package kafka

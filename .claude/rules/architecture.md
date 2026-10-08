@@ -22,7 +22,7 @@ internal/
     location/                Bin/Location aggregate (capacity, occupancy)
     stock/                   StockUnit aggregate (SKU@location, qty, state)
     reservation/              Reservation aggregate (revocable, timeout)
-    product/                  ProductClassification aggregate (SKU master data)
+    product/                  ProductClassification aggregate (local copy of product-master's SKU master data, ADR-0034)
     shared/                  value objects: SKU, BinId, Quantity, events
   analytics/report/          read-model region (depends on nothing) — data product
   application/
