@@ -23,6 +23,7 @@ func statusFor(err error) int {
 
 	case errors.Is(err, shared.ErrEmptySKU),
 		errors.Is(err, shared.ErrEmptyBinID),
+		errors.Is(err, reservation.ErrInvalidLineNo),
 		errors.Is(err, stock.ErrStowRequiresItemAndLocation),
 		errors.Is(err, product.ErrUnknownHandlingTag),
 		errors.Is(err, product.ErrUnknownTemperatureClass),
@@ -98,6 +99,7 @@ func problemCatalog() []struct {
 
 		{shared.ErrEmptySKU, problemInfo{"empty-sku", "SKU must not be empty"}},
 		{shared.ErrEmptyBinID, problemInfo{"empty-bin-id", "Bin ID must not be empty"}},
+		{reservation.ErrInvalidLineNo, problemInfo{"invalid-line-no", "lineNo must be at least 1"}},
 		{stock.ErrStowRequiresItemAndLocation, problemInfo{"stow-requires-item-and-location", "Stow requires both an item scan and a location scan"}},
 		{product.ErrUnknownHandlingTag, problemInfo{"unknown-handling-tag", "Unknown handling tag"}},
 		{product.ErrUnknownTemperatureClass, problemInfo{"unknown-temperature-class", "Unknown temperature class"}},
