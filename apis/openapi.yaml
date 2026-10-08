@@ -484,6 +484,13 @@ paths:
         One demandRef (e.g. an order) may hold several ACTIVE reservations
         at once -- one per line/SKU -- so a request for a different SKU or
         quantity under the same demandRef is always a new reservation.
+        The optional `lineNo` (ADR 0036) names the order line the
+        reservation is for: it is stored, returned, and also taken into
+        account by the replay guard (two lines of one order with the same
+        SKU and quantity stay two reservations when their `lineNo`
+        differ). Replays of the same Idempotency-Key with an identical
+        body still return the cached response; adding `lineNo` to a key
+        first used without it is a different body (422).
       tags: [Reservations]
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -497,6 +504,7 @@ paths:
               sku: SKU-1
               quantity: 6
               demandRef: order-42
+              lineNo: 1
       responses:
         "201":
           description: Reservation created.
@@ -515,6 +523,7 @@ paths:
                 sku: SKU-1
                 quantity: 6
                 demandRef: order-42
+                lineNo: 1
                 status: ACTIVE
                 allocations:
                   - stockUnitId: su-164710cb-5e14-400b-849c-ed94d8256c6b
@@ -524,7 +533,8 @@ paths:
         "400":
           description: >
             Malformed JSON body, SKU missing/empty, demandRef missing/empty,
-            or the Idempotency-Key header is absent (ADR 0018).
+            lineNo present but below 1, or the Idempotency-Key header is
+            absent (ADR 0018).
           content:
             application/problem+json:
               schema:
@@ -545,6 +555,14 @@ paths:
                     title: demandRef is required
                     status: 400
                     detail: demandRef must not be empty
+                    instance: /reservations
+                invalidLineNo:
+                  summary: lineNo is 0 or negative (ADR 0036)
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/invalid-line-no
+                    title: lineNo must be at least 1
+                    status: 400
+                    detail: lineNo must be an integer >= 1 when present
                     instance: /reservations
                 idempotencyKeyRequired:
                   summary: Idempotency-Key header missing (ADR 0018)
@@ -1816,6 +1834,22 @@ components:
           minLength: 1
           description: Caller-supplied reference identifying the demand this reservation satisfies (e.g. an order id).
           example: order-42
+        lineNo:
+          type: integer
+          format: int32
+          minimum: 1
+          nullable: true
+          description: >
+            Optional order line this reservation is for (ADR 0036). When
+            sent it is stored on the reservation and returned as `lineNo`,
+            and it lets the TaskCompleted consumer confirm exactly the
+            picked line instead of counting picks (ADR 0035). Omit it, or
+            send null, when unknown. 0 and negative values are rejected
+            with 400 `invalid-line-no`. Because it is part of the request
+            body, adding it to a request whose Idempotency-Key was first
+            used WITHOUT it is a different body (422
+            `idempotency-key-reused`).
+          example: 1
 
     StageTransferReceiptRequest:
       type: object
@@ -2041,6 +2075,15 @@ components:
         demandRef:
           type: string
           example: order-42
+        lineNo:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >
+            The order line this reservation is for (ADR 0036). Omitted when
+            unknown (a reservation made before the field existed, or by a
+            client that does not send it).
+          example: 1
         status:
           type: string
           enum: [ACTIVE, CONFIRMED, REVOKED, EXPIRED]
