@@ -44,9 +44,27 @@ func TestNewForLine_NilLineNoIsUnknown(t *testing.T) {
 	}
 }
 
+func TestValidLineNo(t *testing.T) {
+	cases := map[int]bool{0: false, -1: false, 1: true, 2: true, MaxLineNo: true, MaxLineNo + 1: false}
+	for n, want := range cases {
+		if got := ValidLineNo(n); got != want {
+			t.Errorf("ValidLineNo(%d) = %v, want %v", n, got, want)
+		}
+	}
+}
+
+// The upper bound is accepted: it is the largest int32, what line_no INTEGER stores.
+func TestNewForLine_AcceptsMaxLineNo(t *testing.T) {
+	sku, _ := shared.NewSKU("SKU-1")
+	r, err := NewForLine("r-1", sku, mustQty(t, 5), "order-1", intPtr(MaxLineNo), lineAllocs(t), time.Unix(0, 0), time.Hour)
+	if err != nil || r.LineNo() == nil || *r.LineNo() != MaxLineNo {
+		t.Fatalf("NewForLine(MaxLineNo) = %v, %v", r, err)
+	}
+}
+
 func TestNewForLine_RejectsANonPositiveLineNo(t *testing.T) {
 	sku, _ := shared.NewSKU("SKU-1")
-	for _, n := range []int{0, -1, -42} {
+	for _, n := range []int{0, -1, -42, MaxLineNo + 1} {
 		if _, err := NewForLine("r-1", sku, mustQty(t, 5), "order-1", intPtr(n), lineAllocs(t), time.Unix(0, 0), time.Hour); !errors.Is(err, ErrInvalidLineNo) {
 			t.Errorf("lineNo %d: err = %v, want ErrInvalidLineNo", n, err)
 		}

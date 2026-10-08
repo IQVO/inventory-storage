@@ -349,7 +349,7 @@ func TestConfirmPicksForOrder_NoLineInTheEvent_StillCountsPicks(t *testing.T) {
 // A line_no below 1 can never be a real line: deterministic, dead-lettered by
 // the consumer, and nothing is claimed or written.
 func TestConfirmPicksForOrder_PerLine_NonPositiveLineIsMalformed(t *testing.T) {
-	for _, n := range []int{0, -1} {
+	for _, n := range []int{0, -1, reservation.MaxLineNo + 1} {
 		f := newConfirmPicksFixture(t)
 		f.reserveNumbered(t, "LINE-1", "order-1", ptr(1), time.Hour)
 
