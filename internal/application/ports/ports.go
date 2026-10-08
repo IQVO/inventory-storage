@@ -91,6 +91,25 @@ type PickConfirmationMetrics interface {
 	PickConfirmation(ctx context.Context, outcome string, n int)
 }
 
+// Outcomes BookInboundReceiptLine reports to InboundReceiptMetrics, one per
+// handled inbound-receiving ReceiptLineReceived (ADR 0037).
+const (
+	// InboundReceiptOutcomeBooked: a Good line was booked as a staged receipt.
+	InboundReceiptOutcomeBooked = "booked"
+	// InboundReceiptOutcomeDamaged: a Damaged line was NOT booked (v1 books
+	// Good units only; quarantine is a later ADR).
+	InboundReceiptOutcomeDamaged = "damaged_not_booked"
+)
+
+// InboundReceiptMetrics records, in units, what the inbound-receiving
+// consumer did with each received line, so Damaged units that never reach
+// stock stay observable. Use cases treat a nil value as "not instrumented".
+type InboundReceiptMetrics interface {
+	// InboundReceiptUnits adds units to the counter for outcome (one of the
+	// InboundReceiptOutcome* constants).
+	InboundReceiptUnits(ctx context.Context, outcome string, units int)
+}
+
 // Clock abstracts current time so use cases and tests are deterministic.
 type Clock interface {
 	Now() time.Time
