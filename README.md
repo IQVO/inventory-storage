@@ -208,7 +208,7 @@ curl -s -i -X POST localhost:8080/reservations \
 # => 201 Created, Location: /reservations/<id>, body {"id":"res-...", ...,
 #    "lineNo":1, "allocations":[{"stockUnitId":"su-...","binId":"A-1-1","quantity":6}]}
 #    Every allocation names its pick location (binId) — ADR-0025. lineNo is
-#    optional (>= 1; omitted from the response when unknown) — ADR-0036.
+#    optional (1..2147483647; omitted from the response when unknown) — ADR-0036.
 # A retry with the SAME Idempotency-Key + body returns this exact response
 # again without creating a second reservation (ADR-0018); omitting the
 # header entirely on these two routes is a 400.
@@ -440,7 +440,7 @@ extra PICK event for an already confirmed line or order) confirms nothing new an
 never double-counts. CONFIRMED/REVOKED reservations are skipped, an EXPIRED one
 (ADR-0003) is skipped, logged and counted in
 `inventory.pick_confirmations{outcome=expired}`, never an error; an order with
-no reservations is a successful no-op; a `line_no` that is not an integer >= 1 is
+no reservations is a successful no-op; a `line_no` that is not an integer in 1..2147483647 is
 dead-lettered. Counter rows older than
 `ORDER_PICK_PROGRESS_RETENTION` (default `720h`) are swept (see Housekeeping).
 
