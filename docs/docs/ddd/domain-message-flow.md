@@ -17,18 +17,20 @@ Responses are folded into notes so that every arrow is a domain message.
 
 ## 1. Order allocation reserves usable stock
 
-`order-management` takes in an order, checks handling classification, then
-reserves each line. Work Planning learns about the reservations from events,
-never by asking.
+`order-management` takes in an order, checks handling classification against
+its own local copy of product-master's `ProductClassified` (no call to this
+service since its ADR 0036), then reserves each line. Work Planning learns
+about the reservations from events, never by asking.
 
 ```mermaid
 sequenceDiagram
     autonumber
+    participant PM as product-master
     participant OM as order-management
     participant INV as inventory-storage
     participant WP as wes-work-planning
-    OM->>INV: qry: GET /products/{sku}/classification
-    Note over OM,INV: 200 handling tags, temperature class, DOT class, or 404 unclassified
+    PM-)OM: evt: com.warehouse.wms.product-master.product.ProductClassified on warehouse.product-master.events
+    Note over OM: local classification copy read once per line at intake, fail-open when unclassified
     OM->>INV: cmd: ReserveStock POST /reservations with Idempotency-Key per order line
     Note over INV: replay guard, then reserve first-fit against usable
     Note over OM,INV: 201 reservation with allocations and pick locations, or 409 insufficient-usable
@@ -38,7 +40,8 @@ sequenceDiagram
 ```
 
 Source: `order-management/internal/application/usecases/receive_order.go`,
-`allocation.go`, `internal/adapters/outbound/inventorystorage/client.go`;
+`allocation.go`, `internal/adapters/outbound/inventorystorage/client.go`,
+`internal/adapters/outbound/productclassificationcopy/postgres.go`;
 this repo's `internal/adapters/inbound/http/server.go`,
 `internal/application/usecases/reserve_stock.go`,
 `internal/adapters/outbound/kafka/publisher.go`;
