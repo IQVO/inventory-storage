@@ -53,6 +53,7 @@ Classifying a subdomain Core is a resourcing decision. It means:
 | fulfillment-execution | WES | Core | The Pick/Pack/SLAM task lifecycle; throughput and accuracy at scale. |
 | workforce-management | — | Supporting | Labour & workforce allocation: "important, industry-common," not the differentiator. |
 | facility-layout | — | Generic | Physical warehouse structure — the same bucket as Cartonization and WCS: extract it once rather than duplicating it in every consumer. |
+| product-master | WMS | Supporting | SKU product master data (handling classification, physical profile); the source of truth this service's local classification copy is fed from ([ADR 0034](/docs/adr/0034)). Classification per product-master's own ADR 0001. |
 
 ## Why this is *not* one bounded context with its neighbours
 

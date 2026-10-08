@@ -517,12 +517,13 @@ it reads only this service's own stock and classification repositories.
 ### Synchronous callers
 
 Other contexts call this service's REST API directly: `order-management`
-reserves/revokes stock (`POST /reservations`, `DELETE /reservations/{id}`)
-and, with `wes-work-planning` and `fulfillment-execution`, reads
-`GET /products/{sku}/classification`; `network-fulfillment` reads
-`GET /inventory/{sku}/usable`; `warehouse-ops-agent` reads
-`GET /reservations?demandRef=`, the reports REST and the MCP tools. Each
-caller gates the edge behind its own `*_MODE` env var.
+reserves/revokes stock (`POST /reservations`, `DELETE /reservations/{id}`);
+`network-fulfillment` reads `GET /inventory/{sku}/usable`;
+`warehouse-ops-agent` reads `GET /reservations?demandRef=`, the reports REST
+and the MCP tools. No sibling reads `GET /products/{sku}/classification` any
+more: `order-management` (its ADR 0036), `wes-work-planning` (its ADR 0035) and
+`fulfillment-execution` (its ADR 0039) each keep a local copy fed by
+product-master's `ProductClassified`.
 
 ## Analytics (data product)
 
