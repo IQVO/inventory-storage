@@ -72,6 +72,10 @@ spec:
             - name: PRODUCT_MASTER_CONSUMER_GROUP
               value: {{ .Values.config.productMasterConsumerGroup | quote }}
             {{- end }}
+            {{- if .Values.config.inboundReceiptConsumerGroup }}
+            - name: INBOUND_RECEIPT_CONSUMER_GROUP
+              value: {{ .Values.config.inboundReceiptConsumerGroup | quote }}
+            {{- end }}
             - name: TASK_COMPLETED_CONSUMER_MODE
               value: {{ .Values.config.taskCompletedConsumerMode | quote }}
             {{- if .Values.config.taskCompletedConsumerGroup }}
