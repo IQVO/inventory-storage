@@ -25,7 +25,7 @@ Dependencies are plain struct fields, wired once per binary in
 | 9 | `GetReservationsByDemandRef` | `GET /reservations?demandRef=` | — | `ReservationExpired` via lazy expiry only |
 | 10 | `RegisterBin` | `PUT /bins/{binId}` | — | — (local topology master data, ADR 0025) |
 | 11 | `GetBin` | `GET /bins/{binId}` | — | — (read) |
-| 12 | `ConfirmPicksForOrder` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted`, ADR 0035) | — | `StockPicked` per confirmed reservation via `ConfirmPick`, only on the order's last pick (+ `ReservationExpired` via lazy expiry) |
+| 12 | `ConfirmPicksForOrder` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted`, ADR 0035, ADR 0036) | — | `StockPicked` per confirmed reservation via `ConfirmPick`: the picked line's reservation when the event carries `line_no`, otherwise only on the order's last pick (+ `ReservationExpired` via lazy expiry) |
 
 `GET /products/{sku}/classification` (deprecated, ADR 0034) has no use case
 of its own: the HTTP adapter reads `ProductClassificationRepo` (the local
@@ -159,7 +159,11 @@ The algorithm:
    reservation for the *same* `(sku, quantity)` remains, return it unchanged —
    a client retry never double-reserves. A different SKU or quantity under
    the same `demandRef` is another order line, never a retry
-   (`isReplayOf`). This guard is best-effort: two concurrent first attempts
+   (`isReplayOf`). When the request names its line (`lineNo`, ADR 0036) the line
+   must match too, so two lines of one order with the same SKU and quantity stay
+   two reservations; an `ACTIVE` reservation with no line still answers a
+   line-aware retry (no double hold across the deploy). This guard is
+   best-effort: two concurrent first attempts
    can both pass it (see the code comment in `reserve_stock.go`).
 2. Load every `StockUnit` for the SKU.
 3. Sum `Usable()` across them; if the request exceeds the sum, fail early with
@@ -181,7 +185,9 @@ allocation is what makes a later revoke re-satisfiable from a different
 holding.
 
 **Fails when:** quantity ≤ 0 (422), empty `demandRef` (400
-`missing-demand-ref`, in the handler), usable insufficient (409), SKU has no
+`missing-demand-ref`, in the handler), `lineNo` present but below 1 (400
+`invalid-line-no`; the use case entry point is `ExecuteForLine`, `Execute` is the
+same without a line), usable insufficient (409), SKU has no
 stock at all (409), concurrent modification of a touched unit (409).
 
 ## 4. RevokeReservation(reservationId)
@@ -225,10 +231,12 @@ for a future stow. It then saves the reservation and publishes `StockPicked`.
 **Trigger.** Operators and the `e2e-tests` simulator call
 `POST /reservations/{id}/confirm-pick`. In production the trigger is
 fulfillment-execution's `TaskCompleted`, consumed by `ConfirmPicksForOrder`
-(#12 below), which calls this use case once per reservation when the order's last
-pick completes — never a sync
+(#12 below), which calls this use case once per reservation it confirms (the
+picked line's when the event carries `line_no`, the order's when its last pick
+completes) — never a sync
 REST/MCP call from a sibling. Decided 2026-10-06, implemented by
-[ADR 0035](/docs/adr/0035) (supersedes ADR 0032).
+[ADR 0035](/docs/adr/0035) (supersedes ADR 0032), per line since
+[ADR 0036](/docs/adr/0036).
 
 ## 6. GetUsable(sku)
 
@@ -358,20 +366,23 @@ adds `available = capacity - occupied`.
 **Fails when:** empty bin id (400), unknown bin (404 `bin-not-found`) —
 unlike `GetUsable`, there is no meaningful "empty" bin to return.
 
-## 12. ConfirmPicksForOrder(eventId, taskType, orderRef) (ADR 0035)
+## 12. ConfirmPicksForOrder(eventId, taskType, orderRef, lineNo?) (ADR 0035, ADR 0036)
 
-Turns "the LAST PICK task for order X completed" into the physical decrement of
-that order's reserved stock. It is the use case behind the
-`warehouse.fulfillment.events` consumer; fulfillment-execution's
-`TaskCompleted` carries `task_type` and the additive optional `order_ref`,
-which is the OrderId order-management reserved against (a reservation's
-`demand_ref`). A PICK task is per order **line** and every one carries the same
-`order_ref`, while a `Reservation` has no line identity (only `sku`, `quantity`,
-`demand_ref`), so a task cannot be matched to one reservation. The use case
-therefore counts the order's completed PICK tasks and confirms only on the last.
+Turns "a PICK task for order X completed" into the physical decrement of the
+right reserved stock: exactly the picked line's (ADR 0036) when the event names
+its line, the order's on the last pick otherwise (ADR 0035). It is the use case
+behind the `warehouse.fulfillment.events` consumer; fulfillment-execution's
+`TaskCompleted` carries `task_type` and the additive optional `order_ref`, which
+is the OrderId order-management reserved against (a reservation's `demand_ref`),
+and the additive optional `line_no`, the order line the task was for. A PICK task
+is per order **line** and every one carries the same `order_ref`. Since ADR 0036 a
+`Reservation` stores its `line_no` (sent by order-management as `lineNo`), so a
+task that carries `line_no` maps to exactly its reservation. A task without it, or
+a reservation without it (created before migration 0035), cannot be matched, and
+the order's picks are counted instead (the ADR 0035 fallback below).
 
 **Collaborators:** `ReservationRepo` (`FindByDemandRef`), `OrderPickProgressRepo`
-(`RecordPick`, table `order_pick_progress`), `ConfirmPick` (reused
+(`RecordPick`, table `order_pick_progress`, fallback only), `ConfirmPick` (reused
 for every confirmation, its rules are not duplicated), `StockRepo`,
 `EventPublisher`, `Clock` (lazy expiry, counter timestamp), `ProcessedEventRepo`,
 `UnitOfWork`, `PickConfirmationMetrics`.
@@ -382,43 +393,55 @@ reservation carries that `demand_ref` (a transfer, whose demand ref is
 namespaced, or a non-inventory order). No progress row is left for an order
 that has no reservation, or only `REVOKED`/`EXPIRED` ones.
 
-**Counting.** For a claimed event the pick is counted
+**Per line (event has `line_no`, ADR 0036).** Among the order's reservations,
+those with `line_no` equal to the event's are walked in id order: `ACTIVE` is
+confirmed through `ConfirmPick` (normally exactly one; earlier attempts of the line
+are `REVOKED`), `CONFIRMED` and `REVOKED` are skipped, `EXPIRED` — or `ACTIVE` past
+its timeout, which lazy expiry resolves first (stock returned,
+`ReservationExpired` raised) — is skipped, logged and counted in
+`inventory.pick_confirmations{outcome=expired}`, never an error (outcome
+`LINE_SETTLED`). **Nothing is counted** and no `order_pick_progress` row is
+written; the order's other lines are not touched, so lines 1 and 3 picked
+confirms 1 and 3 and leaves 2 `ACTIVE`. If no reservation carries the line but
+the order has reservations with **no** `line_no`, the counting below applies to
+those line-less reservations only; if it has none, the event is a no-op
+(`LINE_NOT_FOUND`).
+
+**Counting fallback (event without `line_no`, or only line-less reservations can
+serve it; ADR 0035).** For a claimed event the pick is counted
 (`picked_tasks = picked_tasks + 1`) and compared with
-`needed = count(ACTIVE) + count(CONFIRMED)` reservations of the order (`REVOKED`
+`needed = count(ACTIVE) + count(CONFIRMED)` of the counted reservations (`REVOKED`
 and `EXPIRED` are never picked, so an order with one revoked line needs one pick
 fewer). While `picked_tasks < needed` the event only records progress and
 returns success (`AWAITING_LAST_PICK`). If the count has reached `needed` but no
-reservation is `ACTIVE` any more, it is a no-op (`NOTHING_TO_CONFIRM`).
-
-**On the last pick, per reservation of the order:** `ACTIVE` is confirmed through
-`ConfirmPick`; `CONFIRMED` and `REVOKED` are skipped; `EXPIRED` — or `ACTIVE` past
-its timeout, which lazy expiry resolves first (stock returned,
-`ReservationExpired` raised) — is skipped, logged and counted in
-`inventory.pick_confirmations{outcome=expired}`, never an error.
+reservation is `ACTIVE` any more, it is a no-op (`NOTHING_TO_CONFIRM`). On the
+last pick each counted reservation is walked exactly as above.
 
 **Atomic and idempotent:** the CloudEvents `id` claim in `processed_events`
-(consumer `task-completed-confirm-pick`), the counter increment and every
-confirmation commit in ONE unit of work, so a failure un-claims the id, un-counts
-the pick and the redelivery is applied in full. A redelivered id is skipped by
-the claim before the counter is touched, so it can never be counted twice; a new
-id for an order that is already confirmed only finds reservations that are no
-longer `ACTIVE`.
+(consumer `task-completed-confirm-pick`), the counter increment (fallback only)
+and every confirmation commit in ONE unit of work, so a failure un-claims the id,
+un-counts the pick and the redelivery is applied in full. A redelivered id is
+skipped by the claim before anything is touched, so it can never be counted twice;
+a new id for a line or an order that is already confirmed only finds reservations
+that are no longer `ACTIVE`.
 
 **Retention.** `order_pick_progress` rows older than
 `ORDER_PICK_PROGRESS_RETENTION` (default 30 days, by `updated_at`) are deleted by
 the housekeeping sweeper (ADR 0026). A row swept while its order is still being
 picked restarts the count, which can only delay the confirmation (the
-reservations then expire lazily), never make it early.
+reservations then expire lazily), never make it early. The per-line path writes no
+row.
 
-**Fails when:** the event has no id (`ErrMalformedPickCompletion`, which the
-consumer dead-letters at once); a database error is transient and retried (5
-attempts, then dead-lettered).
+**Fails when:** the event has no id, or its `line_no` is below 1
+(`ErrMalformedPickCompletion`, which the consumer dead-letters at once; a
+non-integer `line_no` fails to decode and is dead-lettered the same way); a
+database error is transient and retried (5 attempts, then dead-lettered).
 
 **Limitations:** short picks are not modelled. A Task carries no SKU or quantity,
-so on the last pick the whole reserved quantity of every `ACTIVE` line is picked.
-The count assumes one PICK task per live reservation (true today: one per order
-line); the per-line path (order-management sends `line_no`, `Reservation` stores
-it, the event carries it) would retire the counter and is recorded in ADR 0035.
+so the whole reserved quantity of a confirmed line is picked. The counting
+fallback assumes one PICK task per live reservation (true today: one per order
+line) and keeps ADR 0035's "one pick early" edge (a line revoked or expired while
+its task is still being worked); the per-line path has no such edge.
 
 ## Cross-cutting patterns
 

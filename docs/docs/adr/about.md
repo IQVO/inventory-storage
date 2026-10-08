@@ -92,7 +92,8 @@ Typos, broken links and formatting are of course fair game.
 | [0032](./0032-confirm-pick-event-driven.md) | Confirm picks from a pick-completion event, not from a REST call | Superseded by [0035](./0035-confirm-pick-from-task-completed.md) |
 | [0033](./0033-destination-transfer-receipt-custody.md) | Destination transfer receipt custody — stage, quarantine, stow | Accepted |
 | [0034](./0034-product-master-owns-classification.md) | product-master owns product classification; this service keeps a local copy | Accepted |
-| [0035](./0035-confirm-pick-from-task-completed.md) | Confirm an order's picks from fulfillment-execution's TaskCompleted, on the last pick | Accepted |
+| [0035](./0035-confirm-pick-from-task-completed.md) | Confirm an order's picks from fulfillment-execution's TaskCompleted, on the last pick | Accepted; per-line path added by [0036](./0036-per-line-confirm-pick.md) |
+| [0036](./0036-per-line-confirm-pick.md) | Reservations store the order line; picks are confirmed per line | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

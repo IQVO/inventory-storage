@@ -112,7 +112,7 @@ cycle count that finds stock missing must always be able to say so.
 | Stow | `NewStockUnit` | `StowStock` — `POST /stock/stow` |
 | Reserve | `Reserve` | `ReserveStock` — `POST /reservations` |
 | Release reservation | `ReleaseReservation` | `RevokeReservation` (`DELETE /reservations/{id}`, MCP `revoke_reservation`), lazy expiry |
-| Pick | `Pick` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on the order's last `TaskCompleted` ([ADR 0035](/docs/adr/0035)) |
+| Pick | `Pick` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted`: the picked line's reservation when the event carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick otherwise ([ADR 0035](/docs/adr/0035)) |
 | Mark unlocated | `MarkUnlocated` | `RunCycleCount` — `POST /bins/{binId}/cycle-count` |
 
 ### 7. Created Events
@@ -212,7 +212,7 @@ a bin is never deleted.
 | --- | --- | --- |
 | Register / resize | `NewBin`, `Resize` | `RegisterBin` — `PUT /bins/{binId}` |
 | Occupy | `Occupy` | `StowStock` — `POST /stock/stow` |
-| Release | `Release` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on the order's last `TaskCompleted` ([ADR 0035](/docs/adr/0035)) |
+| Release | `Release` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted`: the picked line's reservation when the event carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick otherwise ([ADR 0035](/docs/adr/0035)) |
 
 ### 7. Created Events
 
@@ -259,6 +259,7 @@ recoverable (ADR 0003).
 | `id` | Identity, minted by `ReservationRepo.NextID` |
 | `sku`, `quantity` | What is claimed |
 | `demandRef` | Opaque upstream reference (order + line); replay-guard and lookup key |
+| `lineNo` | Optional order line the reservation is for (`line_no`, nullable; ADR 0036). Set at creation from `POST /reservations`'s `lineNo`, immutable, `nil` when unknown (a reservation made before migration 0035, or by a client that does not send it); with `demandRef` it is what the `TaskCompleted` consumer confirms by |
 | `allocations` | `[]Allocation{StockUnitID, BinID, Quantity}` |
 | `status` | `ACTIVE` / `CONFIRMED` / `REVOKED` / `EXPIRED` |
 | `createdAt`, `expiresAt` | `expiresAt = createdAt + timeout` (default 30 min) |
@@ -291,8 +292,9 @@ returns `ErrAlreadyResolved`.
 | R3 | No double-consume: only `ACTIVE` may transition | `Revoke` / `Confirm` / `Expire` → `reservation.ErrAlreadyResolved` | `TestReservation_Revoke_Twice_Rejected`, `TestReservation_Confirm_Twice_Rejected`, `TestReservation_Expire_Twice_Rejected`, `TestConfirmPick_AfterRevoke_Rejected` |
 | R4 | Expires after a timeout; never confirmed late | `IsExpired(now)`; `Confirm` → `reservation.ErrExpired` | `TestReservation_IsExpired`, `TestReservation_Confirm_AfterExpiry_Rejected` |
 | R5 | Must allocate against something | `New` → `reservation.ErrNoAllocations` | `TestNew_RequiresAtLeastOneAllocation` |
-| R6 | One active reservation per (demandRef, SKU, quantity) — best effort | `ReserveStock.activeReservationFor` / `isReplayOf` (use case, not DB-enforced) | `reserve_stock_multi_line_test.go` |
+| R6 | One active reservation per (demandRef, SKU, quantity, and line when the request names one) — best effort; an ACTIVE reservation with no line still answers a line-aware retry | `ReserveStock.activeReservationFor` / `isReplayOf` (use case, not DB-enforced) | `reserve_stock_multi_line_test.go`, `reserve_stock_line_test.go` |
 | R7 | Empty `demandRef` is rejected | HTTP handler → `400 missing-demand-ref` | `server_test.go` |
+| R8 | `lineNo`, when present, is at least 1 | `NewForLine` → `reservation.ErrInvalidLineNo`; HTTP handler → `400 invalid-line-no`; column `CHECK (line_no IS NULL OR line_no >= 1)` | `TestNewForLine_RejectsANonPositiveLineNo`, `TestReserveStock_Endpoint_NonPositiveLineNo_Rejected` |
 
 ### 5. Corrective Policies
 
@@ -309,9 +311,9 @@ returns `ErrAlreadyResolved`.
 
 | Command | Method | Use case / entry point |
 | --- | --- | --- |
-| Reserve | `New` | `ReserveStock` — `POST /reservations` (Idempotency-Key) |
+| Reserve | `New`, `NewForLine` | `ReserveStock` — `POST /reservations` (Idempotency-Key, optional `lineNo`, ADR 0036) |
 | Revoke | `Revoke` | `RevokeReservation` — `DELETE /reservations/{id}`, MCP `revoke_reservation` |
-| Confirm pick | `Confirm` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on the order's last `TaskCompleted` ([ADR 0035](/docs/adr/0035)) |
+| Confirm pick | `Confirm` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted`: the picked line's reservation when the event carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick otherwise ([ADR 0035](/docs/adr/0035)) |
 | Expire | `Expire` | lazy, inside the four read paths above |
 
 ### 7. Created Events

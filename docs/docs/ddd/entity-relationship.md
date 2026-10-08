@@ -7,8 +7,8 @@ description: The final OLTP and analytical Postgres schemas of inventory-storage
 
 # Entity-Relationship Diagram
 
-The schema after applying `migrations/0001`…`0008`, `0033` (`processed_events`) and
-`0034` (`order_pick_progress`) (OLTP database,
+The schema after applying `migrations/0001`…`0008`, `0033` (`processed_events`),
+`0034` (`order_pick_progress`) and `0035` (`reservations.line_no`) (OLTP database,
 `DATABASE_URL`) and `migrations/analytics/0001` (analytical database,
 `ANALYTICS_DATABASE_URL`) in order. Relationship lines are drawn **only**
 where a real `FOREIGN KEY` (`REFERENCES`) exists in the migrations.
@@ -41,6 +41,7 @@ erDiagram
         TIMESTAMPTZ created_at
         TIMESTAMPTZ expires_at
         INTEGER version "default 1"
+        INTEGER line_no "nullable order line, CHECK line_no >= 1 (0035, ADR 0036)"
     }
     reservation_allocations {
         TEXT reservation_id PK,FK "REFERENCES reservations"
@@ -98,8 +99,9 @@ erDiagram
 ```
 
 Source: `migrations/0001_init.up.sql` … `migrations/0008_reservation_allocation_bin_id.up.sql`,
-plus `0033_product_master_local_copy.up.sql` (`processed_events`) and
-`0034_order_pick_progress.up.sql` (`order_pick_progress`, ADR 0035);
+plus `0033_product_master_local_copy.up.sql` (`processed_events`),
+`0034_order_pick_progress.up.sql` (`order_pick_progress`, ADR 0035) and
+`0035_reservation_line_no.up.sql` (`reservations.line_no`, ADR 0036);
 `schema_migrations` is created by golang-migrate (`internal/adapters/outbound/postgres/migrate.go`).
 Omitted: the `events` table created by `0001` — `0005` drops it, so it is
 not part of the final schema — and the tables and columns that migrations
@@ -115,7 +117,8 @@ been extended to cover. `TEXT_ARRAY` stands for Postgres `TEXT[]`
 | `reservation_allocations.bin_id` | `bins.id` | Denormalised pick location (ADR 0025), copied from the stock unit at reserve time; nullable for rows the 0008 backfill could not resolve. |
 | `stock_units.sku`, `reservations.sku` | `product_classifications.sku` | A SKU does not need a classification — unclassified SKUs are valid and fail open (ADR 0009). |
 | `reservations.demand_ref` | an order line in `order-management` | Another bounded context's identity; stored opaquely, never parsed. |
-| `order_pick_progress.demand_ref` | `reservations.demand_ref` | Not unique on `reservations` (one reservation per order line), and the counter row is swept independently of the reservations; correlated by value only (ADR 0035). |
+| `reservations.line_no` | the order's line number in `order-management` | Another bounded context's identity, sent as `lineNo` on `POST /reservations` (ADR 0036); nullable (NULL for reservations made before migration 0035 or by a client that does not send it); with `demand_ref` it identifies the line the consumer confirms. |
+| `order_pick_progress.demand_ref` | `reservations.demand_ref` | Not unique on `reservations` (one reservation per order line), and the counter row is swept independently of the reservations; correlated by value only (ADR 0035). Only written by the counting fallback for events or reservations without `line_no` (ADR 0036). |
 | `outbox_events`, `idempotency_keys`, `processed_events`, `order_pick_progress` | any aggregate row | Infrastructure tables; written in the same transaction as the aggregate change, never joined to it. |
 
 ## Analytical database
@@ -168,7 +171,7 @@ and hour, and the two event-id tables are idempotency ledgers.
 | `outbox_events` | infrastructure — transactional outbox | `postgres.OutboxPublisher` / `OutboxRelay` (ADR 0017); published rows pruned by the sweeper after `OUTBOX_RETENTION` (ADR 0026) |
 | `idempotency_keys` | infrastructure — HTTP idempotency | `RequireIdempotencyKey` middleware (ADR 0018); pruned after `IDEMPOTENCY_KEY_TTL` |
 | `processed_events` | infrastructure — inbound CloudEvents dedupe | `postgres.ProcessedEventRepo` (ADR 0034, ADR 0035); claim inserted in the same transaction as the effect; not swept |
-| `order_pick_progress` | infrastructure — per-order completed-PICK counter | `postgres.OrderPickProgressRepo` (ADR 0035); incremented in the same transaction as the `processed_events` claim; rows not updated for `ORDER_PICK_PROGRESS_RETENTION` (default 30 days) pruned by the sweeper (ADR 0026) |
+| `order_pick_progress` | infrastructure — per-order completed-PICK counter, the ADR 0035 counting fallback | `postgres.OrderPickProgressRepo` (ADR 0035); written only for a PICK without `line_no` or one served by line-less reservations (ADR 0036), never on the per-line path; incremented in the same transaction as the `processed_events` claim; rows not updated for `ORDER_PICK_PROGRESS_RETENTION` (default 30 days) pruned by the sweeper (ADR 0026) |
 | `schema_migrations` | infrastructure — golang-migrate | migration version per database |
 | `analytics_processed_events` | analytics projection | projection idempotency + freshness (`GET /reports/flow-accuracy/freshness`) |
 | `analytics_consumed_events` | analytics projection | consumer-level dedupe (`report.ProcessedEvents`) |
