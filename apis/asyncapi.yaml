@@ -302,7 +302,7 @@ channels:
         line-less ones to fall back to, a non-PICK task, a missing `order_ref`
         (a producer that predates the field) and every other event type are
         successful no-ops. A Task carries no SKU or quantity, so SHORT PICKS ARE
-        NOT MODELLED. A `line_no` that is not an integer >= 1 is a malformed
+        NOT MODELLED. A `line_no` that is not an integer between 1 and 2147483647 is a malformed
         payload: dead-lettered at once.
 
 
@@ -1437,13 +1437,15 @@ components:
             line_no:
               type: integer
               minimum: 1
+              maximum: 2147483647
               description: >
                 The order line this task was for (the `line_no` the reservation of
                 that line was made with). Additive and optional (ADR 0036): omitted
                 when unknown. When present, exactly the ACTIVE reservation(s) of
                 (`order_ref`, `line_no`) are confirmed and nothing is counted; when
-                absent the ADR 0035 last-pick counting applies. A value below 1 or
-                a non-integer is a malformed payload (dead-lettered).
+                absent the ADR 0035 last-pick counting applies. A value outside
+                1..2147483647 (the 32-bit line_no column) or a non-integer is a
+                malformed payload (dead-lettered).
 
     StockReservedEvent:
       description: >

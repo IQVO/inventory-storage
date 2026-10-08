@@ -99,7 +99,7 @@ func problemCatalog() []struct {
 
 		{shared.ErrEmptySKU, problemInfo{"empty-sku", "SKU must not be empty"}},
 		{shared.ErrEmptyBinID, problemInfo{"empty-bin-id", "Bin ID must not be empty"}},
-		{reservation.ErrInvalidLineNo, problemInfo{"invalid-line-no", "lineNo must be at least 1"}},
+		{reservation.ErrInvalidLineNo, problemInfo{"invalid-line-no", "lineNo must be between 1 and 2147483647"}},
 		{stock.ErrStowRequiresItemAndLocation, problemInfo{"stow-requires-item-and-location", "Stow requires both an item scan and a location scan"}},
 		{product.ErrUnknownHandlingTag, problemInfo{"unknown-handling-tag", "Unknown handling tag"}},
 		{product.ErrUnknownTemperatureClass, problemInfo{"unknown-temperature-class", "Unknown temperature class"}},

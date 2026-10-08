@@ -185,7 +185,7 @@ allocation is what makes a later revoke re-satisfiable from a different
 holding.
 
 **Fails when:** quantity ≤ 0 (422), empty `demandRef` (400
-`missing-demand-ref`, in the handler), `lineNo` present but below 1 (400
+`missing-demand-ref`, in the handler), `lineNo` present but outside 1..2147483647 (400
 `invalid-line-no`; the use case entry point is `ExecuteForLine`, `Execute` is the
 same without a line), usable insufficient (409), SKU has no
 stock at all (409), concurrent modification of a touched unit (409).
@@ -433,7 +433,7 @@ picked restarts the count, which can only delay the confirmation (the
 reservations then expire lazily), never make it early. The per-line path writes no
 row.
 
-**Fails when:** the event has no id, or its `line_no` is below 1
+**Fails when:** the event has no id, or its `line_no` is outside 1..2147483647 (the 32-bit column)
 (`ErrMalformedPickCompletion`, which the consumer dead-letters at once; a
 non-integer `line_no` fails to decode and is dead-lettered the same way); a
 database error is transient and retried (5 attempts, then dead-lettered).

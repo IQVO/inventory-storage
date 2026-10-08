@@ -563,7 +563,7 @@ sequenceDiagram
         CON->>UC: Execute(eventId, taskType, orderRef, lineNo?)
         alt task_type is not PICK or order_ref is empty
             UC-->>CON: IGNORED, nothing claimed
-        else line_no below 1
+        else line_no outside 1..2147483647
             UC-->>CON: malformed, dead-lettered like any poison message
         else PICK for an order
             rect rgb(235, 235, 235)
