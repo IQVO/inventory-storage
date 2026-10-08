@@ -307,11 +307,12 @@ the legacy `ProductClassified` through the outbox, in batches.
 
 `StowStock` (#2 above) is the consumer of this master data at stow time.
 
-**Publishes** `ProductClassified` through the outbox inside the same
-`UnitOfWork` as the save, on `warehouse.inventory.events` and
-`warehouse.inventory.analytics` (subject and key = SKU; a full-state
-replacement) — so siblings can keep a local copy instead of polling
-`GET /products/{sku}/classification` ([ADR 0031](/docs/adr/0031)).
+**Publishes** nothing on the normal path. Only `RepublishProductClassifications`
+puts the legacy `ProductClassified` into the outbox, for
+`warehouse.inventory.events` (subject and key = SKU; a full-state
+replacement); the per-write publication of [ADR 0031](/docs/adr/0031) ended
+with [ADR 0034](/docs/adr/0034), and siblings read product-master's
+`ProductClassified` instead of this service.
 
 ## 9. GetReservationsByDemandRef(demandRef)
 

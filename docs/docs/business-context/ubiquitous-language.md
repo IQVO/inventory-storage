@@ -36,9 +36,11 @@ only when `TemperatureSensitive` is present, a required `TemperatureClass`
 `DOTHazardClass` (1-9, top-level US DOT hazard class only), meaningful only
 when `Hazmat` is present — but unlike `TemperatureClass`, never *required*
 by `Hazmat`, so SKUs classified as `Hazmat` before this field existed
-continue to validate unchanged. This service is the **source of truth** for
-this classification — WMS-tier master data, not derived from or shared with
-any other bounded context.
+continue to validate unchanged. **product-master** is the source of truth for
+this classification ([ADR 0034](/docs/adr/0034)); this service keeps a
+version-guarded local copy of it, fed by product-master's `ProductClassified`
+events, and no longer authors it. The copy is what `StowStock`'s placement and
+DOT segregation rules read.
 
 Unlike `location.LocationType` (an open tag list on a Zone), `HandlingTag` is
 deliberately a **closed enum**: the taxonomy is fixed business vocabulary.

@@ -79,9 +79,10 @@ func TestReserveStock_Endpoint_NullLineNo_IsUnknown(t *testing.T) {
 	}
 }
 
-// 0 and negatives are a 400 (invalid-line-no) and reserve nothing.
+// 0, negatives and values above int32 (the contract's format, and what the
+// line_no INTEGER column stores) are a 400 (invalid-line-no) and reserve nothing.
 func TestReserveStock_Endpoint_NonPositiveLineNo_Rejected(t *testing.T) {
-	for _, n := range []int{0, -1, -7} {
+	for _, n := range []int{0, -1, -7, 2147483648} {
 		ts := seededLineServer(t)
 		rec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 2, "demandRef": "order-bad", "lineNo": n})
 		if rec.Code != http.StatusBadRequest {

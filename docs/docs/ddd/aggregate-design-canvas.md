@@ -349,11 +349,14 @@ expired) within the 30-minute default timeout. Rows are never deleted.
 ### 2. Description
 
 SKU-level master data, independent of any `StockUnit` or bin, describing how
-an item must be handled. This context is the **source of truth** (ADR 0009):
-a closed set of `HandlingTag`s, a `TemperatureClass` required only for
+an item must be handled. product-master is the **source of truth**
+([ADR 0034](/docs/adr/0034), superseding the ownership part of ADR 0009); this
+aggregate is a version-guarded local copy of it: a closed set of
+`HandlingTag`s, a `TemperatureClass` required only for
 `TemperatureSensitive` SKUs, and an optional US DOT hazard class meaningful
 only for `Hazmat` SKUs (ADR 0010). `StowStock` enforces placement and
-same-bin segregation from it; three sibling contexts read it over REST.
+same-bin segregation from it; no sibling context reads it any more (the REST
+`GET` is deprecated).
 
 | Field | Meaning |
 | --- | --- |
@@ -422,14 +425,14 @@ Unclassified SKUs, unknown bins and unclassified occupants are **fail-open**.
 
 | Event | Full CloudEvents `type` | Topics |
 | --- | --- | --- |
-| ProductClassified | `com.warehouse.wms.inventory-storage.product.ProductClassified` (subject and Kafka key = SKU; `data` = `{sku, handling_tags, temperature_class?, dot_hazard_class?}`, a full-state replacement) | `warehouse.inventory.events` and `warehouse.inventory.analytics`, through the outbox in the same transaction as the save — **published since 2026-10-06**, [ADR 0031](/docs/adr/0031) |
+| ProductClassified (legacy) | `com.warehouse.wms.inventory-storage.product.ProductClassified` (subject and Kafka key = SKU; `data` = `{sku, handling_tags, temperature_class?, dot_hazard_class?}`, a full-state replacement) | `warehouse.inventory.events` only, through the outbox — since [ADR 0034](/docs/adr/0034) raised by **no** write path; only the one-shot `RepublishProductClassifications` backfill emits it, for product-master's legacy importer (published on every write from 2026-10-06 under [ADR 0031](/docs/adr/0031) until ADR 0034) |
 
 ### 8. Throughput (estimate)
 
-Low writes (catalogue changes), high reads: every classified-SKU stow and
-every sibling's `GET /products/{sku}/classification` — siblings can now keep a
-local copy from the published `ProductClassified` event instead
-([ADR 0031](/docs/adr/0031)); the REST read stays.
+Low writes (product-master's `ProductClassified` messages), high reads: every
+classified-SKU stow. Siblings keep their own copies from product-master's
+events; the deprecated REST read `GET /products/{sku}/classification` stays
+until product-master ADR 0003 stage E.
 
 ### 9. Size (estimate)
 

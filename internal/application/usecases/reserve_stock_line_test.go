@@ -51,7 +51,7 @@ func TestReserveStock_Execute_LeavesTheLineNoUnknown(t *testing.T) {
 }
 
 func TestReserveStock_ExecuteForLine_RejectsANonPositiveLineNoBeforeAnyWrite(t *testing.T) {
-	for _, n := range []int{0, -1, 2147483648, 9223372036854775807} {
+	for _, n := range []int{0, -1, reservation.MaxLineNo + 1} {
 		e := newEnv()
 		stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
 		uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
