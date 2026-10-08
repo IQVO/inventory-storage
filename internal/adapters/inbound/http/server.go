@@ -297,9 +297,9 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// lineNo is optional (ADR 0036); when given it must be a line number,
-	// i.e. at least 1.
-	if req.LineNo != nil && *req.LineNo < 1 {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"invalid-line-no", "lineNo must be at least 1"}, "lineNo must be an integer >= 1 when present", r.URL.Path)
+	// i.e. 1..2147483647 (int32 in the contract, INTEGER in Postgres).
+	if req.LineNo != nil && !reservation.ValidLineNo(*req.LineNo) {
+		writeProblem(w, http.StatusBadRequest, problemInfo{"invalid-line-no", "lineNo must be at least 1"}, "lineNo must be an integer between 1 and 2147483647 when present", r.URL.Path)
 		return
 	}
 

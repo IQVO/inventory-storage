@@ -117,7 +117,7 @@ func validateReserveInput(qty shared.Quantity, lineNo *int) error {
 	if qty.Int() <= 0 {
 		return shared.ErrZeroQuantity
 	}
-	if lineNo != nil && *lineNo < 1 {
+	if lineNo != nil && !reservation.ValidLineNo(*lineNo) {
 		return reservation.ErrInvalidLineNo
 	}
 	return nil
