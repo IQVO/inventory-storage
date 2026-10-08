@@ -98,6 +98,25 @@ deprecated and served from the copy. See [ADR 0034](/docs/adr/0034).
 | --- | --- | --- |
 | `PRODUCT_MASTER_CONSUMER_GROUP` | *(unset — consumer off)* | Stable consumer group id (the cluster uses `inventory-storage-product-master`). When set, `DATABASE_URL` and `KAFKA_BROKERS` are required. |
 
+**A fourth Kafka topic, inbound-receiving's receipts (ADR 0037).**
+inbound-receiving owns ASNs, dock appointments and receipts. With
+`INBOUND_RECEIPT_CONSUMER_GROUP` set, this service consumes
+`com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` from
+`warehouse.inbound-receiving.events` (key = ASN number). A `condition=Good`
+line runs the existing `ReceiveStock` use case, in one transaction with the
+CloudEvents-id claim in `processed_events`: the same `StockReceived` as
+`POST /stock/receive`, the quantity staged and not yet usable, stow still the RF
+action. A `Damaged` line is not booked in v1 (INFO log,
+`inventory.inbound_receipt_units{outcome=damaged_not_booked}`). Every other
+inbound-receiving type is committed past; a message that is not a valid
+CloudEvent, or carries an empty `sku`, a non-positive `quantity` or an unknown
+`condition`, is logged and committed past. `POST /stock/receive` is unchanged.
+See [ADR 0037](/docs/adr/0037).
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `INBOUND_RECEIPT_CONSUMER_GROUP` | *(unset — consumer off)* | Stable consumer group id (chart value `config.inboundReceiptConsumerGroup`). When set, `DATABASE_URL` and `KAFKA_BROKERS` are required, and `EVENT_PUBLISHER=kafka` for `StockReceived` to leave the service. |
+
 ## Configuration
 
 | Env var | Default | Purpose |

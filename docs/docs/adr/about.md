@@ -94,6 +94,7 @@ Typos, broken links and formatting are of course fair game.
 | [0034](./0034-product-master-owns-classification.md) | product-master owns product classification; this service keeps a local copy | Accepted |
 | [0035](./0035-confirm-pick-from-task-completed.md) | Confirm an order's picks from fulfillment-execution's TaskCompleted, on the last pick | Accepted; per-line path added by [0036](./0036-per-line-confirm-pick.md) |
 | [0036](./0036-per-line-confirm-pick.md) | Reservations store the order line; picks are confirmed per line | Accepted |
+| [0037](./0037-stock-receipts-from-inbound-receiving.md) | Stock receipts from inbound-receiving: Good `ReceiptLineReceived` lines are booked as staged stock | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

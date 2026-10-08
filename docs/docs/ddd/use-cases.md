@@ -26,6 +26,7 @@ Dependencies are plain struct fields, wired once per binary in
 | 10 | `RegisterBin` | `PUT /bins/{binId}` | — | — (local topology master data, ADR 0025) |
 | 11 | `GetBin` | `GET /bins/{binId}` | — | — (read) |
 | 12 | `ConfirmPicksForOrder` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted`, ADR 0035, ADR 0036) | — | `StockPicked` per confirmed reservation via `ConfirmPick`: the picked line's reservation when the event carries `line_no`, otherwise only on the order's last pick (+ `ReservationExpired` via lazy expiry) |
+| 13 | `BookInboundReceiptLine` | — (Kafka: `warehouse.inbound-receiving.events` `ReceiptLineReceived`, ADR 0037) | — | `StockReceived` through `ReceiveStock` for a `Good` line (analytics topic); a `Damaged` line raises nothing |
 
 `GET /products/{sku}/classification` (deprecated, ADR 0034) has no use case
 of its own: the HTTP adapter reads `ProductClassificationRepo` (the local

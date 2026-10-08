@@ -58,6 +58,7 @@ flowchart TB
     FL["<b>facility-layout</b><br/>Generic<br/>physical warehouse map"]
     OM["<b>order-management</b><br/>WMS<br/>order intake · allocation"]
     PM["<b>product-master</b><br/>WMS · Supporting<br/>SKU master data"]
+    IR["<b>inbound-receiving</b><br/>WMS · Supporting<br/>ASNs · dock · receipts"]
 
     INV -->|"U → D · C/S<br/>Conformist to PL<br/><b>wired: Kafka</b>"| WP
     WM -->|"U → D · C/S<br/><b>wired: Kafka</b>"| WP
@@ -67,12 +68,13 @@ flowchart TB
     PM -->|"OHS + PL · U → D<br/>INV is Conformist<br/><b>wired: Kafka</b> ProductClassified (ADR 0034)"| INV
     INV -->|"OHS · U → D · C/S<br/><b>wired: sync REST</b>"| OM
     FE -->|"OHS + PL · U → D · CF<br/><b>wired: Kafka</b> TaskCompleted (ADR 0035, per-line ADR 0036)<br/>consumer off by default"| INV
+    IR -->|"OHS + PL · U → D · CF<br/><b>wired: Kafka</b> ReceiptLineReceived (ADR 0037)<br/>Good lines → staged stock · consumer off by default"| INV
 
     classDef this fill:#0f766e,stroke:#134e4a,color:#fff,stroke-width:3px;
     classDef other fill:#1e293b,stroke:#475569,color:#fff;
     classDef future fill:#475569,stroke:#94a3b8,color:#e2e8f0,stroke-dasharray: 5 5;
     class INV this;
-    class WP,FE,WM,OM,FL,PM other;
+    class WP,FE,WM,OM,FL,PM,IR other;
 ```
 
 Every edge above is implemented today. Arrows point upstream → downstream,
