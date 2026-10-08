@@ -15,7 +15,17 @@ var (
 	ErrAlreadyResolved = errors.New("reservation is already resolved (confirmed, revoked, or expired)")
 	ErrExpired         = errors.New("reservation has expired")
 	ErrNoAllocations   = errors.New("reservation requires at least one allocation")
+	ErrInvalidLineNo   = errors.New("reservation line number must be between 1 and 2147483647")
 )
+
+// MaxLineNo is the largest order line number a reservation can carry: the
+// contract types lineNo as int32 and the reservations.line_no column is a
+// Postgres INTEGER, so a larger value would be accepted here and then fail
+// (or wrap) at the storage edge.
+const MaxLineNo = 2147483647
+
+// ValidLineNo reports whether n is a usable order line number (1..MaxLineNo).
+func ValidLineNo(n int) bool { return n >= 1 && n <= MaxLineNo }
 
 // Status is the lifecycle stage of a Reservation.
 type Status string
@@ -45,10 +55,14 @@ type Allocation struct {
 // Reservation is the aggregate root for a revocable claim against usable
 // inventory.
 type Reservation struct {
-	id          string
-	sku         shared.SKU
-	quantity    shared.Quantity
-	demandRef   string
+	id        string
+	sku       shared.SKU
+	quantity  shared.Quantity
+	demandRef string
+	// lineNo is the order line this reservation is for (decision 18, ADR
+	// 0036); nil when unknown (a reservation made before the field existed,
+	// or by a client that does not send it).
+	lineNo      *int
 	allocations []Allocation
 	status      Status
 	createdAt   time.Time
@@ -63,6 +77,16 @@ type Reservation struct {
 // verified quantity <= usable at reserve time. A freshly created
 // aggregate always starts at version 1 (see ADR 0019).
 func New(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, allocations []Allocation, createdAt time.Time, timeout time.Duration) (*Reservation, error) {
+	return NewForLine(id, sku, quantity, demandRef, nil, allocations, createdAt, timeout)
+}
+
+// NewForLine is New for a reservation that knows which order line it serves
+// (decision 18, ADR 0036). lineNo is optional: nil means unknown; a non-nil
+// value must be within 1..MaxLineNo (ErrInvalidLineNo). The value is copied.
+func NewForLine(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, lineNo *int, allocations []Allocation, createdAt time.Time, timeout time.Duration) (*Reservation, error) {
+	if lineNo != nil && !ValidLineNo(*lineNo) {
+		return nil, ErrInvalidLineNo
+	}
 	if len(allocations) == 0 {
 		return nil, ErrNoAllocations
 	}
@@ -71,6 +95,7 @@ func New(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, 
 		sku:         sku,
 		quantity:    quantity,
 		demandRef:   demandRef,
+		lineNo:      copyLineNo(lineNo),
 		allocations: allocations,
 		status:      StatusActive,
 		createdAt:   createdAt,
@@ -80,13 +105,28 @@ func New(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, 
 }
 
 // Rehydrate reconstructs a Reservation from persisted state, including the
-// row's current optimistic-concurrency version (ADR 0019).
+// row's current optimistic-concurrency version (ADR 0019). The line number
+// is unknown; see RehydrateForLine.
 func Rehydrate(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, allocations []Allocation, status Status, createdAt, expiresAt time.Time, version int) *Reservation {
+	return RehydrateForLine(id, sku, quantity, demandRef, nil, allocations, status, createdAt, expiresAt, version)
+}
+
+// RehydrateForLine is Rehydrate for a row that may carry a line number
+// (nil for rows written before ADR 0036).
+func RehydrateForLine(id string, sku shared.SKU, quantity shared.Quantity, demandRef string, lineNo *int, allocations []Allocation, status Status, createdAt, expiresAt time.Time, version int) *Reservation {
 	return &Reservation{
-		id: id, sku: sku, quantity: quantity, demandRef: demandRef,
+		id: id, sku: sku, quantity: quantity, demandRef: demandRef, lineNo: copyLineNo(lineNo),
 		allocations: allocations, status: status, createdAt: createdAt, expiresAt: expiresAt,
 		version: version,
 	}
+}
+
+func copyLineNo(n *int) *int {
+	if n == nil {
+		return nil
+	}
+	v := *n
+	return &v
 }
 
 func (r *Reservation) ID() string                { return r.id }
@@ -94,9 +134,13 @@ func (r *Reservation) SKU() shared.SKU           { return r.sku }
 func (r *Reservation) Quantity() shared.Quantity { return r.quantity }
 func (r *Reservation) DemandRef() string         { return r.demandRef }
 func (r *Reservation) Allocations() []Allocation { return r.allocations }
-func (r *Reservation) Status() Status            { return r.status }
-func (r *Reservation) CreatedAt() time.Time      { return r.createdAt }
-func (r *Reservation) ExpiresAt() time.Time      { return r.expiresAt }
+
+// LineNo is the order line this reservation is for, or nil when unknown.
+// The returned pointer is a copy.
+func (r *Reservation) LineNo() *int         { return copyLineNo(r.lineNo) }
+func (r *Reservation) Status() Status       { return r.status }
+func (r *Reservation) CreatedAt() time.Time { return r.createdAt }
+func (r *Reservation) ExpiresAt() time.Time { return r.expiresAt }
 
 // Version reports the optimistic-concurrency version this aggregate was
 // loaded at (or 1 for a freshly constructed one). Infrastructure-only —

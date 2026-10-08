@@ -108,8 +108,9 @@ func TestSweeper_ZeroTTLAndRetentionKeepEverything(t *testing.T) {
 
 	seedIdempotencyKey(t, pool, "ancient", 365*24*time.Hour)
 	seedOutboxRow(t, pool, "AncientPublished", 365*24*time.Hour, true)
+	seedOrderPickProgress(t, pool, "order-ancient", 365*24*time.Hour)
 
-	s := postgres.NewSweeper(pool, postgres.WithIdempotencyKeyTTL(0), postgres.WithOutboxRetention(0))
+	s := postgres.NewSweeper(pool, postgres.WithIdempotencyKeyTTL(0), postgres.WithOutboxRetention(0), postgres.WithOrderPickProgressRetention(0))
 	res, err := s.SweepOnce(context.Background())
 	if err != nil || res != (postgres.SweepResult{}) {
 		t.Fatalf("SweepOnce = %+v, %v; want zero result, nil", res, err)
@@ -119,6 +120,76 @@ func TestSweeper_ZeroTTLAndRetentionKeepEverything(t *testing.T) {
 	}
 	if got := countOutbox(t, pool, "TRUE"); got != 1 {
 		t.Errorf("outbox rows = %d, want 1 (retention disabled)", got)
+	}
+	if got := countOrderPickProgress(t, pool); got != 1 {
+		t.Errorf("order_pick_progress rows = %d, want 1 (retention disabled)", got)
+	}
+}
+
+func seedOrderPickProgress(t *testing.T, pool *pgxpool.Pool, demandRef string, age time.Duration) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO order_pick_progress (demand_ref, picked_tasks, updated_at)
+		VALUES ($1, 2, now() - ($2 * interval '1 second'))`, demandRef, age.Seconds())
+	if err != nil {
+		t.Fatalf("seed order_pick_progress %s: %v", demandRef, err)
+	}
+}
+
+func countOrderPickProgress(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM order_pick_progress`).Scan(&n); err != nil {
+		t.Fatalf("count order_pick_progress: %v", err)
+	}
+	return n
+}
+
+// ADR 0035 retention: progress rows not touched for longer than the retention
+// go (in batches); recent ones stay.
+func TestSweeper_DeletesOnlyStaleOrderPickProgress(t *testing.T) {
+	pool := outboxDB(t)
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		seedOrderPickProgress(t, pool, fmt.Sprintf("stale-%d", i), 45*24*time.Hour)
+	}
+	seedOrderPickProgress(t, pool, "recent", 24*time.Hour)
+	seedOrderPickProgress(t, pool, "fresh", 0)
+
+	// Batch size 2 forces the multi-batch loop over the 5 stale rows.
+	s := postgres.NewSweeper(pool, postgres.WithSweepBatchSize(2), postgres.WithIdempotencyKeyTTL(0), postgres.WithOutboxRetention(0))
+	res, err := s.SweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("SweepOnce: %v", err)
+	}
+	if res.OrderPickProgress != 5 {
+		t.Errorf("deleted order_pick_progress rows = %d, want 5", res.OrderPickProgress)
+	}
+	if got := countOrderPickProgress(t, pool); got != 2 {
+		t.Errorf("order_pick_progress rows left = %d, want the 2 recent ones", got)
+	}
+
+	// A second pass over a clean table is a no-op.
+	res, err = s.SweepOnce(ctx)
+	if err != nil || res != (postgres.SweepResult{}) {
+		t.Errorf("second SweepOnce = %+v, %v; want zero result, nil", res, err)
+	}
+}
+
+// A shorter configured retention is honoured.
+func TestSweeper_OrderPickProgressRetentionIsConfigurable(t *testing.T) {
+	pool := outboxDB(t)
+	seedOrderPickProgress(t, pool, "two-days-old", 48*time.Hour)
+	seedOrderPickProgress(t, pool, "one-hour-old", time.Hour)
+
+	s := postgres.NewSweeper(pool, postgres.WithOrderPickProgressRetention(24*time.Hour), postgres.WithIdempotencyKeyTTL(0), postgres.WithOutboxRetention(0))
+	res, err := s.SweepOnce(context.Background())
+	if err != nil || res.OrderPickProgress != 1 {
+		t.Fatalf("SweepOnce = %+v, %v; want exactly the 48h-old row deleted", res, err)
+	}
+	if got := countOrderPickProgress(t, pool); got != 1 {
+		t.Errorf("order_pick_progress rows left = %d, want 1", got)
 	}
 }
 

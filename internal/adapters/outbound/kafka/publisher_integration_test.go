@@ -10,14 +10,13 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
-	"github.com/testcontainers/testcontainers-go"
-	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	outboundkafka "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
+	"github.com/claudioed/inventory-storage/internal/testsupport/kafkatc"
 )
 
 // This test drives Publisher.Publish against a REAL Kafka broker the test
@@ -32,40 +31,37 @@ import (
 
 var (
 	partitionKeySharedBrokers   []string
-	partitionKeySharedContainer testcontainers.Container
+	partitionKeySharedContainer *kafkatc.Broker
 )
 
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if partitionKeySharedContainer != nil {
-		if err := testcontainers.TerminateContainer(partitionKeySharedContainer); err != nil {
+		if err := partitionKeySharedContainer.Terminate(); err != nil {
 			fmt.Fprintf(os.Stderr, "terminate kafka container: %v\n", err)
 		}
 	}
 	os.Exit(code)
 }
 
+// startPartitionKeyBroker boots the package's ONE Kafka container via the
+// shared kafkatc helper, which returns only once the broker can serve group
+// coordination. Without that, the first test to run paid the cold broker's
+// __consumer_offsets creation (50 partitions) inside its own timed window —
+// topic creation and the first produce queue behind it on the controller.
 func startPartitionKeyBroker(t *testing.T) []string {
 	t.Helper()
 	if partitionKeySharedBrokers != nil {
 		return partitionKeySharedBrokers
 	}
 
-	ctx := context.Background()
-	container, err := tckafka.Run(ctx, "confluentinc/confluent-local:7.6.1",
-		tckafka.WithClusterID("publisher-partition-key-itest"),
-	)
+	broker, err := kafkatc.Start(context.Background(), "publisher-partition-key-itest")
 	if err != nil {
-		t.Fatalf("start kafka container: %v", err)
+		t.Fatalf("%v", err)
 	}
-	partitionKeySharedContainer = container
-
-	brokers, err := container.Brokers(ctx)
-	if err != nil {
-		t.Fatalf("resolve kafka brokers: %v", err)
-	}
-	partitionKeySharedBrokers = brokers
-	return brokers
+	partitionKeySharedContainer = broker
+	partitionKeySharedBrokers = broker.Addrs
+	return partitionKeySharedBrokers
 }
 
 // createTopicWithPartitions creates topic with exactly numPartitions

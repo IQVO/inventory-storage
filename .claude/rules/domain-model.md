@@ -30,8 +30,10 @@ paths:
   bin): a closed set of `HandlingTag`s (`Hazmat`, `Fragile`,
   `TemperatureSensitive`, `Oversized`, `HighValue`) plus a `TemperatureClass`
   (`Ambient`/`Chilled`/`Frozen`), required only when `TemperatureSensitive`
-  is set. This service is the source of truth. Unclassified SKUs carry no
-  constraints (fail-open).
+  is set. **product-master owns it (ADR-0034)**: this service keeps a
+  version-guarded LOCAL COPY in `product_classifications`, fed by
+  product-master's `ProductClassified` events, and never authors a
+  classification. Unclassified SKUs carry no constraints (fail-open).
 - **HandlingTag** — one of the five closed classification values above. Not
   an open tag set like `facility-layout`'s `LocationType` — these carry real
   regulatory/physical meaning, so the enum is deliberately closed.
@@ -76,11 +78,12 @@ paths:
 
 StockReceived, ItemStowed, LocationRecorded, StockReserved,
 ReservationExpired, ReservationRevoked, StockPicked, ItemUnlocated,
-CycleCountCompleted, DiscrepancyDetected, ProductClassified — eleven total,
-raised by four aggregates (StockUnit, Reservation, Bin/Location,
-ProductClassification). **StockReserved**, **ReservationRevoked**, the two
-transfer replies and **ProductClassified** (ADR-0031) cross the service
-boundary via Kafka — see `integration-events.md`.
+CycleCountCompleted, DiscrepancyDetected, ProductClassified — eleven total.
+**StockReserved**, **ReservationRevoked** and the two transfer replies cross
+the service boundary via Kafka — see `integration-events.md`.
+**ProductClassified** is legacy since ADR-0034: no use case raises it; only
+the one-shot `republish-product-classifications` backfill re-emits it
+(integration topic), and it is retired at product-master ADR 0003 stage E.
 
 ## Use cases (application layer)
 
@@ -88,23 +91,43 @@ boundary via Kafka — see `integration-events.md`.
 2. `StowStock(sku, qty, binId)` -> validates item+location scan, respects
    capacity, enforces hazmat/temperature placement rules AND same-bin DOT
    segregation for classified SKUs
-3. `ReserveStock(sku, qty, demandRef)` -> revocable Reservation against
+3. `ReserveStock(sku, qty, demandRef, lineNo?)` -> revocable Reservation against
    usable. Replay guard matches (demandRef, sku, qty): one demand holds one
    ACTIVE reservation per line/SKU, so a different SKU or quantity under the
-   same demandRef is a new reservation, never a retry
+   same demandRef is a new reservation, never a retry. The optional `lineNo`
+   (>= 1; 0 or negative is 400 `invalid-line-no`) is stored on the reservation
+   (nullable `line_no`, ADR-0036) and compared by the replay guard when the
+   request names one; adding it to a key first used without it is 422
+   `idempotency-key-reused`
 4. `RevokeReservation(reservationId)` -> returns qty to usable
-5. `ConfirmPick(reservationId)` -> consumes reservation, StockPicked
+5. `ConfirmPick(reservationId)` -> consumes reservation, StockPicked. Called
+   by `POST /reservations/{id}/confirm-pick` and, for a completed order, by
+   `ConfirmPicksForOrder` (use case 9)
 6. `GetUsable(sku)` -> usable-inventory read model
 7. `RunCycleCount(binId, countedQty)` -> reconcile, may raise
    Discrepancy/Unlocated
-8. `ClassifyProduct(sku, handlingTags, temperatureClass?, dotHazardClass?)`
-   -> registers/replaces a SKU's ProductClassification (this service is the
-   source of truth)
-9. `RegisterBin(binId, capacity)` -> idempotent, declarative bin
+8. `ApplyProductClassification(eventId, sku, handlingTags, temperatureClass?,
+   dotHazardClass?, classificationSource, version)` -> the product-master
+   consumer's use case (ADR-0034): claims the CloudEvents id in
+   `processed_events` and upserts the local copy in ONE UnitOfWork, applying
+   only when `version` > stored version (legacy rows are version 0). Raises
+   NO domain event. Invariant violations are
+   `ErrMalformedProductClassification` (deterministic, committed past).
+   `ClassifyProduct` is removed; `PUT /products/{sku}/classification` is 410.
+   `RepublishProductClassifications` is the one-shot stage-B backfill
+   (re-emits every row as the legacy `ProductClassified` through the outbox).
+9. `ConfirmPicksForOrder(eventId, taskType, orderRef, lineNo?)` -> the fulfillment
+   `TaskCompleted` consumer's use case (ADR-0035, ADR-0036): for a PICK with an
+   order ref, claims the event id and, when `lineNo` names a stored line,
+   confirms exactly that line's ACTIVE reservation via `ConfirmPick`; otherwise
+   counts the pick (`order_pick_progress`) and confirms the order's ACTIVE
+   reservations on its LAST pick. All in ONE UnitOfWork. Short picks are not
+   modelled.
+10. `RegisterBin(binId, capacity) -> idempotent, declarative bin
    registration: creates an absent bin, no-ops on same capacity, resizes
    otherwise via `Bin.Resize` (rejects below occupancy). No domain event —
    local topology master data (ADR-0025)
-10. `GetBin(binId)` -> bin capacity/occupancy read model
+11. `GetBin(binId)` -> bin capacity/occupancy read model
 
 ## Design notes (from README)
 

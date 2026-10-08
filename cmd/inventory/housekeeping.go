@@ -14,18 +14,21 @@ import (
 // duration disables the corresponding behaviour: interval 0 disables the
 // whole sweeper, TTL/retention 0 keep that table's rows forever.
 type housekeepingSettings struct {
-	interval        time.Duration
-	idempotencyTTL  time.Duration
-	outboxRetention time.Duration
+	interval                   time.Duration
+	idempotencyTTL             time.Duration
+	outboxRetention            time.Duration
+	orderPickProgressRetention time.Duration
 }
 
 // housekeepingSettingsFromEnv reads HOUSEKEEPING_INTERVAL (default 1h),
-// IDEMPOTENCY_KEY_TTL (default 24h) and OUTBOX_RETENTION (default 168h = 7d).
+// IDEMPOTENCY_KEY_TTL (default 24h), OUTBOX_RETENTION (default 168h = 7d) and
+// ORDER_PICK_PROGRESS_RETENTION (default 720h = 30d, ADR 0035).
 func housekeepingSettingsFromEnv(logger *slog.Logger) housekeepingSettings {
 	return housekeepingSettings{
-		interval:        envDuration(logger, "HOUSEKEEPING_INTERVAL", postgres.DefaultSweepInterval),
-		idempotencyTTL:  envDuration(logger, "IDEMPOTENCY_KEY_TTL", postgres.DefaultIdempotencyKeyTTL),
-		outboxRetention: envDuration(logger, "OUTBOX_RETENTION", postgres.DefaultOutboxRetention),
+		interval:                   envDuration(logger, "HOUSEKEEPING_INTERVAL", postgres.DefaultSweepInterval),
+		idempotencyTTL:             envDuration(logger, "IDEMPOTENCY_KEY_TTL", postgres.DefaultIdempotencyKeyTTL),
+		outboxRetention:            envDuration(logger, "OUTBOX_RETENTION", postgres.DefaultOutboxRetention),
+		orderPickProgressRetention: envDuration(logger, "ORDER_PICK_PROGRESS_RETENTION", postgres.DefaultOrderPickProgressRetention),
 	}
 }
 
@@ -55,6 +58,7 @@ func startSweeper(pool *pgxpool.Pool, cfg housekeepingSettings, logger *slog.Log
 		postgres.WithSweepInterval(cfg.interval),
 		postgres.WithIdempotencyKeyTTL(cfg.idempotencyTTL),
 		postgres.WithOutboxRetention(cfg.outboxRetention),
+		postgres.WithOrderPickProgressRetention(cfg.orderPickProgressRetention),
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -63,7 +67,8 @@ func startSweeper(pool *pgxpool.Pool, cfg housekeepingSettings, logger *slog.Log
 		_ = sweeper.Run(ctx) // only ever returns nil, on cancellation
 	}()
 	logger.Info("housekeeping sweeper started", "interval", cfg.interval,
-		"idempotency_key_ttl", cfg.idempotencyTTL, "outbox_retention", cfg.outboxRetention)
+		"idempotency_key_ttl", cfg.idempotencyTTL, "outbox_retention", cfg.outboxRetention,
+		"order_pick_progress_retention", cfg.orderPickProgressRetention)
 	return func() {
 		cancel()
 		select {

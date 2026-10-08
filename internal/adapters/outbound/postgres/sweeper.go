@@ -21,6 +21,12 @@ const (
 	// kept for forensics before deletion (ADR-0017). Unpublished rows are
 	// never swept, however old.
 	DefaultOutboxRetention = 7 * 24 * time.Hour
+	// DefaultOrderPickProgressRetention is how long an order_pick_progress row
+	// (the per-order completed-PICK counter, ADR 0035) is kept after its last
+	// pick. Generous on purpose: deleting the row of an order that is still
+	// being picked restarts its count, and an under-counted order is only
+	// confirmed late (or never, until its reservations expire), never early.
+	DefaultOrderPickProgressRetention = 30 * 24 * time.Hour
 	// defaultSweepBatch bounds each DELETE statement so a large backlog is
 	// removed in short transactions instead of one long table lock.
 	defaultSweepBatch = 1000
@@ -28,29 +34,32 @@ const (
 
 // SweepResult reports how many rows one pass deleted from each table.
 type SweepResult struct {
-	IdempotencyKeys int64
-	OutboxEvents    int64
+	IdempotencyKeys   int64
+	OutboxEvents      int64
+	OrderPickProgress int64
 }
 
-// Sweeper is the periodic housekeeping job that bounds the two append-only
+// Sweeper is the periodic housekeeping job that bounds the append-only
 // tables this service otherwise grows without limit: idempotency_keys (rows
-// older than the TTL) and outbox_events (PUBLISHED rows older than the
-// retention). It is deliberately one small type with one loop rather than
-// two jobs — both are "delete old rows in batches" and share an interval.
+// older than the TTL), outbox_events (PUBLISHED rows older than the
+// retention) and order_pick_progress (rows not touched for the retention,
+// ADR 0035). It is deliberately one small type with one loop rather than
+// several jobs — all are "delete old rows in batches" and share an interval.
 //
-// A TTL/retention of 0 (or negative) disables that half: the rows are kept
+// A TTL/retention of 0 (or negative) disables that part: the rows are kept
 // forever, which is the pre-ADR-0026 behaviour.
 //
 // It is safe to run in several replicas at once: each DELETE targets an
 // explicit id/key set chosen by a subquery, so concurrent sweepers can only
 // delete rows that are anyway eligible; at worst one deletes zero rows.
 type Sweeper struct {
-	pool            *pgxpool.Pool
-	logger          *slog.Logger
-	interval        time.Duration
-	idempotencyTTL  time.Duration
-	outboxRetention time.Duration
-	batchSize       int
+	pool                       *pgxpool.Pool
+	logger                     *slog.Logger
+	interval                   time.Duration
+	idempotencyTTL             time.Duration
+	outboxRetention            time.Duration
+	orderPickProgressRetention time.Duration
+	batchSize                  int
 }
 
 // SweeperOption configures a Sweeper beyond its required pool.
@@ -72,6 +81,12 @@ func WithOutboxRetention(d time.Duration) SweeperOption {
 	return func(s *Sweeper) { s.outboxRetention = d }
 }
 
+// WithOrderPickProgressRetention overrides the default 30d retention of
+// order_pick_progress rows, measured from updated_at (<=0 disables).
+func WithOrderPickProgressRetention(d time.Duration) SweeperOption {
+	return func(s *Sweeper) { s.orderPickProgressRetention = d }
+}
+
 // WithSweepBatchSize overrides the default 1000-row DELETE batch.
 func WithSweepBatchSize(n int) SweeperOption {
 	return func(s *Sweeper) {
@@ -89,12 +104,13 @@ func WithSweeperLogger(l *slog.Logger) SweeperOption {
 // NewSweeper builds a Sweeper over pool with the ADR-0026 defaults.
 func NewSweeper(pool *pgxpool.Pool, opts ...SweeperOption) *Sweeper {
 	s := &Sweeper{
-		pool:            pool,
-		logger:          slog.Default(),
-		interval:        DefaultSweepInterval,
-		idempotencyTTL:  DefaultIdempotencyKeyTTL,
-		outboxRetention: DefaultOutboxRetention,
-		batchSize:       defaultSweepBatch,
+		pool:                       pool,
+		logger:                     slog.Default(),
+		interval:                   DefaultSweepInterval,
+		idempotencyTTL:             DefaultIdempotencyKeyTTL,
+		outboxRetention:            DefaultOutboxRetention,
+		orderPickProgressRetention: DefaultOrderPickProgressRetention,
+		batchSize:                  defaultSweepBatch,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -115,10 +131,12 @@ func (s *Sweeper) Run(ctx context.Context) error {
 		switch {
 		case err != nil && ctx.Err() == nil:
 			s.logger.Error("housekeeping sweep failed", "error", err,
-				"idempotency_keys_deleted", res.IdempotencyKeys, "outbox_events_deleted", res.OutboxEvents)
-		case res.IdempotencyKeys > 0 || res.OutboxEvents > 0:
+				"idempotency_keys_deleted", res.IdempotencyKeys, "outbox_events_deleted", res.OutboxEvents,
+				"order_pick_progress_deleted", res.OrderPickProgress)
+		case res != (SweepResult{}):
 			s.logger.Info("housekeeping sweep",
-				"idempotency_keys_deleted", res.IdempotencyKeys, "outbox_events_deleted", res.OutboxEvents)
+				"idempotency_keys_deleted", res.IdempotencyKeys, "outbox_events_deleted", res.OutboxEvents,
+				"order_pick_progress_deleted", res.OrderPickProgress)
 		}
 
 		select {
@@ -158,6 +176,21 @@ func (s *Sweeper) SweepOnce(ctx context.Context) (SweepResult, error) {
 				ORDER BY id
 				LIMIT $2
 			)`, s.outboxRetention)
+		if err != nil {
+			return res, err
+		}
+	}
+
+	if s.orderPickProgressRetention > 0 {
+		res.OrderPickProgress, err = s.deleteInBatches(ctx, `
+			DELETE FROM order_pick_progress
+			WHERE updated_at < now() - ($1 * interval '1 second')
+			  AND demand_ref IN (
+				SELECT demand_ref FROM order_pick_progress
+				WHERE updated_at < now() - ($1 * interval '1 second')
+				ORDER BY updated_at
+				LIMIT $2
+			)`, s.orderPickProgressRetention)
 		if err != nil {
 			return res, err
 		}

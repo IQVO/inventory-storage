@@ -14,16 +14,19 @@ operator needs to run it against the shared broker.
 | | |
 | --- | --- |
 | **Topic** | `warehouse.inventory.events` |
-| **Events** | `StockReserved`, `ReservationRevoked` |
+| **Events** | `StockReserved`, `ReservationRevoked`, the transfer replies (ADR 0030, ADR 0033), and the legacy `ProductClassified` from the one-shot backfill only ([ADR 0034](/docs/adr/0034)) |
 | **Client library** | `github.com/segmentio/kafka-go` |
 | **Balancer** | `Hash` (message key = reservation id, [ADR 0021](/docs/adr/0021-kafka-producer-partition-key)), `AllowAutoTopicCreation: true` |
-| **Consumers today** | `wes-work-planning` |
+| **Consumers today** | `wes-work-planning` (`StockReserved`, `ReservationRevoked`); `network-inventory-planning` (the transfer replies); product-master's legacy importer (the backfill's `ProductClassified`, product-master ADR 0003 stage B) |
 
 ## What this service consumes
 
-Every state change to this service's own aggregates still arrives as an
-explicit HTTP command against [the REST API](/docs/api-reference), which runs
-this service's own invariants before anything is written.
+Operator and sibling commands against this service's own aggregates arrive as
+explicit HTTP commands against [the REST API](/docs/api-reference), which runs
+this service's own invariants before anything is written. The exceptions are
+event-driven: transfer allocation commands (ADR 0030, see the README), pick
+confirmation from `TaskCompleted` (below), and product classification, which
+this service no longer authors (below).
 
 **One Kafka topic, read into a local read model (ADR 0013).** `StowStock`
 needs the target bin's zone attributes when the SKU being stowed carries the
@@ -52,6 +55,48 @@ and the replay — and the readiness gate — moves past it.
 | `LOCATION_LOOKUP_MODE` | `permissive` | `kafka`: Kafka-fed local cache (what the `warehouse-infra` cluster runs). `http`: synchronous `GET /locations/{locationCode}/classification` on facility-layout per stow — the rollback for `kafka`. `permissive` (default): no lookup; every location reports `Known=false`, so placement rules never block a stow — **decided 2026-10-06: kept** (ADR 0013/0020): a cold facility cache would reject every receipt, and the cluster already injects `kafka`. |
 | `FACILITY_LAYOUT_BASE_URL` | *(unset)* | Base URL for the `http` mode client, e.g. `http://facility-layout:80`. |
 | `KAFKA_BROKERS` | *(unset)* | Required by `kafka` mode — startup fails if it is missing. |
+
+**A second Kafka topic, picks confirmed from an event (ADR 0035, per line ADR 0036).** The
+physical decrement of reserved stock is not an HTTP command in production:
+with `TASK_COMPLETED_CONSUMER_MODE=kafka` (default `off`) this service consumes
+`com.warehouse.wes.fulfillment-execution.task.TaskCompleted` from
+`warehouse.fulfillment.events` under the fixed group
+`TASK_COMPLETED_CONSUMER_GROUP` (default `inventory-storage-confirm-pick`). For
+a `PICK` task (one per order line) with the additive optional `order_ref` and `line_no`
+it confirms exactly the ACTIVE reservation of (`order_ref`, `line_no`) through the
+existing `ConfirmPick` use case, in one transaction with the CloudEvents-id claim
+([ADR 0036](/docs/adr/0036)); without a `line_no`, or for reservations that have
+none, it falls back to counting the order's picks (`order_pick_progress`) and
+confirming every ACTIVE reservation of the order when the **last** one completes
+(ADR 0035); a redelivery changes
+nothing, an expired reservation is skipped and counted
+(`inventory.pick_confirmations`), and short picks are not modelled. Poison and
+exhausted messages go to `warehouse.fulfillment.events.dlq`. See
+[ADR 0035](/docs/adr/0035).
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `TASK_COMPLETED_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`; `EVENT_PUBLISHER=kafka` for `StockPicked` to leave the service). |
+| `TASK_COMPLETED_CONSUMER_GROUP` | `inventory-storage-confirm-pick` | Consumer group id. |
+
+**A third Kafka topic, product-master's classifications (ADR 0034).**
+product-master owns SKU product classification. With
+`PRODUCT_MASTER_CONSUMER_GROUP` set, this service consumes
+`com.warehouse.wms.product-master.product.ProductClassified` from
+`warehouse.product-master.events` (key = SKU) and keeps a version-guarded
+local copy in `product_classifications`: `ApplyProductClassification` claims
+the CloudEvents `id` in `processed_events` and upserts the row in one
+transaction, applying a message only when its `version` is greater than the
+stored one. Every other product-master type is committed past; a message that
+is not a valid CloudEvent, or breaks the classification invariants, is logged
+and committed past. The copy is what `StowStock` reads for its placement and
+DOT segregation rules. `PUT /products/{sku}/classification` answers
+`410 classification-moved`; `GET /products/{sku}/classification` is
+deprecated and served from the copy. See [ADR 0034](/docs/adr/0034).
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `PRODUCT_MASTER_CONSUMER_GROUP` | *(unset — consumer off)* | Stable consumer group id (the cluster uses `inventory-storage-product-master`). When set, `DATABASE_URL` and `KAFKA_BROKERS` are required. |
 
 ## Configuration
 
@@ -152,14 +197,18 @@ Two design notes that a consumer must respect:
 
 ## Consuming this topic yourself
 
-If you are building a sixth consumer:
+If you are building another consumer:
 
 1. **Read the spec, not this page.**
    [`apis/asyncapi.yaml`](https://github.com/IQVO/inventory-storage/blob/main/apis/asyncapi.yaml)
    is the contract and is Spectral-linted in CI.
-2. **The integration topic carries `StockReserved`, `ReservationRevoked`,
-   `ProductClassified` (SKU master data, key = SKU, ADR 0031) and the two
-   transfer replies (ADR 0030).** `warehouse.inventory.analytics` is internal to this
+2. **The integration topic carries `StockReserved`, `ReservationRevoked`
+   and the transfer replies (ADR 0030, ADR 0033), plus the legacy
+   `ProductClassified` that only the one-shot backfill emits
+   ([ADR 0034](/docs/adr/0034)).** Do not build on `ProductClassified` here:
+   product classification is owned by product-master, so read
+   `com.warehouse.wms.product-master.product.ProductClassified` from
+   `warehouse.product-master.events` instead. `warehouse.inventory.analytics` is internal to this
    service's analytics projector; do not build against it.
 3. **Dispatch on the full `type` string; ignore unknown types.** The catalog
    grows. Reject (DLQ/skip) anything that is not a valid CloudEvent.

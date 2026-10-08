@@ -18,6 +18,11 @@ var (
 	// below its occupancy would break the sum(stock in bin) <= capacity
 	// invariant for stock that is physically already there.
 	ErrCapacityBelowOccupancy = errors.New("bin capacity cannot be set below current occupancy")
+	// ErrSiteCustodyRequired: a site-scoped operation (a transfer stow)
+	// was attempted against a bin with no recorded site custody. Site
+	// custody is a validated fact, never a guess — a site-less bin can
+	// never receive transfer stock (ADR 0031).
+	ErrSiteCustodyRequired = errors.New("bin has no recorded site custody")
 )
 
 // Bin is the aggregate root for a coded storage slot.
@@ -25,6 +30,11 @@ type Bin struct {
 	id       shared.BinId
 	capacity shared.Quantity
 	occupied shared.Quantity
+	// siteID is the custody fact: the warehouse site this bin physically
+	// sits at. Empty only for rows persisted before site custody existed
+	// (rehydrated legacy bins); such bins can serve ordinary stows but
+	// can NEVER receive site-scoped transfer stock (ADR 0031).
+	siteID shared.SiteID
 	// version is optimistic-concurrency infrastructure metadata (ADR
 	// 0019) — inert, never reasoned about by business logic.
 	version int
@@ -49,9 +59,30 @@ func RehydrateBin(id shared.BinId, capacity, occupied shared.Quantity, version i
 	return &Bin{id: id, capacity: capacity, occupied: occupied, version: version}
 }
 
+// RehydrateBinAtSite is RehydrateBin with the site custody fact read back
+// from the row's site_id column (NULL for legacy rows, which keep using
+// RehydrateBin — ADR 0031).
+func RehydrateBinAtSite(id shared.BinId, capacity, occupied shared.Quantity, siteID shared.SiteID, version int) *Bin {
+	return &Bin{id: id, capacity: capacity, occupied: occupied, siteID: siteID, version: version}
+}
+
 func (b *Bin) ID() shared.BinId          { return b.id }
 func (b *Bin) Capacity() shared.Quantity { return b.capacity }
 func (b *Bin) Occupied() shared.Quantity { return b.occupied }
+
+// SiteID reports this bin's site custody. Empty means "not recorded"
+// (a legacy row persisted before site custody existed).
+func (b *Bin) SiteID() shared.SiteID { return b.siteID }
+
+// IsAtSite reports whether this bin is in site's custody. A bin with no
+// recorded site (legacy) is at NO site — the wrong-facility failure mode
+// fails closed (ADR 0031).
+func (b *Bin) IsAtSite(site shared.SiteID) bool {
+	if site == "" {
+		return false
+	}
+	return b.siteID == site
+}
 
 // Version reports the optimistic-concurrency version this aggregate was
 // loaded at (or 1 for a freshly constructed one). Infrastructure-only —

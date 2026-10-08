@@ -166,10 +166,13 @@ config:
   # Transactional-outbox relay poll interval (ADR-0017); OUTBOX_RELAY_INTERVAL.
   outboxRelayInterval: "1s"
   # Housekeeping sweeper (ADR-0026): how often it runs, how long an
-  # idempotency key is kept, how long PUBLISHED outbox rows are kept.
+  # idempotency key is kept, how long PUBLISHED outbox rows are kept, and how
+  # long an order's pick counter (order_pick_progress, ADR-0035) is kept after
+  # its last pick.
   housekeepingInterval: "1h"
   idempotencyKeyTtl: "24h"
   outboxRetention: "168h"
+  orderPickProgressRetention: "720h"
   # Site-scoped transfer allocation command consumer (ADR-0030). "kafka"
   # enables consuming network-inventory-planning's
   # TransferAllocationRequested commands; requires database.* and
@@ -179,6 +182,24 @@ config:
   # locally-run process can never steal the live Deployment's partitions.
   transferAllocationConsumerMode: "off"
   transferAllocationConsumerGroup: ""
+  # product-master classification local copy (ADR-0034). Set to a stable
+  # group id (e.g. inventory-storage-product-master) to consume
+  # product-master's ProductClassified from warehouse.product-master.events
+  # into product_classifications; empty = consumer not started. Requires
+  # database.* and kafka.enabled.
+  productMasterConsumerGroup: ""
+  # TaskCompleted confirm-pick consumer (ADR-0035). "kafka" enables consuming
+  # fulfillment-execution's TaskCompleted from warehouse.fulfillment.events,
+  # counting each PICK task per order (order_ref) and confirming every ACTIVE
+  # reservation of the order when its LAST pick completes (one PICK task per
+  # order line); requires database.* and kafka.enabled (the claim, the counter
+  # and the confirmations are only atomic through the Postgres UnitOfWork/outbox) and
+  # EVENT_PUBLISHER=kafka for StockPicked to leave the service. Default off.
+  # taskCompletedConsumerGroup overrides the group id (default
+  # inventory-storage-confirm-pick). Poison / exhausted messages go to
+  # warehouse.fulfillment.events.dlq.
+  taskCompletedConsumerMode: "off"
+  taskCompletedConsumerGroup: ""
 
 database:
   url: ""
@@ -201,7 +222,10 @@ database:
 # Kafka wiring. This service PUBLISHES (StockReserved /
 # ReservationRevoked / the ADR-0030 transfer replies) and, when
 # config.transferAllocationConsumerMode=kafka, CONSUMES
-# network-inventory-planning's transfer allocation commands.
+# network-inventory-planning's transfer allocation commands; when
+# config.productMasterConsumerGroup is set it also CONSUMES product-master's
+# ProductClassified (ADR-0034); when config.taskCompletedConsumerMode=kafka it
+# also CONSUMES fulfillment-execution's TaskCompleted (ADR-0035).
 # kafka.enabled gates EVENT_PUBLISHER=kafka.
 kafka:
   enabled: false

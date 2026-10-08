@@ -62,12 +62,15 @@ classDiagram
         -sku SKU
         -quantity Quantity
         -demandRef string
+        -lineNo int "nullable, ADR 0036"
         -allocations List~Allocation~
         -status Status
         -createdAt Time
         -expiresAt Time
         -version int
         +New(id, sku, qty, demandRef, allocations, createdAt, timeout) Reservation
+        +NewForLine(id, sku, qty, demandRef, lineNo, allocations, createdAt, timeout) Reservation
+        +LineNo() int
         +IsExpired(now Time) bool
         +Revoke() error
         +Confirm(now Time) error
@@ -326,6 +329,7 @@ classDiagram
         +Timeout Duration
         +UnitOfWork UnitOfWork
         +Execute(ctx, sku, qty, demandRef) Reservation
+        +ExecuteForLine(ctx, sku, qty, demandRef, lineNo) Reservation
     }
     class StowStock {
         +Stock StockRepo

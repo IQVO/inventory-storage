@@ -13,12 +13,11 @@ import (
 
 	ce "github.com/cloudevents/sdk-go/v2/event"
 	kafkago "github.com/segmentio/kafka-go"
-	"github.com/testcontainers/testcontainers-go"
-	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/facilitycache"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
+	"github.com/claudioed/inventory-storage/internal/testsupport/kafkatc"
 )
 
 // These tests drive the real replay/readiness logic against a REAL Kafka
@@ -35,7 +34,7 @@ import (
 
 var (
 	sharedBrokers   []string
-	sharedContainer testcontainers.Container
+	sharedContainer *kafkatc.Broker
 )
 
 // TestMain owns the package-wide broker lifecycle. Per-test Cleanup would
@@ -44,7 +43,7 @@ var (
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if sharedContainer != nil {
-		if err := testcontainers.TerminateContainer(sharedContainer); err != nil {
+		if err := sharedContainer.Terminate(); err != nil {
 			fmt.Fprintf(os.Stderr, "terminate kafka container: %v\n", err)
 		}
 	}
@@ -52,28 +51,24 @@ func TestMain(m *testing.M) {
 }
 
 // startBroker boots one Kafka container for the whole package and returns its
-// broker list. Subsequent calls reuse it.
+// broker list. Subsequent calls reuse it. kafkatc.Start returns only once the
+// broker is a usable group coordinator: on a cold broker the first consumer
+// group's JoinGroup is answered [15] GroupCoordinatorNotAvailable and kafka-go
+// then backs off a fixed 5 s per attempt, which is what made the first
+// replay test (TestConsumerReplaysExistingHistoryBeforeBecomingReady) flake.
 func startBroker(t *testing.T) []string {
 	t.Helper()
 	if sharedBrokers != nil {
 		return sharedBrokers
 	}
 
-	ctx := context.Background()
-	container, err := tckafka.Run(ctx, "confluentinc/confluent-local:7.6.1",
-		tckafka.WithClusterID("facilitycache-itest"),
-	)
+	broker, err := kafkatc.Start(context.Background(), "facilitycache-itest")
 	if err != nil {
-		t.Fatalf("start kafka container: %v", err)
+		t.Fatalf("%v", err)
 	}
-	sharedContainer = container
-
-	brokers, err := container.Brokers(ctx)
-	if err != nil {
-		t.Fatalf("resolve kafka brokers: %v", err)
-	}
-	sharedBrokers = brokers
-	return brokers
+	sharedContainer = broker
+	sharedBrokers = broker.Addrs
+	return sharedBrokers
 }
 
 // uniqueTopic gives each test its own topic so tests never contaminate one

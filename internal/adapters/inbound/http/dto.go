@@ -33,6 +33,9 @@ type reserveStockRequest struct {
 	SKU       string `json:"sku"`
 	Quantity  int    `json:"quantity"`
 	DemandRef string `json:"demandRef"`
+	// LineNo is the optional order line this reservation is for (ADR 0036).
+	// A pointer so absent/null (unknown) is distinguishable from an invalid 0.
+	LineNo *int `json:"lineNo"`
 }
 
 type allocationResponse struct {
@@ -45,10 +48,13 @@ type allocationResponse struct {
 }
 
 type reservationResponse struct {
-	ID          string               `json:"id"`
-	SKU         string               `json:"sku"`
-	Quantity    int                  `json:"quantity"`
-	DemandRef   string               `json:"demandRef"`
+	ID        string `json:"id"`
+	SKU       string `json:"sku"`
+	Quantity  int    `json:"quantity"`
+	DemandRef string `json:"demandRef"`
+	// LineNo is the order line this reservation is for; omitted when unknown
+	// (a reservation made without one, ADR 0036).
+	LineNo      *int                 `json:"lineNo,omitempty"`
 	Status      string               `json:"status"`
 	Allocations []allocationResponse `json:"allocations"`
 	CreatedAt   string               `json:"createdAt"`
@@ -58,6 +64,50 @@ type reservationResponse struct {
 type usableInventoryResponse struct {
 	SKU    string `json:"sku"`
 	Usable int    `json:"usable"`
+}
+
+// --- transfer destination receipt/stow (ADR 0031) ---------------------------
+
+type stageTransferReceiptRequest struct {
+	TransferID        string `json:"transferId"`
+	DestinationSiteID string `json:"destinationSiteId"`
+	SKU               string `json:"sku"`
+	ReceivedQuantity  int    `json:"receivedQuantity"`
+}
+
+type transferReceiptResponse struct {
+	TransferID        string `json:"transferId"`
+	TransferLineID    string `json:"transferLineId"`
+	DestinationSiteID string `json:"destinationSiteId"`
+	SKU               string `json:"sku"`
+	ExpectedQuantity  int    `json:"expectedQuantity"`
+	ReceivedQuantity  int    `json:"receivedQuantity"`
+	Variance          int    `json:"variance"`
+	State             string `json:"state"`
+	StagedAt          string `json:"stagedAt"`
+	StowedAt          string `json:"stowedAt,omitempty"`
+	Replay            bool   `json:"replay"`
+}
+
+type stowTransferRequest struct {
+	Bins []stowBinRequest `json:"bins"`
+}
+
+type stowBinRequest struct {
+	BinID    string `json:"binId"`
+	Quantity int    `json:"quantity"`
+}
+
+type stowedAllocationResponse struct {
+	StockUnitID string `json:"stockUnitId"`
+	BinID       string `json:"binId"`
+	Quantity    int    `json:"quantity"`
+}
+
+type stowTransferResponse struct {
+	transferReceiptResponse
+	StowedQuantity int                        `json:"stowedQuantity"`
+	Allocations    []stowedAllocationResponse `json:"allocations"`
 }
 
 type cycleCountRequest struct {
@@ -85,16 +135,6 @@ type binResponse struct {
 	Capacity  int    `json:"capacity"`
 	Occupied  int    `json:"occupied"`
 	Available int    `json:"available"`
-}
-
-type classifyProductRequest struct {
-	HandlingTags     []string `json:"handlingTags"`
-	TemperatureClass string   `json:"temperatureClass,omitempty"`
-	// DOTHazardClass is optional (a nil pointer means "unspecified"), and
-	// meaningful only when HandlingTags includes "Hazmat" — see ADR 0010.
-	// A pointer distinguishes "field omitted" from "explicitly 0", since
-	// 0 is not a valid DOT hazard class (the valid range is 1-9).
-	DOTHazardClass *int `json:"dotHazardClass,omitempty"`
 }
 
 type productClassificationResponse struct {

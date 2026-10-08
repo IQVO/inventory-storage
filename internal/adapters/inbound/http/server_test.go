@@ -20,9 +20,10 @@ import (
 )
 
 type testServer struct {
-	handler   http.Handler
-	stock     *memory.StockRepo
-	locations *memory.LocationRepo
+	handler         http.Handler
+	stock           *memory.StockRepo
+	locations       *memory.LocationRepo
+	classifications *memory.ProductClassificationRepo
 }
 
 func newTestServer() testServer {
@@ -42,13 +43,25 @@ func newTestServer() testServer {
 		GetUsable:                  &usecases.GetUsable{Stock: stockRepo},
 		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock},
 		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock},
-		ClassifyProduct:            &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
 		RegisterBin:                &usecases.RegisterBin{Locations: locationRepo},
 		GetBin:                     &usecases.GetBin{Locations: locationRepo},
 		Classifications:            classificationRepo,
 	}
 
-	return testServer{handler: inboundhttp.NewRouter(s, nil, ""), stock: stockRepo, locations: locationRepo}
+	return testServer{handler: inboundhttp.NewRouter(s, nil, ""), stock: stockRepo, locations: locationRepo, classifications: classificationRepo}
+}
+
+// seedClassification writes a classification into the local copy, the way
+// the product-master consumer does (ADR 0034).
+func seedClassification(t *testing.T, repo *memory.ProductClassificationRepo, sku string, tags []product.HandlingTag, temp product.TemperatureClass, dot product.DOTHazardClass) {
+	t.Helper()
+	c, err := product.New(shared.SKU(sku), tags, temp, dot)
+	if err != nil {
+		t.Fatalf("build classification: %v", err)
+	}
+	if _, err := repo.ApplyIfNewer(context.Background(), c, 1, "native"); err != nil {
+		t.Fatalf("seed classification: %v", err)
+	}
 }
 
 func (ts testServer) seedBin(t *testing.T, id string, capacity int) {
@@ -539,126 +552,74 @@ func TestRunCycleCount_Endpoint_ExplicitZeroCount_Accepted(t *testing.T) {
 	}
 }
 
-func TestClassifyProduct_Endpoint_Create(t *testing.T) {
-	ts := newTestServer()
-	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags": []string{"Hazmat", "Fragile"},
-	})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var body struct {
-		SKU          string   `json:"sku"`
-		HandlingTags []string `json:"handlingTags"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unexpected error decoding response: %v", err)
-	}
-	if body.SKU != "SKU-1" {
-		t.Fatalf("expected sku=SKU-1, got %s", body.SKU)
-	}
-	if len(body.HandlingTags) != 2 {
-		t.Fatalf("expected 2 handling tags, got %v", body.HandlingTags)
+// PUT /products/{sku}/classification is retired (ADR 0034): every call is a
+// 410 classification-moved naming product-master's endpoint, whatever the
+// body, and nothing is written to the local copy.
+func TestClassifyProduct_Endpoint_Returns410ClassificationMoved(t *testing.T) {
+	for name, body := range map[string]any{
+		"valid classification": map[string]any{"handlingTags": []string{"Hazmat", "Fragile"}},
+		"invalid body":         map[string]any{"handlingTags": []string{"Explosive"}, "dotHazardClass": 42},
+		"no body":              nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ts := newTestServer()
+			rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", body)
+			if rec.Code != http.StatusGone {
+				t.Fatalf("expected 410, got %d: %s", rec.Code, rec.Body.String())
+			}
+			assertProblemDetails(t, rec, http.StatusGone, "classification-moved", "/products/SKU-1/classification")
+			var problem struct {
+				Type   string `json:"type"`
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+				t.Fatalf("decode problem: %v", err)
+			}
+			if problem.Type != "https://errors.inventory-storage.warehouse-systems.dev/classification-moved" {
+				t.Fatalf("type = %q", problem.Type)
+			}
+			if !strings.Contains(problem.Detail, "product-master") || !strings.Contains(problem.Detail, "PUT /products/{sku}/classification") {
+				t.Fatalf("detail must name product-master's PUT endpoint, got %q", problem.Detail)
+			}
+			if got, _ := ts.classifications.FindBySKU(context.Background(), shared.SKU("SKU-1")); got != nil {
+				t.Fatalf("a retired PUT wrote the local copy: %+v", got)
+			}
+		})
 	}
 }
 
-func TestClassifyProduct_Endpoint_Replace_Returns200(t *testing.T) {
+// The deprecated GET serves the local copy, DOT hazard class included.
+func TestGetProductClassification_Endpoint_DOTHazardClass_RoundTrip(t *testing.T) {
 	ts := newTestServer()
-	ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags": []string{"Fragile"},
-	})
+	seedClassification(t, ts.classifications, "SKU-1", []product.HandlingTag{product.Hazmat, product.TemperatureSensitive}, product.Frozen, 3)
 
-	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags": []string{"Hazmat"},
-	})
+	rec := ts.do(t, http.MethodGet, "/products/SKU-1/classification", nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 on replace, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestClassifyProduct_Endpoint_TemperatureSensitiveWithClass(t *testing.T) {
-	ts := newTestServer()
-	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags":     []string{"TemperatureSensitive"},
-		"temperatureClass": "Frozen",
-	})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		TemperatureClass string `json:"temperatureClass"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &body)
-	if body.TemperatureClass != "Frozen" {
-		t.Fatalf("expected temperatureClass=Frozen, got %s", body.TemperatureClass)
-	}
-}
-
-func TestClassifyProduct_Endpoint_TemperatureSensitiveWithoutClass_Rejected(t *testing.T) {
-	ts := newTestServer()
-	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags": []string{"TemperatureSensitive"},
-	})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-	assertProblemDetails(t, rec, http.StatusBadRequest, "temperature-class-required", "/products/SKU-1/classification")
-}
-
-func TestClassifyProduct_Endpoint_UnknownTag_Rejected(t *testing.T) {
-	ts := newTestServer()
-	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags": []string{"Explosive"},
-	})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-	assertProblemDetails(t, rec, http.StatusBadRequest, "unknown-handling-tag", "/products/SKU-1/classification")
-}
-
-// DOTHazardClass round-trips through the classification endpoint: create
-// with a Hazmat SKU carrying a DOT class, and the response echoes it back.
-func TestClassifyProduct_Endpoint_DOTHazardClass_RoundTrip(t *testing.T) {
-	ts := newTestServer()
-	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags":   []string{"Hazmat"},
-		"dotHazardClass": 3,
-	})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var body struct {
-		SKU            string   `json:"sku"`
-		HandlingTags   []string `json:"handlingTags"`
-		DOTHazardClass *int     `json:"dotHazardClass"`
+		SKU              string   `json:"sku"`
+		HandlingTags     []string `json:"handlingTags"`
+		TemperatureClass string   `json:"temperatureClass"`
+		DOTHazardClass   *int     `json:"dotHazardClass"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unexpected error decoding response: %v", err)
 	}
-	if body.DOTHazardClass == nil || *body.DOTHazardClass != 3 {
-		t.Fatalf("expected dotHazardClass=3, got %v", body.DOTHazardClass)
-	}
-
-	getRec := ts.do(t, http.MethodGet, "/products/SKU-1/classification", nil)
-	var getBody struct {
-		DOTHazardClass *int `json:"dotHazardClass"`
-	}
-	_ = json.Unmarshal(getRec.Body.Bytes(), &getBody)
-	if getBody.DOTHazardClass == nil || *getBody.DOTHazardClass != 3 {
-		t.Fatalf("expected GET dotHazardClass=3, got %v", getBody.DOTHazardClass)
+	if body.DOTHazardClass == nil || *body.DOTHazardClass != 3 || body.TemperatureClass != "Frozen" || len(body.HandlingTags) != 2 {
+		t.Fatalf("unexpected classification response: %+v", body)
 	}
 }
 
-// A Hazmat classification with no dotHazardClass field at all omits it
-// from the response entirely (nil, not 0) — backward compatible with
-// classifications registered before this field existed.
-func TestClassifyProduct_Endpoint_DOTHazardClass_Omitted(t *testing.T) {
+// A Hazmat classification with no DOT hazard class omits the field (nil,
+// not 0).
+func TestGetProductClassification_Endpoint_DOTHazardClass_Omitted(t *testing.T) {
 	ts := newTestServer()
-	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags": []string{"Hazmat"},
-	})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	seedClassification(t, ts.classifications, "SKU-1", []product.HandlingTag{product.Hazmat}, "", 0)
+
+	rec := ts.do(t, http.MethodGet, "/products/SKU-1/classification", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var raw map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &raw)
@@ -667,37 +628,9 @@ func TestClassifyProduct_Endpoint_DOTHazardClass_Omitted(t *testing.T) {
 	}
 }
 
-// dotHazardClass supplied without the Hazmat tag is rejected 400.
-func TestClassifyProduct_Endpoint_DOTHazardClassWithoutHazmat_Rejected(t *testing.T) {
-	ts := newTestServer()
-	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags":   []string{"Fragile"},
-		"dotHazardClass": 3,
-	})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-	assertProblemDetails(t, rec, http.StatusBadRequest, "dot-hazard-class-not-applicable", "/products/SKU-1/classification")
-}
-
-// dotHazardClass out of the valid 1-9 range is rejected 400.
-func TestClassifyProduct_Endpoint_DOTHazardClassOutOfRange_Rejected(t *testing.T) {
-	ts := newTestServer()
-	rec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags":   []string{"Hazmat"},
-		"dotHazardClass": 10,
-	})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-	assertProblemDetails(t, rec, http.StatusBadRequest, "invalid-dot-hazard-class", "/products/SKU-1/classification")
-}
-
 func TestGetProductClassification_Endpoint_Found(t *testing.T) {
 	ts := newTestServer()
-	ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags": []string{"HighValue"},
-	})
+	seedClassification(t, ts.classifications, "SKU-1", []product.HandlingTag{product.HighValue}, "", 0)
 
 	rec := ts.do(t, http.MethodGet, "/products/SKU-1/classification", nil)
 	if rec.Code != http.StatusOK {
@@ -738,7 +671,6 @@ func TestStowStock_Endpoint_HazmatPlacementRejected(t *testing.T) {
 			Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
 			Classifications: classificationRepo, LocationLookup: lookup,
 		},
-		ClassifyProduct: &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
 		Classifications: classificationRepo,
 	}
 	handler := inboundhttp.NewRouter(s, nil, "")
@@ -748,10 +680,7 @@ func TestStowStock_Endpoint_HazmatPlacementRejected(t *testing.T) {
 	_ = locationRepo.Save(context.Background(), bin)
 
 	ts := testServer{handler: handler, stock: stockRepo, locations: locationRepo}
-	classifyRec := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{"handlingTags": []string{"Hazmat"}})
-	if classifyRec.Code != http.StatusCreated {
-		t.Fatalf("expected 201 classifying sku, got %d: %s", classifyRec.Code, classifyRec.Body.String())
-	}
+	seedClassification(t, classificationRepo, "SKU-1", []product.HandlingTag{product.Hazmat}, "", 0)
 
 	rec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
 	if rec.Code != http.StatusConflict {
@@ -785,7 +714,6 @@ func TestStowStock_Endpoint_SegregationRejected(t *testing.T) {
 			Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
 			Classifications: classificationRepo,
 		},
-		ClassifyProduct: &usecases.ClassifyProduct{Classifications: classificationRepo, Events: publisher, Clock: clock},
 		Classifications: classificationRepo,
 	}
 	handler := inboundhttp.NewRouter(s, nil, "")
@@ -797,18 +725,8 @@ func TestStowStock_Endpoint_SegregationRejected(t *testing.T) {
 	ts := testServer{handler: handler, stock: stockRepo, locations: locationRepo}
 
 	// SKU-1: class 1 (explosives). SKU-2: class 8 (corrosives) — incompatible per the derived matrix.
-	classifyRec1 := ts.do(t, http.MethodPut, "/products/SKU-1/classification", map[string]any{
-		"handlingTags": []string{"Hazmat"}, "dotHazardClass": 1,
-	})
-	if classifyRec1.Code != http.StatusCreated {
-		t.Fatalf("expected 201 classifying SKU-1, got %d: %s", classifyRec1.Code, classifyRec1.Body.String())
-	}
-	classifyRec2 := ts.do(t, http.MethodPut, "/products/SKU-2/classification", map[string]any{
-		"handlingTags": []string{"Hazmat"}, "dotHazardClass": 8,
-	})
-	if classifyRec2.Code != http.StatusCreated {
-		t.Fatalf("expected 201 classifying SKU-2, got %d: %s", classifyRec2.Code, classifyRec2.Body.String())
-	}
+	seedClassification(t, classificationRepo, "SKU-1", []product.HandlingTag{product.Hazmat}, "", 1)
+	seedClassification(t, classificationRepo, "SKU-2", []product.HandlingTag{product.Hazmat}, "", 8)
 
 	stowRec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
 	if stowRec.Code != http.StatusCreated {

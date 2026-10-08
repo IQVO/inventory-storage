@@ -153,8 +153,10 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | PUT    | `/bins/{binId}` | RegisterBin — idempotent: 201 created / 200 unchanged or resized / 409 below occupancy (ADR-0025) |
 | GET    | `/bins/{binId}` | GetBin — capacity, occupied, available |
 | POST   | `/bins/{binId}/cycle-count` | RunCycleCount |
-| PUT    | `/products/{sku}/classification` | ClassifyProduct |
-| GET    | `/products/{sku}/classification` | current ProductClassification |
+| POST   | `/transfers/{transferLineId}/receipt` | StageTransferReceipt — requires `Idempotency-Key`; 201 staged / 200 replay / 422 quarantined / 409 conflicting scan (ADR-0033) |
+| POST   | `/transfers/{transferLineId}/stow` | StowTransferStock — requires `Idempotency-Key`; 200 stowed with allocations / 409 not staged, wrong-site bin, or quantity mismatch (ADR-0033) |
+| PUT    | `/products/{sku}/classification` | 410 `classification-moved` (ADR-0034: classify in product-master) |
+| GET    | `/products/{sku}/classification` | deprecated: local copy of product-master's classification |
 | GET    | `/healthz` | liveness |
 | GET    | `/readyz` | readiness — `503 {"status":"not_ready"}` once graceful shutdown has begun (ADR-0020) |
 
@@ -202,10 +204,11 @@ curl -s -i -X POST localhost:8080/stock/stow \
 
 curl -s -i -X POST localhost:8080/reservations \
   -H 'Idempotency-Key: 8b1a...' \
-  -d '{"sku":"SKU-1","quantity":6,"demandRef":"order-42"}'
+  -d '{"sku":"SKU-1","quantity":6,"demandRef":"order-42","lineNo":1}'
 # => 201 Created, Location: /reservations/<id>, body {"id":"res-...", ...,
-#    "allocations":[{"stockUnitId":"su-...","binId":"A-1-1","quantity":6}]}
-#    Every allocation names its pick location (binId) — ADR-0025.
+#    "lineNo":1, "allocations":[{"stockUnitId":"su-...","binId":"A-1-1","quantity":6}]}
+#    Every allocation names its pick location (binId) — ADR-0025. lineNo is
+#    optional (1..2147483647; omitted from the response when unknown) — ADR-0036.
 # A retry with the SAME Idempotency-Key + body returns this exact response
 # again without creating a second reservation (ADR-0018); omitting the
 # header entirely on these two routes is a 400.
@@ -269,7 +272,9 @@ of the site-scoped transfer allocation exchange (ADR-0030).
   *published* `outbox_events` older than `OUTBOX_RETENTION` (default `168h`),
   every `HOUSEKEEPING_INTERVAL` (default `1h`; `0` disables the sweeper, a `0`
   TTL/retention keeps that table's rows forever). Unpublished outbox rows are
-  never deleted.
+  never deleted. The same sweeper deletes `order_pick_progress` rows (the
+  confirm-pick consumer's per-order counter, ADR 0035) not updated for
+  `ORDER_PICK_PROGRESS_RETENTION` (default `720h` = 30 days).
 - **Broker**: `KAFKA_BROKERS` env var, comma-separated, default
   `localhost:9092`. There is one broker platform-wide: the in-cluster Kafka
   deployed by `warehouse-infra`, whose external listener is reachable from
@@ -323,10 +328,11 @@ of the site-scoped transfer allocation exchange (ADR-0030).
   ```
   `reason` is the closed set `ORIGIN_SITE_UNKNOWN | INSUFFICIENT_USABLE |
   IDEMPOTENCY_CONFLICT`.
-  And `com.warehouse.wms.inventory-storage.product.ProductClassified`
-  (ADR-0031: SKU master data, published on BOTH topics through the outbox in
-  the same transaction as `ClassifyProduct`'s save; key/subject = SKU; a
-  full-state replacement) with `data`:
+  And the legacy `com.warehouse.wms.inventory-storage.product.ProductClassified`
+  (key/subject = SKU; a full-state replacement), which since ADR-0034 no
+  write path raises: only the one-shot `republish-product-classifications`
+  backfill (below) emits it, through the outbox, for product-master's legacy
+  importer. `data`:
   ```json
   {"sku": "SKU-9", "handling_tags": ["Hazmat", "TemperatureSensitive"], "temperature_class": "Frozen", "dot_hazard_class": 3}
   ```
@@ -380,6 +386,118 @@ while continuing to serve ordinary demand unchanged.
 | `TRANSFER_ALLOCATION_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`) |
 | `TRANSFER_ALLOCATION_CONSUMER_GROUP` | `inventory-storage-transfer-allocation` | Consumer group id |
 
+### Consumed: product-master's product classifications (ADR-0034)
+
+product-master owns product classification. This service keeps a
+version-guarded local copy in `product_classifications`, which `StowStock`
+reads for the ADR-0009/0010 placement rules (unchanged). It is fed by
+`com.warehouse.wms.product-master.product.ProductClassified` on
+`warehouse.product-master.events`; the CloudEvents `id` is claimed in
+`processed_events` in the same transaction as the upsert, and a message
+applies only when its `version` is newer than the stored one. Other
+product-master event types are ignored.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `PRODUCT_MASTER_CONSUMER_GROUP` | unset (consumer off) | Stable consumer group id, e.g. `inventory-storage-product-master`. When set, `DATABASE_URL` and `KAFKA_BROKERS` are required. |
+
+`PUT /products/{sku}/classification` answers `410 classification-moved`;
+`GET /products/{sku}/classification` is deprecated (served from the local
+copy until product-master ADR 0003 stage E).
+
+One-shot backfill (product-master ADR 0003 stage B) — re-emits every stored
+classification as the legacy `ProductClassified` through the outbox, which the
+running pod's relay publishes; safe to re-run:
+
+```sh
+kubectl -n warehouse-systems exec deploy/inventory-storage -- ./inventory republish-product-classifications
+```
+
+### Consumed: fulfillment-execution's TaskCompleted → confirm exactly the picked line (ADR-0036; counting fallback ADR-0035)
+
+Nothing calls `POST /reservations/{id}/confirm-pick` in production, so picks are
+confirmed from an event instead (no synchronous call into this context). On
+`com.warehouse.wes.fulfillment-execution.task.TaskCompleted` from
+`warehouse.fulfillment.events`, for a `task_type` of `PICK` with a non-empty
+`order_ref` (the OrderId, = a reservation's `demand_ref`):
+
+- **With the additive optional `line_no`** (ADR-0036) the ACTIVE reservation of
+  (`order_ref`, `line_no`) is confirmed through the existing `ConfirmPick` logic:
+  stock decremented, bin capacity released, `StockPicked` raised. A `Reservation`
+  stores its line (`line_no`, sent by order-management as `lineNo` on
+  `POST /reservations`), so the order's other lines stay ACTIVE until their own pick
+  arrives and nothing is counted (no `order_pick_progress` row).
+- **Without `line_no`, or for reservations made before it existed** (NULL), the
+  ADR-0035 fallback **counts** the pick for the order (`order_pick_progress`) and,
+  when the count reaches the ACTIVE + CONFIRMED reservations (REVOKED and EXPIRED
+  are not awaited), i.e. on the **last** pick, confirms every ACTIVE one. Earlier
+  picks only record progress (confirming early would mark unpicked lines as picked
+  with no undo; confirming late is safe).
+
+The CloudEvents `id` claim (`processed_events`), the counter increment (fallback
+only) and all confirmations commit in **one transaction**; a redelivery (or an
+extra PICK event for an already confirmed line or order) confirms nothing new and
+never double-counts. CONFIRMED/REVOKED reservations are skipped, an EXPIRED one
+(ADR-0003) is skipped, logged and counted in
+`inventory.pick_confirmations{outcome=expired}`, never an error; an order with
+no reservations is a successful no-op; a `line_no` that is not an integer in 1..2147483647 is
+dead-lettered. Counter rows older than
+`ORDER_PICK_PROGRESS_RETENTION` (default `720h`) are swept (see Housekeeping).
+
+**Limitation: short picks are not modelled.** A Task carries no SKU or
+quantity, so the whole reserved quantity of a confirmed line is picked. Short
+picks need per-line quantities in work-planning's WorkUnit and
+fulfillment-execution's Task and a business rule for the remainder.
+
+A transient failure retries the same message (capped backoff, 5 attempts), then
+dead-letters it to `warehouse.fulfillment.events.dlq`; a malformed payload is
+dead-lettered at once. Needs `EVENT_PUBLISHER=kafka` for `StockPicked` to leave
+the service.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `TASK_COMPLETED_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`) |
+| `TASK_COMPLETED_CONSUMER_GROUP` | `inventory-storage-confirm-pick` | Consumer group id |
+
+### Destination transfer receiving: stage → quarantine → stow (ADR-0033)
+
+When the truck arrives, custody at the destination is taken by a SCAN,
+not by an event: `POST /transfers/{transferLineId}/receipt` records what
+was physically counted against the transfer line the operator claims,
+and `POST /transfers/{transferLineId}/stow` places it into
+destination-site bins. Both require an `Idempotency-Key`.
+
+- **Stage** looks the line up in the `transfer_allocations` ledger. A
+  recognized `ALLOCATED` row answers `201` with a `STAGED`
+  `transfer_receipts` row — `expected_quantity` from the ledger,
+  `received_quantity` as counted, `variance = received − expected`
+  (SIGNED: over positive, short negative, never silently absorbed) — and
+  publishes
+  `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged`
+  (key/subject = transfer line id) through the same transactional
+  outbox. **No usable stock moves at stage.**
+- **Quarantine** — the line was never allocated here, was `REJECTED`,
+  the `transferId` mismatches, or the destination IS the transfer's own
+  origin site: an `inventory_exceptions` row is written, NOTHING that
+  could raise availability is published, and the `422` problem body
+  carries the exception's coordinates in its `exception` member for an
+  operator to resolve.
+- **Stow** verifies every bin belongs to the receipt's
+  `destination_site_id` (site custody fails closed — another site's bin
+  or a legacy site-less bin is a `409`), requires the bin quantities to
+  sum exactly to `receivedQuantity`, creates one `StockUnit` per leg AT
+  the destination site, moves the receipt `STAGED → STOWED`, and
+  publishes
+  `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` — the
+  **only** event that raises destination usable. A replayed stow returns
+  the original allocations, creates no second StockUnit, republishes
+  nothing (DB-unique receipt + guarded state transition).
+
+`TransferArrived` from fulfillment-execution
+(`warehouse.fulfillment.events`) is deliberately NOT consumed here: it
+is a work-execution fact, not a custody fact — custody is taken by the
+physical count behind a scan. See ADR-0033.
+
 ## Consumed: facility-layout's location classifications
 
 `StowStock` enforces hazmat-zone and temperature-class placement for SKUs
@@ -399,12 +517,13 @@ it reads only this service's own stock and classification repositories.
 ### Synchronous callers
 
 Other contexts call this service's REST API directly: `order-management`
-reserves/revokes stock (`POST /reservations`, `DELETE /reservations/{id}`)
-and, with `wes-work-planning` and `fulfillment-execution`, reads
-`GET /products/{sku}/classification`; `network-fulfillment` reads
-`GET /inventory/{sku}/usable`; `warehouse-ops-agent` reads
-`GET /reservations?demandRef=`, the reports REST and the MCP tools. Each
-caller gates the edge behind its own `*_MODE` env var.
+reserves/revokes stock (`POST /reservations`, `DELETE /reservations/{id}`);
+`network-fulfillment` reads `GET /inventory/{sku}/usable`;
+`warehouse-ops-agent` reads `GET /reservations?demandRef=`, the reports REST
+and the MCP tools. No sibling reads `GET /products/{sku}/classification` any
+more: `order-management` (its ADR 0036), `wes-work-planning` (its ADR 0035) and
+`fulfillment-execution` (its ADR 0039) each keep a local copy fed by
+product-master's `ProductClassified`.
 
 ## Analytics (data product)
 

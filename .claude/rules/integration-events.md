@@ -8,8 +8,12 @@ paths:
 # Cross-service integration events (Kafka)
 
 This service PUBLISHES integration events over Kafka to the fleet's shared
-broker. It CONSUMES exactly one sibling topic, `warehouse.facility.events`
-(facility-layout), into a local location-classification cache — see
+broker. It CONSUMES four sibling topics: `warehouse.facility.events`
+(facility-layout) into a local location-classification cache,
+`warehouse.network-inventory-planning.events` (transfer commands),
+`warehouse.product-master.events` (product-master, ADR-0034) into the local
+copy of product classifications, and `warehouse.fulfillment.events`
+(fulfillment-execution `TaskCompleted`, ADR-0035) to confirm picks — see
 "Consumed" below.
 
 ## Envelope: CloudEvents 1.0, mandatory (ADR-0024)
@@ -78,16 +82,20 @@ NO envelope toggle.
 ## Published today: 5 of 13 catalog events
 
 **`StockReserved`, `ReservationRevoked`, `TransferStockAllocated`,
-`TransferStockAllocationRejected` and `ProductClassified` cross the service
-boundary.**
+`TransferStockAllocationRejected` and the legacy `ProductClassified` cross
+the service boundary.** Since ADR-0034 `ProductClassified` is raised by no
+write path: only the one-shot `republish-product-classifications` backfill
+re-emits it (integration topic only, through the outbox); its encoder
+mapping and goldens are kept for that command and removed at product-master
+ADR 0003 stage E.
 The Kafka adapter's `switch` has a `default: return nil` branch that
 silently drops every other domain event — deliberate, not an oversight.
 `apis/asyncapi.yaml` documents the full 13-message catalog (all four
 aggregates: StockUnit, Reservation, Bin/Location, ProductClassification —
-`ProductClassified` is published since ADR-0031, SKU master data as a
-full-state replacement, no PII; `LocationRecorded` stays in-process) and marks
-every catalog-only message as such in its own `description`, so a downstream team cannot mistake a
-documented event for a wired one.
+`LocationRecorded` stays in-process) plus the consumed product-master
+message, and marks every catalog-only message as such in its own
+`description`, so a downstream team cannot mistake a documented event for a
+wired one.
 
 - **StockReserved** — `data`: `{"sku": "...", "quantity": N, "demand_ref": "..."}`.
   Raised by `ReserveStock` when a reservation is successfully created
@@ -116,7 +124,7 @@ Wire `type`s: `com.warehouse.wms.inventory-storage.reservation.StockReserved`
 and `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`
 (wes-work-planning dispatches on these exact strings). The analytics topic
 carries ten types (entity `stock`/`reservation`/`bin`/`product`, see ADR-0024
-and ADR-0031).
+and ADR-0033).
 
 Consumers should ignore unknown `type` values (the catalog will grow),
 deduplicate on `(source, id)` (Kafka delivery is at-least-once). Every
@@ -126,6 +134,65 @@ regardless of the topic's partition count (ADR-0021) — cross-reservation/
 cross-SKU ordering is still not guaranteed, and the authoritative answer
 for correctness-sensitive reads is always `GET /inventory/{sku}/usable`,
 not the event stream.
+
+## Consumed: `warehouse.product-master.events` (ADR-0034)
+
+- Adapter: `internal/adapters/inbound/kafka/product_master_consumer.go`
+  (`ProductMasterTopic`). Started only when `PRODUCT_MASTER_CONSUMER_GROUP`
+  is set (a stable group id from configuration; unset = not started). Also
+  requires `DATABASE_URL` and `KAFKA_BROKERS`, else boot fails.
+- Dispatches ONLY on the full type
+  `com.warehouse.wms.product-master.product.ProductClassified`, `data`
+  `{sku, handling_tags[], temperature_class?, dot_hazard_class?, classification_source, version}`;
+  `ProductRegistered`, `ProductDescriptionChanged`,
+  `ProductDimensionsDeclared`, `ProductMeasured` (and anything else) are
+  committed past untouched.
+- `ApplyProductClassification` claims the CloudEvents `id` in
+  `processed_events` (consumer `product-master-classification`) and upserts
+  `product_classifications` in ONE UnitOfWork; the upsert applies only when
+  `version` > stored version (legacy rows are 0). It raises NO domain event
+  (no publish loop back to product-master).
+- At-least-once checklist: `FetchMessage`, commit after the handler settles,
+  capped-backoff retry of the SAME message on transient (DB) errors; not a
+  CloudEvent / undecodable payload / invariant violation -> WARN and commit
+  past.
+- Integration test: `internal/application/usecases/product_master_handover_integration_test.go`
+  (testcontainers Kafka + Postgres: event -> local copy -> hazmat stow
+  placement).
+
+## Consumed: `warehouse.fulfillment.events` (ADR-0035)
+
+- Adapter: `internal/adapters/inbound/kafka/task_completed_consumer.go`.
+  Selected by `TASK_COMPLETED_CONSUMER_MODE=kafka` (default `off`). Consumer
+  group `TASK_COMPLETED_CONSUMER_GROUP` (default `inventory-storage-confirm-pick`).
+  Malformed messages go to `warehouse.fulfillment.events.dlq` at once; transient
+  failures retry with capped backoff, then dead-letter.
+- Dispatches ONLY on the full type
+  `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` with `task_type`
+  `PICK` and a non-empty `order_ref` (the ORDER id = a reservation's `demand_ref`;
+  fulfillment-execution's order-ref decision, documented in that repo);
+  everything else is committed past.
+- The event may carry an optional positive integer `line_no` (a non-positive one
+  is dead-lettered as malformed). `ConfirmPicksForOrder` claims the CloudEvents
+  `id` in `processed_events` (consumer `task-completed-confirm-pick`) and
+  decides in ONE UnitOfWork:
+  - PER-LINE path (ADR-0036): the event names a line and a reservation of the
+    order stores that `line_no` -> confirm exactly that line's ACTIVE
+    reservation via `ConfirmPick` (outcome `LINE_SETTLED`); NO
+    `order_pick_progress` row is written. Reservations carry `line_no` because
+    order-management sends `lineNo` when it reserves.
+  - COUNTING fallback (ADR-0035): no `line_no` on the event, or only line-less
+    (pre-`line_no`) reservations -> count the pick in `order_pick_progress` and
+    confirm the order's ACTIVE reservations only when the count reaches the
+    confirmable ones (ACTIVE + CONFIRMED), i.e. on the LAST pick: late is safe
+    (the reservation holds the stock), early would mark unpicked lines as
+    picked. A line no reservation carries and no line-less reservation left is
+    `LINE_NOT_FOUND`, a successful no-op.
+  Short picks are not modelled. Expired reservations are skipped and counted
+  (`inventory.pick_confirmations{outcome=expired}`).
+- The sweeper deletes `order_pick_progress` rows older than
+  `ORDER_PICK_PROGRESS_RETENTION` (default 720h; chart
+  `config.orderPickProgressRetention`; `0` disables).
 
 ## Consumed: `warehouse.network-inventory-planning.events` (ADR-0030)
 

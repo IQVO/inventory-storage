@@ -34,7 +34,7 @@ info:
     `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`.
 
 
-    **Aggregates and entity groupings.** Four aggregates raise every event
+    **Aggregates and entity groupings.** Three aggregates raise every event
     documented here. The **StockUnit** aggregate (entity segment `stock`)
     raises `StockReceived`, `ItemStowed`, `LocationRecorded` and
     `ItemUnlocated`. The **Reservation** aggregate (entity segment
@@ -43,22 +43,35 @@ info:
     reservation because it is emitted by ConfirmPick when a reservation is
     consumed, and reservation id is the only identity it carries. The
     **Bin/Location** aggregate (entity segment `bin`) raises
-    `CycleCountCompleted` and `DiscrepancyDetected`. The
-    **ProductClassification** aggregate (entity segment `product`) raises
-    `ProductClassified`.
+    `CycleCountCompleted` and `DiscrepancyDetected`.
 
 
     **What reaches Kafka.** This document is the complete domain-event
     catalog for the bounded context. Two topics carry a subset of it:
     `warehouse.inventory.events` (the integration contract — `StockReserved`,
-    `ReservationRevoked`, the two transfer replies, and `ProductClassified`
-    (SKU master data, ADR 0031), from
+    `ReservationRevoked`, the transfer replies, the transfer receipt/stow events, and the legacy
+    `ProductClassified`, from
     `internal/adapters/outbound/kafka/publisher.go`) and
     `warehouse.inventory.analytics` (the analytics data product — every
-    message below except `LocationRecorded`, from
+    message below except `LocationRecorded` and `ProductClassified`, from
     `internal/adapters/outbound/kafka/analytics_publisher.go`). Each message
     says which topics it reaches. `LocationRecorded` is in-process only (no
-    consumer; decided 2026-10-06).
+    consumer; decided 2026-10-06). Since ADR 0034 product-master owns
+    product classification: `ProductClassified` is no longer raised by any
+    write path and is emitted only by the one-shot
+    `republish-product-classifications` backfill command (product-master ADR
+    0003 stage B), on the integration topic.
+
+
+    **Consumed.** This service also consumes product-master's
+    `warehouse.product-master.events` (channel below, ADR 0034) into a local
+    copy of every SKU's classification that StowStock reads. Applying it
+    raises no event here. It also consumes fulfillment-execution's
+    `TaskCompleted` from `warehouse.fulfillment.events` (channel below, ADR
+    0035) to confirm a completed order's reservations as picked once the order's
+    LAST PICK task completes (one PICK task per order line, counted per order);
+    that raises this service's own `StockPicked` (analytics topic) per
+    reservation.
 
 
     **CloudEvents is mandatory (ADR-0024).** Every message on both topics is
@@ -98,8 +111,18 @@ tags:
       bin's contents and the discrepancies they reveal.
   - name: product
     description: >
-      Events raised by the ProductClassification aggregate: SKU-level handling
-      master data (hazmat, fragile, temperature, ...) this service owns.
+      Events about SKU-level handling master data (hazmat, fragile,
+      temperature, ...). Owned by product-master since ADR 0034; this
+      service only re-emits its legacy `ProductClassified` from the one-shot
+      backfill command and consumes product-master's own events.
+  - name: product-master
+    description: >
+      Events consumed from the product-master bounded context (wms
+      subdomain), the owner of SKU master data (ADR 0034).
+  - name: fulfillment-execution
+    description: >
+      Events consumed from the fulfillment-execution bounded context (wes
+      subdomain): TaskCompleted, from which picks are confirmed (ADR 0035).
 
 servers:
   production:
@@ -120,8 +143,10 @@ channels:
       The outbound integration topic for this bounded context (the `Topic`
       constant in `internal/adapters/outbound/kafka/publisher.go`). Reaching
       it: `StockReserved` and `ReservationRevoked` (keyed by reservation
-      id), the two transfer replies, and `ProductClassified` (keyed by
-      SKU, ADR 0031). The primary downstream consumer is
+      id), the transfer replies and receipt/stow events (keyed by transfer line id), and the legacy `ProductClassified`
+      (keyed by SKU), which since ADR 0034 only the one-shot
+      `republish-product-classifications` backfill emits (product-master's
+      legacy importer consumes it). The primary downstream consumer is
       wes-work-planning, which dispatches on their full `type` strings and
       projects them into its `UsableInventoryObserved` read model, keyed by
       SKU.
@@ -143,6 +168,8 @@ channels:
           - $ref: "#/components/messages/ReservationRevoked"
           - $ref: "#/components/messages/TransferStockAllocated"
           - $ref: "#/components/messages/TransferStockAllocationRejected"
+          - $ref: "#/components/messages/TransferReceiptStaged"
+          - $ref: "#/components/messages/TransferStockStowed"
           - $ref: "#/components/messages/ProductClassified"
 
   warehouse.inventory.analytics:
@@ -156,8 +183,10 @@ channels:
       for reservation-lifecycle events). Consumed only by this service's own
       projector (`cmd/inventory-projector`), which dispatches on the full
       `type`, dedupes on `id`, and skips (WARN) anything that is not a valid
-      CloudEvent. `ProductClassified` (ADR 0031) shares this topic and is
-      acknowledged without touching the read model.
+      CloudEvent. `ProductClassified` no longer reaches this topic (ADR
+      0034: the write path stopped raising it and the backfill writes the
+      integration topic only); the projector would acknowledge it without
+      touching the read model.
     subscribe:
       operationId: consumeInventoryStorageAnalytics
       summary: Consume inventory-storage analytics events (internal).
@@ -179,7 +208,113 @@ channels:
           - $ref: "#/components/messages/ReservationRevoked"
           - $ref: "#/components/messages/CycleCountCompleted"
           - $ref: "#/components/messages/DiscrepancyDetected"
-          - $ref: "#/components/messages/ProductClassified"
+
+  warehouse.product-master.events:
+    description: >
+      product-master's integration topic, its Published Language for SKU
+      master data (product-master ADR 0001; the `ProductMasterTopic`
+      constant in `internal/adapters/inbound/kafka/product_master_consumer.go`).
+      CONSUMED by this service (ADR 0034), not published: key = SKU,
+      `source=/warehouse/product-master`, `subject` = SKU. Only
+      `com.warehouse.wms.product-master.product.ProductClassified` is acted
+      on; `ProductRegistered`, `ProductDescriptionChanged`,
+      `ProductDimensionsDeclared` and `ProductMeasured` share the topic and
+      are committed past untouched. The consumer runs only when
+      `PRODUCT_MASTER_CONSUMER_GROUP` is set (stable group id; also requires
+      `DATABASE_URL` and `KAFKA_BROKERS`).
+    publish:
+      operationId: applyProductMasterClassification
+      summary: Apply product-master's ProductClassified to the local copy.
+      description: >
+        At-least-once, fixed group: FetchMessage, then CommitMessages only
+        after the handler settles. The CloudEvents `id` is claimed in
+        `processed_events` in the SAME transaction as the
+        `product_classifications` upsert, which applies only when `version`
+        is greater than the stored version (a missing row is inserted; legacy
+        rows carry version 0). A transient database error retries the same
+        message with capped backoff; a message that is not a valid
+        CloudEvent, has an undecodable payload or breaks the classification
+        invariants is logged and committed past. Nothing is published in
+        response (no loop back to product-master).
+      tags:
+        - name: product-master
+          description: Consumed from the product-master bounded context.
+      message:
+        $ref: "#/components/messages/ProductMasterProductClassified"
+
+  warehouse.fulfillment.events:
+    description: >
+      fulfillment-execution's integration topic, its Published Language for
+      task facts (the `FulfillmentTopic` constant in
+      `internal/adapters/inbound/kafka/task_completed_consumer.go`). CONSUMED
+      by this service (ADR 0035), not published: key = `subject` = task id,
+      `source=/warehouse/fulfillment-execution`. Only
+      `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` is acted on;
+      `TaskCPTMissed`, `PackageManifested` and the `Transfer*` facts share the
+      topic and are committed past untouched. The consumer runs only when
+      `TASK_COMPLETED_CONSUMER_MODE=kafka` (default `off`; also requires
+      `DATABASE_URL` and `KAFKA_BROKERS`), under the fixed group
+      `TASK_COMPLETED_CONSUMER_GROUP` (default `inventory-storage-confirm-pick`).
+      Poison messages and messages whose handling kept failing are written to
+      `warehouse.fulfillment.events.dlq`.
+    publish:
+      operationId: confirmPicksFromTaskCompleted
+      summary: Confirm the picked line's reservation (line_no), or fall back to confirming the order on its last TaskCompleted.
+      description: >
+        At-least-once, fixed group: FetchMessage, then CommitMessages only after
+        the message settles. For `task_type = PICK` with a non-empty `order_ref`
+        (the OrderId order-management reserved against, stored here as
+        `demand_ref`) there are two paths.
+
+
+        PER-LINE (ADR 0036, audit decision 18): when the event carries the
+        additive `line_no`, exactly the ACTIVE reservation(s) with
+        `demand_ref = order_ref` and `line_no` equal to the event's are
+        confirmed through the existing ConfirmPick logic (stock decremented, bin
+        capacity released, `StockPicked` raised); normally exactly one, since
+        earlier attempts of the line are REVOKED. CONFIRMED and REVOKED ones are
+        skipped; an EXPIRED one (ADR 0003) is skipped, logged and counted
+        (`inventory.pick_confirmations{outcome=expired}`), never an error. Other
+        lines of the order are never touched, so a line whose pick has not
+        arrived stays ACTIVE and reserved. Nothing is counted on this path (no
+        `order_pick_progress` row).
+
+
+        COUNTING FALLBACK (ADR 0035, kept for backward compatibility): when the
+        event has no `line_no`, or names a line that no reservation of the order
+        carries but the order has reservations created before `line_no` existed
+        (NULL), the pick is COUNTED for the order (table
+        `order_pick_progress`) against those reservations only; when the count
+        reaches their ACTIVE + CONFIRMED number (REVOKED and EXPIRED are not
+        awaited), i.e. on the LAST pick, every ACTIVE one is confirmed. Earlier
+        picks only record progress and settle as successful no-ops. Counter rows
+        older than `ORDER_PICK_PROGRESS_RETENTION` (default 720h) are swept.
+        The "one pick early" edge of that counting does not exist on the
+        per-line path.
+
+
+        The CloudEvents `id` claim in `processed_events`, the counter increment
+        (fallback only) and all confirmations commit in ONE transaction, so a
+        failure rolls everything back and the redelivery is applied in full; a
+        redelivered id is a no-op, and a further PICK event for an already
+        confirmed line confirms nothing new. No reservations for the order (a
+        transfer or non-inventory order), a line with no reservation and no
+        line-less ones to fall back to, a non-PICK task, a missing `order_ref`
+        (a producer that predates the field) and every other event type are
+        successful no-ops. A Task carries no SKU or quantity, so SHORT PICKS ARE
+        NOT MODELLED. A `line_no` that is not an integer between 1 and 2147483647 is a malformed
+        payload: dead-lettered at once.
+
+
+        A transient failure retries the same message with capped backoff (5
+        attempts), then dead-letters it; an undecodable payload is dead-lettered
+        at once; a message that is not a CloudEvent is skipped with a sampled
+        WARN.
+      tags:
+        - name: fulfillment-execution
+          description: Consumed from the fulfillment-execution bounded context.
+      message:
+        $ref: "#/components/messages/FulfillmentTaskCompleted"
 
 components:
   messages:
@@ -289,32 +424,32 @@ components:
 
     ProductClassified:
       name: ProductClassified
-      title: Product Classified
-      summary: A SKU's handling classification (master data) was registered or replaced.
+      title: Product Classified (legacy, backfill only)
+      summary: A SKU's handling classification, re-emitted by the one-shot backfill.
       description: >
-        Raised by the ClassifyProduct use case when a SKU's
-        ProductClassification is registered or replaced (ADR 0009). The
-        classification is SKU-level master data this service owns; publishing
-        it lets siblings keep a local copy instead of polling
-        `GET /products/{sku}/classification` (ADR 0031, which supersedes only
-        the "in-process only" clause of ADR 0024 for this event).
+        LEGACY (ADR 0034). product-master owns product classification; no
+        write path in this service raises this event any more. It is emitted
+        only by the one-shot `republish-product-classifications` command
+        (product-master ADR 0003 stage B): one message per
+        `product_classifications` row, enqueued through the transactional
+        outbox and published by the running pod's relay, on
+        `warehouse.inventory.events` only (dataschema
+        `urn:warehouse:inventory-storage:events:ProductClassified:v1`).
+        product-master's legacy importer turns it into product-master data.
+        The wire contract is unchanged from ADR 0031. Retired at
+        product-master ADR 0003 stage E.
 
 
-        **Published to both topics**, through the transactional outbox in the
-        same transaction as the classification save. CloudEvents `subject` and
-        the Kafka key are the SKU, so reclassifications of one SKU stay
-        ordered on one partition. `data` is `{sku, handling_tags,
-        temperature_class?, dot_hazard_class?}` on both topics (dataschema
-        `urn:warehouse:inventory-storage:events:ProductClassified:v1` on
-        `warehouse.inventory.events`, `...:analytics:ProductClassified:v1` on
-        `warehouse.inventory.analytics`). It is a **full-state replacement**:
-        overwrite your local row; an absent optional field means "none".
-        `handling_tags` is in the aggregate's stable enum order. No PII. This
-        service's own analytics projector ignores it.
+        CloudEvents `subject` and the Kafka key are the SKU. `data` is
+        `{sku, handling_tags, temperature_class?, dot_hazard_class?}`. It is
+        a **full-state replacement**: overwrite your local row; an absent
+        optional field means "none". `handling_tags` is in the stable enum
+        order. No PII. Re-running the backfill re-emits the same states,
+        which is harmless.
       contentType: application/cloudevents+json
       tags:
         - name: product
-          description: Raised by the ProductClassification aggregate.
+          description: Legacy SKU master-data event (backfill only).
       payload:
         $ref: "#/components/schemas/ProductClassifiedEvent"
       examples:
@@ -346,11 +481,118 @@ components:
             subject: SKU-1
             time: "2026-10-06T12:01:00Z"
             datacontenttype: application/json
-            dataschema: urn:warehouse:inventory-storage:analytics:ProductClassified:v1
+            dataschema: urn:warehouse:inventory-storage:events:ProductClassified:v1
             data:
               sku: SKU-1
               handling_tags:
                 - Fragile
+
+    ProductMasterProductClassified:
+      name: ProductMasterProductClassified
+      title: Product Classified (from product-master, consumed)
+      summary: product-master's full-state classification of a SKU, with its product version.
+      description: >
+        CONSUMED, not produced (ADR 0034). Pinned by product-master's
+        `apis/asyncapi.yaml`: type
+        `com.warehouse.wms.product-master.product.ProductClassified`,
+        `source=/warehouse/product-master`, subject and Kafka key = SKU.
+        `data` is the full classification plus `classification_source`
+        (`native` | `legacy-import`) and the product `version`; this service
+        applies a message only when `version` is greater than the version it
+        stores for the SKU. `temperature_class` and `dot_hazard_class` are
+        omitted when unset.
+      contentType: application/cloudevents+json
+      tags:
+        - name: product-master
+          description: Consumed from product-master.
+      payload:
+        $ref: "#/components/schemas/ProductMasterProductClassifiedEvent"
+      examples:
+        - name: hazmatFrozenSku
+          summary: SKU-1 classified Hazmat + TemperatureSensitive (Frozen), DOT class 3, version 3.
+          payload:
+            specversion: "1.0"
+            id: 3f1c2b7a-8d4e-4c55-9a0b-6e2d1f7c8a90
+            source: /warehouse/product-master
+            type: com.warehouse.wms.product-master.product.ProductClassified
+            subject: SKU-1
+            time: "2026-10-06T12:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:product-master:events:ProductClassified:v1
+            data:
+              sku: SKU-1
+              handling_tags:
+                - Hazmat
+                - TemperatureSensitive
+              temperature_class: Frozen
+              dot_hazard_class: 3
+              classification_source: native
+              version: 3
+
+    FulfillmentTaskCompleted:
+      name: FulfillmentTaskCompleted
+      title: Task Completed (from fulfillment-execution, consumed)
+      summary: A station finished a claimed task; a PICK task makes this service confirm the picked line's reservation (or, without a line, the order's on its last pick).
+      description: >
+        CONSUMED, not produced (ADR 0035, ADR 0036). Pinned by fulfillment-execution's
+        `apis/asyncapi.yaml`: type
+        `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`,
+        `source=/warehouse/fulfillment-execution`, subject and Kafka key = task
+        id. This service reads only `task_id`, `task_type`, `order_ref` and
+        `line_no`; every other field (`station_id`, `work_unit_id`,
+        `associate_id`, `duration_seconds`) is ignored. `order_ref` is the
+        additive optional field of ADR 0035 (v1, omitted when empty): the task's
+        order reference, i.e. the OrderId order-management used as `demand_ref`.
+        `line_no` is the additive optional field of ADR 0036 (v1, omitted when
+        unknown): the order line the task was for. A message without
+        `order_ref`, or with any `task_type` other than `PICK`, is a successful
+        no-op; one without `line_no` takes the ADR 0035 counting path.
+      contentType: application/cloudevents+json
+      tags:
+        - name: fulfillment-execution
+          description: Consumed from fulfillment-execution.
+      payload:
+        $ref: "#/components/schemas/FulfillmentTaskCompletedEvent"
+      examples:
+        - name: pickTaskCompletedForLine
+          summary: The PICK task for line 2 of order ORD-1001 completed (per-line path, ADR 0036).
+          payload:
+            specversion: "1.0"
+            id: 7a2d3b4c-5e6f-4071-9b8c-0d1e2f3a4b5c
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted
+            subject: task-8a20
+            time: "2026-10-06T15:01:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:fulfillment-execution:events:TaskCompleted:v1
+            data:
+              task_id: task-8a20
+              station_id: station-03
+              work_unit_id: wu-8a20
+              associate_id: worker-42
+              duration_seconds: 120
+              task_type: PICK
+              order_ref: ORD-1001
+              line_no: 2
+        - name: pickTaskCompleted
+          summary: One PICK task (one order line) of order ORD-1001 completed, from a producer that does not send line_no (counting fallback, ADR 0035).
+          payload:
+            specversion: "1.0"
+            id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted
+            subject: task-8a1f
+            time: "2026-10-06T15:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:fulfillment-execution:events:TaskCompleted:v1
+            data:
+              task_id: task-8a1f
+              station_id: station-03
+              work_unit_id: wu-8a1f
+              associate_id: worker-42
+              duration_seconds: 245
+              task_type: PICK
+              order_ref: ORD-1001
 
     StockReserved:
       name: StockReserved
@@ -493,6 +735,115 @@ components:
               sku: SKU-T2
               requested_quantity: 9
               reason: INSUFFICIENT_USABLE
+
+    TransferReceiptStaged:
+      name: TransferReceiptStaged
+      title: Transfer Receipt Staged
+      summary: A destination site counted goods against a recognized ALLOCATED transfer line.
+      description: >-
+        Raised by the StageTransferReceipt use case (ADR 0033,
+        destination receipt custody — POST /transfers/{transferLineId}/receipt).
+        The transfer_line_id was found in the transfer_allocations ledger
+        with outcome ALLOCATED: a transfer_receipts row (state STAGED,
+        DB-unique on transfer_line_id) now records expected_quantity from
+        the ledger, received_quantity as counted, and the SIGNED variance
+        (received - expected; positive = over, negative = short).
+        Over/short is explicit on the wire, never silently absorbed.
+
+
+        NO usable stock moves at this step — the destination site's
+        usable rises only when the stow completes (TransferStockStowed).
+        An unrecognized scan is NOT this event: it is quarantined as an
+        inventory_exceptions row and publishes nothing that raises
+        availability.
+
+
+        **Integration topic only** (no analytics variant: the Inventory
+        Flow & Accuracy projection has no transfer dimension). Kafka key
+        and CloudEvents `subject` are the transfer_line_id, so a line's
+        stage-then-stow facts stay ordered on one partition (ADR 0021).
+      contentType: application/cloudevents+json
+      tags:
+        - name: stock
+          description: Raised on the destination receipt custody path (ADR 0033).
+      payload:
+        $ref: "#/components/schemas/TransferReceiptStagedEvent"
+      examples:
+        - name: shortReceiptStaged
+          summary: Five of six expected units of SKU-T1 counted at SITE-DEST (short by one).
+          payload:
+            specversion: "1.0"
+            id: 8c2f4e71-a5b3-4c68-d9e0-1f4a7b8c9d21
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged
+            subject: tl-77-1
+            time: "2026-10-06T12:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:TransferReceiptStaged:v1
+            data:
+              transfer_id: tr-77
+              transfer_line_id: tl-77-1
+              destination_site_id: SITE-DEST
+              sku: SKU-T1
+              expected_quantity: 6
+              received_quantity: 5
+              variance: -1
+
+    TransferStockStowed:
+      name: TransferStockStowed
+      title: Transfer Stock Stowed
+      summary: A staged transfer receipt was placed into destination bins — destination usable rose, exactly once.
+      description: >-
+        Raised by the StowTransferStock use case (ADR 0033 — POST
+        /transfers/{transferLineId}/stow): the ONLY path that raises the
+        destination site's usable stock for a transfer. One StockUnit per
+        bin leg was created AT the destination site
+        (NewStockUnitAtSite), every bin verified to belong to that
+        site's custody, the quantities summed exactly to the receipt's
+        received_quantity, and the receipt moved STAGED -> STOWED.
+
+
+        Idempotent at the database level: a replayed stow for a STOWED
+        receipt returns the original outcome and republishes NOTHING —
+        exactly one of these events exists per transfer_line_id.
+
+
+        **Integration topic only** (no analytics variant). Kafka key and
+        CloudEvents `subject` are the transfer_line_id, matching
+        TransferReceiptStaged so a line's facts stay per-line ordered
+        (ADR 0021).
+      contentType: application/cloudevents+json
+      tags:
+        - name: stock
+          description: Raised on the destination stow custody path (ADR 0033).
+      payload:
+        $ref: "#/components/schemas/TransferStockStowedEvent"
+      examples:
+        - name: stowedIntoTwoBins
+          summary: Five units of SKU-T1 placed into two SITE-DEST bins.
+          payload:
+            specversion: "1.0"
+            id: 9d3a5f82-b6c4-4d79-e0f1-2a5b8c9d0e32
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.TransferStockStowed
+            subject: tl-77-1
+            time: "2026-10-06T12:05:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:TransferStockStowed:v1
+            data:
+              transfer_id: tr-77
+              transfer_line_id: tl-77-1
+              destination_site_id: SITE-DEST
+              sku: SKU-T1
+              received_quantity: 5
+              stowed_quantity: 5
+              allocations:
+                - stock_unit_id: su-dest-1
+                  bin_id: BIN-DEST-1
+                  quantity: 3
+                - stock_unit_id: su-dest-2
+                  bin_id: BIN-DEST-2
+                  quantity: 2
 
     ReservationExpired:
       name: ReservationExpired
@@ -899,9 +1250,10 @@ components:
 
     ProductClassifiedEvent:
       description: >
-        CloudEvents envelope for a ProductClassified domain event, on both
-        topics; `dataschema` selects the topic variant, the `data` shape is the
-        same on both.
+        CloudEvents envelope for the legacy ProductClassified event. Since
+        ADR 0034 only the integration-topic (`events`) variant is emitted, by
+        the backfill command; the `analytics` dataschema is still accepted by
+        the encoder's frozen contract but no longer produced.
       allOf:
         - $ref: "#/components/schemas/CloudEventBase"
         - type: object
@@ -945,6 +1297,155 @@ components:
                   minimum: 1
                   maximum: 9
                   description: Top-level US DOT hazard class; present only for a Hazmat classification with one recorded (ADR 0010).
+
+    ProductMasterProductClassifiedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of product-master's ProductClassified as
+        consumed here (not composed from CloudEventBase, whose `source` is
+        this service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events).
+        source:
+          type: string
+          enum: ["/warehouse/product-master"]
+        type:
+          type: string
+          const: "com.warehouse.wms.product-master.product.ProductClassified"
+        subject:
+          type: string
+          description: The SKU (also the Kafka key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:product-master:events:ProductClassified:v1
+        data:
+          type: object
+          required:
+            - sku
+            - handling_tags
+            - classification_source
+            - version
+          properties:
+            sku:
+              type: string
+            handling_tags:
+              type: array
+              minItems: 1
+              description: Stable order Hazmat, Fragile, TemperatureSensitive, Oversized, HighValue.
+              items:
+                type: string
+                enum: [Hazmat, Fragile, TemperatureSensitive, Oversized, HighValue]
+            temperature_class:
+              type: string
+              enum: [Ambient, Chilled, Frozen]
+              description: Present if and only if handling_tags includes TemperatureSensitive.
+            dot_hazard_class:
+              type: integer
+              minimum: 1
+              maximum: 9
+              description: Present only for a Hazmat classification with one recorded.
+            classification_source:
+              type: string
+              enum: [native, legacy-import]
+              description: Stored verbatim as product_classifications.classification_source.
+            version:
+              type: integer
+              format: int64
+              minimum: 1
+              description: product-master's Product.version; applied only when greater than the stored version.
+
+    FulfillmentTaskCompletedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of fulfillment-execution's TaskCompleted v1 as
+        consumed here (not composed from CloudEventBase, whose `source` is this
+        service's own). Only the fields this service reads are listed under
+        `data`; the producer sends more.
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events under consumer `task-completed-confirm-pick`).
+        source:
+          type: string
+          enum: ["/warehouse/fulfillment-execution"]
+        type:
+          type: string
+          const: "com.warehouse.wes.fulfillment-execution.task.TaskCompleted"
+        subject:
+          type: string
+          description: The task id (also the Kafka key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:fulfillment-execution:events:TaskCompleted:v1
+        data:
+          type: object
+          required:
+            - task_id
+          properties:
+            task_id:
+              type: string
+            task_type:
+              type: string
+              enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL]
+              description: Only PICK is acted on; omitted by the producer when the task could not be found.
+            order_ref:
+              type: string
+              description: >
+                The completed task's order reference = the OrderId order-management
+                reserved against (this service's reservation `demand_ref`). Every
+                PICK task of an order (one per order line) carries the same value.
+                Additive and optional (ADR 0035): omitted when empty, in which case
+                nothing is counted or confirmed.
+            line_no:
+              type: integer
+              minimum: 1
+              maximum: 2147483647
+              description: >
+                The order line this task was for (the `line_no` the reservation of
+                that line was made with). Additive and optional (ADR 0036): omitted
+                when unknown. When present, exactly the ACTIVE reservation(s) of
+                (`order_ref`, `line_no`) are confirmed and nothing is counted; when
+                absent the ADR 0035 last-pick counting applies. A value outside
+                1..2147483647 (the 32-bit line_no column) or a non-integer is a
+                malformed payload (dead-lettered).
 
     StockReservedEvent:
       description: >
@@ -1394,3 +1895,129 @@ components:
                     holds the SKU but not enough usable quantity.
                     IDEMPOTENCY_CONFLICT: the line id was replayed with a
                     different payload; the original decision stands.
+
+    TransferReceiptStagedEvent:
+      description: CloudEvents envelope for a TransferReceiptStaged domain event (ADR 0033).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for TransferReceiptStaged.
+              const: "com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:TransferReceiptStaged:v1
+              pattern: "^urn:warehouse:inventory-storage:events:TransferReceiptStaged:v1$"
+            data:
+              type: object
+              description: >-
+                Business payload for TransferReceiptStaged. The receipt is
+                STAGED: counted, not yet placed; no usable stock moved.
+              required:
+                - transfer_id
+                - transfer_line_id
+                - destination_site_id
+                - sku
+                - expected_quantity
+                - received_quantity
+                - variance
+              properties:
+                transfer_id:
+                  type: string
+                  description: The planning context's transfer (saga) id.
+                transfer_line_id:
+                  type: string
+                  description: The transfer line this receipt stages; DB-unique in transfer_receipts.
+                destination_site_id:
+                  type: string
+                  description: The receiving site whose dock counted the goods.
+                sku:
+                  type: string
+                  description: The stock keeping unit counted.
+                expected_quantity:
+                  type: integer
+                  minimum: 1
+                  description: What the transfer_allocations ledger promised (requested_quantity).
+                received_quantity:
+                  type: integer
+                  minimum: 1
+                  description: What was physically counted at the dock.
+                variance:
+                  type: integer
+                  description: >-
+                    SIGNED received - expected. Positive = over-receipt,
+                    negative = short-receipt, 0 = exact. Explicit, never
+                    silently absorbed.
+
+    TransferStockStowedEvent:
+      description: CloudEvents envelope for a TransferStockStowed domain event (ADR 0033).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for TransferStockStowed.
+              const: "com.warehouse.wms.inventory-storage.stock.TransferStockStowed"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:TransferStockStowed:v1
+              pattern: "^urn:warehouse:inventory-storage:events:TransferStockStowed:v1$"
+            data:
+              type: object
+              description: >-
+                Business payload for TransferStockStowed. The destination
+                site's usable stock rose by exactly received_quantity,
+                once, through the StockUnits listed in allocations.
+              required:
+                - transfer_id
+                - transfer_line_id
+                - destination_site_id
+                - sku
+                - received_quantity
+                - stowed_quantity
+                - allocations
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                destination_site_id:
+                  type: string
+                  description: The site whose custody the new StockUnits were created in.
+                sku:
+                  type: string
+                received_quantity:
+                  type: integer
+                  minimum: 1
+                  description: The receipt's counted quantity.
+                stowed_quantity:
+                  type: integer
+                  minimum: 1
+                  description: Total quantity placed (equals received_quantity).
+                allocations:
+                  type: array
+                  minItems: 1
+                  description: The destination StockUnits created, with the bin each was placed into.
+                  items:
+                    type: object
+                    required:
+                      - stock_unit_id
+                      - bin_id
+                      - quantity
+                    properties:
+                      stock_unit_id:
+                        type: string
+                      bin_id:
+                        type: string
+                      quantity:
+                        type: integer
+                        minimum: 1

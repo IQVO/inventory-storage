@@ -90,8 +90,14 @@ carry it: `warehouse.inventory.events` (integration — the contract other
 services build against) and `warehouse.inventory.analytics` (internal,
 consumed only by this service's analytics projector). `LocationRecorded` is
 in-process only (no consumer; decided 2026-10-06). `ProductClassified` (entity
-`product`, SKU master data) is published on both topics since 2026-10-06 — see
-[ADR 0031](/docs/adr/0031).
+`product`, SKU master data) is **legacy** since [ADR 0034](/docs/adr/0034):
+product-master owns classification, no write path raises the event, and only
+the one-shot `republish-product-classifications` backfill emits it, on the
+integration topic only, for product-master's legacy importer (it was published
+on both topics per write from 2026-10-06 under [ADR 0031](/docs/adr/0031)).
+This service also **consumes** product-master's
+`com.warehouse.wms.product-master.product.ProductClassified` from
+`warehouse.product-master.events` into its local classification copy.
 
 ### Reservation entity
 
@@ -101,6 +107,8 @@ in-process only (no consumer; decided 2026-10-06). `ProductClassified` (entity
 | **ReservationRevoked** | `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | `sku`, `quantity`, `demand_ref` | `reservation_id`, `sku` |
 | **TransferStockAllocated** | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated` | `transfer_id`, `transfer_line_id`, `origin_site_id`, `reservation_id`, `sku`, `quantity`, `allocations[]`, `expires_at` (ADR-0030; key = reservation id) | — |
 | **TransferStockAllocationRejected** | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected` | `transfer_id`, `transfer_line_id`, `origin_site_id`, `sku`, `requested_quantity`, `reason` (closed set; key = transfer_line_id) | — |
+| **TransferReceiptStaged** | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | `transfer_id`, `transfer_line_id`, `destination_site_id`, `sku`, `expected_quantity`, `received_quantity`, `variance` (signed; ADR-0033; key = transfer_line_id) | — |
+| **TransferStockStowed** | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | `transfer_id`, `transfer_line_id`, `destination_site_id`, `sku`, `received_quantity`, `stowed_quantity`, `allocations[]` (ADR-0033; key = transfer_line id; the only event that raises destination usable) | — |
 | ReservationExpired | `com.warehouse.wms.inventory-storage.reservation.ReservationExpired` | — | `reservation_id`, `sku` (raised on lazy read, see [Domain Events](/docs/ddd/domain-events#lazy-expiry-no-sweeper-resolved-at-the-next-read)) |
 | StockPicked | `com.warehouse.wms.inventory-storage.reservation.StockPicked` | — | `sku`, `reservation_id`, `quantity` |
 
@@ -124,7 +132,7 @@ in-process only (no consumer; decided 2026-10-06). `ProductClassified` (entity
 
 | Event | `type` | Integration topic `data` | Analytics topic `data` |
 | --- | --- | --- | --- |
-| **ProductClassified** | `com.warehouse.wms.inventory-storage.product.ProductClassified` | `sku`, `handling_tags[]`, `temperature_class?`, `dot_hazard_class?` (ADR-0031; key = SKU; full-state replacement, optional fields omitted when unset) | same shape (ignored by this service's projector) |
+| **ProductClassified** (legacy) | `com.warehouse.wms.inventory-storage.product.ProductClassified` | `sku`, `handling_tags[]`, `temperature_class?`, `dot_hazard_class?` (ADR-0031; key = SKU; full-state replacement, optional fields omitted when unset); emitted only by the one-shot backfill since ADR-0034 | — (no longer published here since ADR-0034) |
 
 ## The two integration events in full
 

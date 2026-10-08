@@ -51,6 +51,10 @@ Naming the boundary is as important as naming the capability. This service:
   `fulfillment-execution` (task lifecycle) and `wes-work-planning` (release
   and flow balance);
 - **does not plan labour or headcount** — that is `workforce-management`;
+- **does not own product master data** — SKU handling classification (hazmat,
+  temperature class, DOT hazard class) belongs to `product-master`; this
+  service keeps a local copy of it for its stow placement and DOT segregation
+  rules ([ADR 0034](/docs/adr/0034));
 - **does not model the physical building** (site, area, zone, aisle, bay,
   level, position) — that is `facility-layout`, a separate Generic subdomain;
 - **does not decide what to buy or forecast demand** — that is upstream of the
@@ -71,6 +75,7 @@ flowchart LR
   subgraph WMS["WMS tier — what & where"]
     INV["inventory-storage<br/>(Core)<br/>stock truth"]
     OM["order-management<br/>order intake · allocation"]
+    PM["product-master<br/>(Supporting) — SKU master data"]
   end
   subgraph WES["WES tier — when & in what order"]
     WP["wes-work-planning<br/>(Core) — the conductor"]
@@ -86,23 +91,26 @@ flowchart LR
   WM -- "warehouse.workforce.events" --> WP
   FE -- "warehouse.fulfillment.events" --> WP
   FL -- "warehouse.facility.events<br/>zone classification cache" --> INV
+  PM -- "warehouse.product-master.events<br/>ProductClassified local copy" --> INV
   OM -. "sync REST<br/>reserve / revoke" .-> INV
 
   classDef core fill:#0f766e,stroke:#134e4a,color:#fff;
   classDef supp fill:#7c3aed,stroke:#4c1d95,color:#fff;
   classDef gen fill:#64748b,stroke:#334155,color:#fff;
   class INV,WP,FE,OM core;
-  class WM supp;
+  class WM,PM supp;
   class FL gen;
 ```
 
 Solid edges are Kafka topics; the dotted edge is a synchronous REST call
 into this service (`order-management` is the only command caller among the
-sibling contexts; `wes-work-planning`, `fulfillment-execution`,
-`network-fulfillment` and `warehouse-ops-agent` only read). This service consumes exactly one topic —
-`facility-layout`'s — and only to cache zone classifications for its stow
-placement rules (ADR 0013). See [the context map](/docs/ecosystem/context-map)
-for every wire, including the other synchronous callers.
+sibling contexts; `network-fulfillment` and `warehouse-ops-agent` only
+read). Two topics feed this service's stow rules: `facility-layout`'s, cached
+for zone attributes (ADR 0013), and `product-master`'s, kept as the local
+product classification copy (ADR 0034). See
+[the context map](/docs/ecosystem/context-map) for every wire, including the
+other consumed topics (`TaskCompleted`, ADR 0035; network-inventory-planning's
+transfer commands, ADR 0030) and the synchronous callers.
 
 ## Where to go next
 

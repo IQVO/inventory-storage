@@ -101,6 +101,18 @@ for the working recipe (unique topic per test, one shared container per
 package, explicit `CreateTopics` + poll for the partition leader before
 the first read/write).
 
+Start the broker ONLY through the shared helper
+`internal/testsupport/kafkatc` (`-tags=integration`): it boots
+`confluent-local` via testcontainers and returns once the GROUP COORDINATOR
+answers. Do not call the testcontainers Kafka module directly — on a cold
+broker the first group request gets `[15] GroupCoordinatorNotAvailable` and
+kafka-go then sleeps a fixed 5 s `JoinGroupBackoff` per attempt, which
+exhausts a test's wait window on a loaded runner (the cause of the
+2026-10-06 flakes). The fitness test
+`TestKafkaIntegrationTestsUseTestcontainers` enforces this. Make fixtures
+`-count`-safe too: suffix ids per invocation and scope outbox assertions to
+the test's own rows, never global counts.
+
 ## Verify before opening the PR
 
 ```bash

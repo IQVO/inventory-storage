@@ -2,7 +2,7 @@
 title: Domain Message Flow
 sidebar_label: Domain Message Flow
 sidebar_position: 6
-description: ddd-crew Domain Message Flow Modelling for inventory-storage — four business scenarios with every command, query and event between contexts, numbered, using only real routes, MCP tools and CloudEvents types.
+description: ddd-crew Domain Message Flow Modelling for inventory-storage — five business scenarios with every command, query and event between contexts, numbered, using only real routes, MCP tools and CloudEvents types.
 ---
 
 # Domain Message Flow
@@ -17,19 +17,21 @@ Responses are folded into notes so that every arrow is a domain message.
 
 ## 1. Order allocation reserves usable stock
 
-`order-management` takes in an order, checks handling classification, then
-reserves each line. Work Planning learns about the reservations from events,
-never by asking.
+`order-management` takes in an order, checks handling classification against
+its own local copy of product-master's `ProductClassified` (no call to this
+service since its ADR 0036), then reserves each line. Work Planning learns
+about the reservations from events, never by asking.
 
 ```mermaid
 sequenceDiagram
     autonumber
+    participant PM as product-master
     participant OM as order-management
     participant INV as inventory-storage
     participant WP as wes-work-planning
-    OM->>INV: qry: GET /products/{sku}/classification
-    Note over OM,INV: 200 handling tags, temperature class, DOT class, or 404 unclassified
-    OM->>INV: cmd: ReserveStock POST /reservations with Idempotency-Key per order line
+    PM-)OM: evt: com.warehouse.wms.product-master.product.ProductClassified on warehouse.product-master.events
+    Note over OM: local classification copy read once per line at intake, fail-open when unclassified
+    OM->>INV: cmd: ReserveStock POST /reservations with Idempotency-Key per order line (demandRef, optional lineNo, ADR 0036)
     Note over INV: replay guard, then reserve first-fit against usable
     Note over OM,INV: 201 reservation with allocations and pick locations, or 409 insufficient-usable
     INV-)WP: evt: com.warehouse.wms.inventory-storage.reservation.StockReserved on warehouse.inventory.events
@@ -38,7 +40,8 @@ sequenceDiagram
 ```
 
 Source: `order-management/internal/application/usecases/receive_order.go`,
-`allocation.go`, `internal/adapters/outbound/inventorystorage/client.go`;
+`allocation.go`, `internal/adapters/outbound/inventorystorage/client.go`,
+`internal/adapters/outbound/productclassificationcopy/postgres.go`;
 this repo's `internal/adapters/inbound/http/server.go`,
 `internal/application/usecases/reserve_stock.go`,
 `internal/adapters/outbound/kafka/publisher.go`;
@@ -91,12 +94,13 @@ sequenceDiagram
     participant IC as Inventory control
     participant INV as inventory-storage
     participant PJ as inventory-projector
+    participant PM as product-master
     FL-)INV: evt: com.warehouse.wms.facility-layout.zone.ZoneRegistered on warehouse.facility.events
     FL-)INV: evt: com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered on warehouse.facility.events
     Note over INV: facility location cache maps slot to zone, hazmat and temperature class
     IC->>INV: cmd: RegisterBin PUT /bins/{binId}
-    IC->>INV: cmd: ClassifyProduct PUT /products/{sku}/classification
-    Note over INV: evt: com.warehouse.wms.inventory-storage.product.ProductClassified on warehouse.inventory.events and warehouse.inventory.analytics (ADR 0031), no consumer yet, the projector ignores it
+    PM-)INV: evt: com.warehouse.wms.product-master.product.ProductClassified on warehouse.product-master.events
+    Note over INV: local classification copy, version-guarded (ADR 0034), PUT /products/{sku}/classification answers 410
     IC->>INV: cmd: ReceiveStock POST /stock/receive
     INV-)PJ: evt: com.warehouse.wms.inventory-storage.stock.StockReceived on warehouse.inventory.analytics
     IC->>INV: cmd: StowStock POST /stock/stow
@@ -105,7 +109,7 @@ sequenceDiagram
 ```
 
 Source: `internal/adapters/outbound/facilitycache/consumer.go`,
-`internal/application/usecases/register_bin.go`, `classify_product.go`,
+`internal/application/usecases/register_bin.go`, `apply_product_classification.go`,
 `receive_stock.go`, `stow_stock.go`, `internal/adapters/outbound/kafka/analytics_publisher.go`.
 "Inventory control" is whoever drives these routes — an operator or the
 `e2e-tests` warehouse-day simulator; no sibling context does.
@@ -147,3 +151,41 @@ Source: `network-fulfillment/internal/adapters/outbound/inventoryclient/client.g
 binaries, drawn separately because they talk to it only through the
 analytics topic. Omitted: the overage branch (no `ItemUnlocated`) and the
 MCP report tool.
+
+## 5. A completed pick confirms exactly its own line's reservation
+
+The physical pick is reported by `fulfillment-execution`, one PICK task per order
+**line**, every one carrying the order's reference and (since ADR 0036) the line
+number; this context turns **each** of them into the decrement of that line's
+reserved stock without anyone calling it. The reservations were made in scenario 1
+with `demandRef` = the OrderId and `lineNo` = the order line.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant WP as wes-work-planning
+    participant FE as fulfillment-execution
+    participant INV as inventory-storage
+    participant PJ as inventory-projector
+    WP-)FE: evt: com.warehouse.wes.work-planning.workunit.WorkReleased on warehouse.work-planning.events (one per order line, carries line_no)
+    Note over FE: One PICK task per line, its order reference is the OrderId, it remembers the line_no
+    loop each line's PICK task, in any order
+        FE-)INV: evt: com.warehouse.wes.fulfillment-execution.task.TaskCompleted on warehouse.fulfillment.events (order_ref, line_no)
+        Note over INV: PICK with order_ref and line_no: claim the CloudEvents id and ConfirmPick the ACTIVE reservation of (order_ref, line_no), one transaction (ADR 0036)
+        INV-)PJ: evt: com.warehouse.wms.inventory-storage.reservation.StockPicked on warehouse.inventory.analytics (for that line only)
+    end
+    Note over INV: other lines stay ACTIVE until their own pick arrives, expired, revoked or already picked reservations are skipped, no reservations is a no-op
+    Note over INV: fallback (ADR 0035): an event without line_no, or reservations without line_no, are counted per order and confirmed on the LAST pick
+```
+
+Source: this repo's `internal/adapters/inbound/kafka/task_completed_consumer.go`,
+`internal/application/usecases/confirm_picks_for_order.go`, `confirm_pick.go`;
+`fulfillment-execution`'s `TaskCompleted` publisher (it adds the optional
+`order_ref` and `line_no`). The consumer is off by default
+(`TASK_COMPLETED_CONSUMER_MODE`). A `Reservation` stores the order line it was
+made for (`line_no`, sent by order-management as `lineNo`), so lines 1 and 3 being
+picked confirms exactly lines 1 and 3 and leaves line 2 `ACTIVE`. Reservations
+created before `line_no` existed, and `TaskCompleted` events from a producer that
+does not send it, keep the older counting (confirm on the order's last pick, never
+early). Short picks are not modelled, because a Task carries no SKU or quantity.
+Omitted: the DLQ and the redelivery branch.

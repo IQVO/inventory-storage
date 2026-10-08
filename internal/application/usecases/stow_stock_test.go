@@ -153,9 +153,9 @@ func TestStowStock_EventPublishFails_PropagatesError(t *testing.T) {
 // facility-layout's location-classification lookup.
 // --------------------------------------------------------------------
 
-// classifyAndSave registers a ProductClassification directly through the
-// repo, bypassing ClassifyProduct's own event publish, so these tests stay
-// focused on StowStock's behaviour.
+// classifyAndSave seeds a ProductClassification directly into the local
+// copy (as a legacy row), so these tests stay focused on StowStock's
+// behaviour; how the copy is fed (ADR 0034) is tested elsewhere.
 func classifyAndSave(t *testing.T, e env, sku shared.SKU, tags []product.HandlingTag, temp product.TemperatureClass) {
 	t.Helper()
 	classifyAndSaveWithDOT(t, e, sku, tags, temp, 0)

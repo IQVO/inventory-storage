@@ -117,14 +117,14 @@ const sidebar: SidebarsConfig = {
         {
           type: "doc",
           id: "api-reference/rest/classify-product",
-          label: "Register or replace a SKU's product classification",
-          className: "api-method put",
+          label: "Retired - classify the SKU in product-master instead (410)",
+          className: "menu__list-item--deprecated api-method put",
         },
         {
           type: "doc",
           id: "api-reference/rest/get-product-classification",
-          label: "Get a SKU's current product classification",
-          className: "api-method get",
+          label: "Get a SKU's product classification (deprecated local copy)",
+          className: "menu__list-item--deprecated api-method get",
         },
       ],
     },
@@ -147,6 +147,28 @@ const sidebar: SidebarsConfig = {
           id: "api-reference/rest/get-readyz",
           label: "Readiness probe",
           className: "api-method get",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Transfers",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/transfers",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/stage-transfer-receipt",
+          label: "Stage a destination transfer receipt (count an arrival)",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/stow-transfer-stock",
+          label: "Stow a staged transfer receipt into destination bins",
+          className: "api-method post",
         },
       ],
     },

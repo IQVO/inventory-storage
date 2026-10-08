@@ -35,17 +35,22 @@ type Server struct {
 	GetUsable                  *usecases.GetUsable
 	GetReservationsByDemandRef *usecases.GetReservationsByDemandRef
 	RunCycleCount              *usecases.RunCycleCount
-	ClassifyProduct            *usecases.ClassifyProduct
 	// RegisterBin backs PUT /bins/{binId}: declarative, idempotent bin
 	// registration/resize by inventory control (ADR 0025).
 	RegisterBin *usecases.RegisterBin
 	// GetBin backs GET /bins/{binId}: capacity/occupancy read.
 	GetBin *usecases.GetBin
-	// Classifications backs the read-only GET endpoint. It is the same
-	// port ClassifyProduct writes through; there is no dedicated
-	// "GetProductClassification" use case because the read is a direct,
-	// no-invariant repo lookup — consistent with how GetUsable is the
-	// only use case that reads without also writing.
+	// StageTransferReceipt backs POST /transfers/{transferLineId}/receipt
+	// (ADR 0031): destination scan -> STAGED receipt or quarantine.
+	StageTransferReceipt *usecases.StageTransferReceipt
+	// StowTransferStock backs POST /transfers/{transferLineId}/stow
+	// (ADR 0031): STAGED receipt -> destination StockUnits (the only
+	// path that raises destination usable).
+	StowTransferStock *usecases.StowTransferStock
+	// Classifications backs the deprecated read-only GET endpoint: the
+	// local copy of product-master's classifications (ADR 0034). There is
+	// no dedicated use case because the read is a direct, no-invariant
+	// repo lookup.
 	Classifications ports.ProductClassificationRepo
 	// IdempotencyPool, when non-nil, wires RequireIdempotencyKey onto
 	// POST /stock/receive and POST /reservations (see idempotency.go) —
@@ -151,8 +156,23 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	r.Put("/bins/{binId}", s.handleRegisterBin)
 	r.Get("/bins/{binId}", s.handleGetBin)
 	r.Post("/bins/{binId}/cycle-count", s.handleRunCycleCount)
-	r.Put("/products/{sku}/classification", s.handleClassifyProduct)
+	r.Put("/products/{sku}/classification", s.handleClassificationMoved)
 	r.Get("/products/{sku}/classification", s.handleGetProductClassification)
+
+	// The two destination transfer-custody endpoints (ADR 0031), both
+	// behind RequireIdempotencyKey when a transactional pool is wired:
+	// a stage creates a receipt (server-correlated state) and a stow
+	// creates destination StockUnits, so a lost response plus a client
+	// retry must never double-apply. The use cases are idempotent on
+	// transfer_line_id at the DATABASE level too — the middleware is
+	// defense in depth that also replays the original HTTP response.
+	if s.IdempotencyPool != nil {
+		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/transfers/{transferLineId}/receipt", s.handleStageTransferReceipt)
+		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/transfers/{transferLineId}/stow", s.handleStowTransferStock)
+	} else {
+		r.Post("/transfers/{transferLineId}/receipt", s.handleStageTransferReceipt)
+		r.Post("/transfers/{transferLineId}/stow", s.handleStowTransferStock)
+	}
 
 	return r
 }
@@ -276,7 +296,14 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.ReserveStock.Execute(r.Context(), sku, qty, req.DemandRef)
+	// lineNo is optional (ADR 0036); when given it must be a line number,
+	// i.e. between 1 and 2147483647 (the 32-bit line_no column).
+	if req.LineNo != nil && !reservation.ValidLineNo(*req.LineNo) {
+		writeProblem(w, http.StatusBadRequest, problemInfo{"invalid-line-no", "lineNo must be between 1 and 2147483647"}, "lineNo must be an integer between 1 and 2147483647 when present", r.URL.Path)
+		return
+	}
+
+	res, err := s.ReserveStock.ExecuteForLine(r.Context(), sku, qty, req.DemandRef, req.LineNo)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -446,69 +473,25 @@ func (s *Server) handleGetBin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toBinResponse(bin))
 }
 
-func (s *Server) handleClassifyProduct(w http.ResponseWriter, r *http.Request) {
-	skuParam := chi.URLParam(r, "sku")
-	sku, err := shared.NewSKU(skuParam)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
+// productMasterClassificationEndpoint is where SKU classifications are
+// written since ADR 0034: product-master's REST API.
+const productMasterClassificationEndpoint = "product-master's PUT /products/{sku}/classification"
 
-	var req classifyProductRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-
-	tags := make([]product.HandlingTag, 0, len(req.HandlingTags))
-	for _, raw := range req.HandlingTags {
-		tag, err := product.ParseHandlingTag(raw)
-		if err != nil {
-			writeError(w, r, err)
-			return
-		}
-		tags = append(tags, tag)
-	}
-
-	var temperatureClass product.TemperatureClass
-	if req.TemperatureClass != "" {
-		temperatureClass, err = product.ParseTemperatureClass(req.TemperatureClass)
-		if err != nil {
-			writeError(w, r, err)
-			return
-		}
-	}
-
-	var dotHazardClass product.DOTHazardClass
-	if req.DOTHazardClass != nil {
-		dotHazardClass, err = product.ParseDOTHazardClass(*req.DOTHazardClass)
-		if err != nil {
-			writeError(w, r, err)
-			return
-		}
-	}
-
-	existing, err := s.Classifications.FindBySKU(r.Context(), sku)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	c, err := s.ClassifyProduct.Execute(r.Context(), sku, tags, temperatureClass, dotHazardClass)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	// 201 Created for a first-time classification (this SKU had none
-	// before this call), 200 OK when replacing an existing one — the same
-	// create-vs-replace distinction PUT semantics call for.
-	status := http.StatusOK
-	if existing == nil {
-		status = http.StatusCreated
-	}
-	writeJSON(w, status, toProductClassificationResponse(c))
+// handleClassificationMoved backs the retired PUT /products/{sku}/classification:
+// product-master owns product classification (ADR 0034, product-master ADR
+// 0003 stage C), so every write here is a 410 Gone pointing at the new
+// owner. The body is not read and nothing is written.
+func (s *Server) handleClassificationMoved(w http.ResponseWriter, r *http.Request) {
+	writeProblem(w, http.StatusGone,
+		problemInfo{"classification-moved", "Product classification has moved to product-master"},
+		"product classification is owned by product-master; classify this SKU with "+productMasterClassificationEndpoint+" (inventory-storage keeps a read-only local copy)",
+		r.URL.Path)
 }
 
+// handleGetProductClassification backs the DEPRECATED
+// GET /products/{sku}/classification, served from the local copy of
+// product-master's classifications (ADR 0034). Removed at product-master
+// ADR 0003 stage E.
 func (s *Server) handleGetProductClassification(w http.ResponseWriter, r *http.Request) {
 	skuParam := chi.URLParam(r, "sku")
 	sku, err := shared.NewSKU(skuParam)
@@ -553,6 +536,7 @@ func toReservationResponse(res *reservation.Reservation) reservationResponse {
 		SKU:         res.SKU().String(),
 		Quantity:    res.Quantity().Int(),
 		DemandRef:   res.DemandRef(),
+		LineNo:      res.LineNo(),
 		Status:      string(res.Status()),
 		Allocations: allocations,
 		CreatedAt:   res.CreatedAt().Format(timeFormat),

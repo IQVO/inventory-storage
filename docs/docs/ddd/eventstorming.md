@@ -47,10 +47,9 @@ flowchart LR
     CACHE["Facility location cache"]:::readmodel
     RB["RegisterBin"]:::command
     BIN["Bin"]:::aggregate
-    CP["ClassifyProduct"]:::command
+    PM["product-master<br/>ProductClassified, ADR 0034"]:::external
+    CP["ApplyProductClassification"]:::command
     PC["ProductClassification"]:::aggregate
-    PCE["ProductClassified"]:::event
-    OUT["Outbox rows, both topics<br/>warehouse.inventory.events<br/>warehouse.inventory.analytics<br/>ADR 0031"]:::external
     RS["ReceiveStock"]:::command
     SRE["StockReceived"]:::event
     SS["StowStock"]:::command
@@ -65,7 +64,7 @@ flowchart LR
 
     FL --> ZE --> CACHE
     IC --> RB --> BIN
-    IC --> CP --> PC --> PCE --> OUT
+    PM --> CP --> PC --> PLC
     IC --> RS --> SRE
     IC --> SS --> PLC
     CACHE --> PLC
@@ -88,11 +87,11 @@ flowchart LR
     classDef decided fill:#a9dfbf,stroke:#1e8449,color:#000
 ```
 
-Source: `internal/application/usecases/register_bin.go`, `classify_product.go`,
+Source: `internal/application/usecases/register_bin.go`, `apply_product_classification.go`,
 `receive_stock.go`, `stow_stock.go`, `internal/adapters/outbound/facilitycache/consumer.go`,
+`internal/adapters/inbound/kafka/product_master_consumer.go`,
 `internal/domain/product/segregation.go`,
-`internal/adapters/outbound/kafka/publisher.go` and `analytics_publisher.go`
-(`ProductClassified`).
+`internal/adapters/outbound/kafka/publisher.go` and `analytics_publisher.go`.
 Omitted: the rejection paths (they raise no event) and the HTTP fallback
 lookup.
 
@@ -104,7 +103,7 @@ flowchart LR
     PK["Picker or simulator"]:::actor
     AG["MCP host / agent"]:::actor
     RSV["ReserveStock"]:::command
-    RG["Replay guard<br/>same demandRef, SKU, quantity"]:::policy
+    RG["Replay guard<br/>same demandRef, SKU, quantity, line (when sent)"]:::policy
     LE["Lazy expiry on every read"]:::policy
     RES["Reservation"]:::aggregate
     SU["StockUnit"]:::aggregate
@@ -119,9 +118,12 @@ flowchart LR
     UI["Usable inventory per SKU"]:::readmodel
     RBD["Reservations by demandRef"]:::readmodel
     FE["fulfillment-execution"]:::external
+    TCE["TaskCompleted<br/>task_type PICK, order_ref, line_no"]:::event
+    CPO["ConfirmPicksForOrder<br/>dedupe on CloudEvents id, per-line confirm (counter only as fallback), one UnitOfWork"]:::command
     H5["Decided 2026-10-06: lazy expiry kept (ADR 0003)<br/>no sweeper; an unread expired hold<br/>keeps stock until read"]:::decided
     H6["Replay guard is best-effort,<br/>concurrent first attempts can both pass"]:::hotspot
-    H7["Decided 2026-10-06: confirm-pick is event-driven<br/>pick-completion event, no sync call (ADR 0032, Proposed)<br/>blocked on fields in fulfillment-execution / wes-work-planning"]:::decided
+    H7["Decided 2026-10-07: confirm-pick is event-driven and PER LINE<br/>Reservation stores line_no, TaskCompleted carries it (ADR 0036)<br/>ADR 0035 last-pick counting stays as the fallback"]:::decided
+    H9["Short picks are not modelled<br/>a Task carries no SKU or quantity (ADR 0035)"]:::hotspot
 
     OM --> RSV --> RG --> RES
     RES --> SU
@@ -132,7 +134,8 @@ flowchart LR
     REV --> RES
     RES --> RR --> WP
     PK --> CPK --> LE
-    FE -.->|"pick-completion event<br/>planned, ADR 0032"| CPK
+    FE --> TCE --> CPO
+    CPO -->|"line_no: only that line's ACTIVE reservation; no line_no: each ACTIVE one on the order's LAST pick"| CPK
     CPK --> RES
     CPK --> BIN
     RES --> SP
@@ -141,7 +144,8 @@ flowchart LR
     RES --> RBD
     LE -.- H5
     RG -.- H6
-    CPK -.- H7
+    CPO -.- H7
+    CPO -.- H9
 
     classDef actor fill:#fff59d,stroke:#b59f00,color:#000,font-size:11px
     classDef command fill:#4aa3df,stroke:#1f6f9f,color:#000
@@ -155,7 +159,8 @@ flowchart LR
 ```
 
 Source: `internal/application/usecases/reserve_stock.go`,
-`revoke_reservation.go`, `confirm_pick.go`, `reservation_expiry.go`,
+`revoke_reservation.go`, `confirm_pick.go`, `confirm_picks_for_order.go`,
+`internal/adapters/inbound/kafka/task_completed_consumer.go`, `reservation_expiry.go`,
 `get_usable.go`, `get_reservations_by_demand_ref.go`,
 `internal/domain/reservation/reservation.go`, `internal/adapters/inbound/mcp/tools.go`.
 Omitted: the analytics copies of the events and the 409 paths.
@@ -207,11 +212,12 @@ Omitted: the clean-count branch (only `CycleCountCompleted` with
 | Sticky | Kind | Code evidence |
 | --- | --- | --- |
 | Inventory control, Picker or simulator, MCP host / agent | Actor | REST callers of `PUT /bins/{binId}`, `POST /stock/*`, `POST /bins/{binId}/cycle-count`, `POST /reservations/{id}/confirm-pick`; MCP `revoke_reservation` |
-| RegisterBin, ClassifyProduct, ReceiveStock, StowStock, ReserveStock, RevokeReservation, ConfirmPick, RunCycleCount | Command | `internal/application/usecases/*.go`, routed in `internal/adapters/inbound/http/server.go` |
+| RegisterBin, ApplyProductClassification (Kafka, ADR 0034), ReceiveStock, StowStock, ReserveStock, RevokeReservation, ConfirmPick, ConfirmPicksForOrder (Kafka, ADR 0035), RunCycleCount | Command | `internal/application/usecases/*.go`, routed in `internal/adapters/inbound/http/server.go` |
 | StockUnit, Bin, Reservation, ProductClassification | Aggregate | `internal/domain/stock`, `location`, `reservation`, `product` |
 | StockReceived, ItemStowed, LocationRecorded, StockReserved, ReservationRevoked, ReservationExpired, StockPicked, ItemUnlocated, CycleCountCompleted, DiscrepancyDetected | Domain Event | `internal/domain/shared/events.go` |
 | ProductClassified | Domain Event | `internal/domain/product/classification.go` |
 | ZoneRegistered, LocationSlotRegistered, LocationSlotDecommissioned | Domain Event (external) | consumed in `internal/adapters/outbound/facilitycache/consumer.go` |
+| TaskCompleted | Domain Event (external) | consumed in `internal/adapters/inbound/kafka/task_completed_consumer.go` (ADR 0035) |
 | Placement check | Policy | `StowStock.checkPlacement` |
 | Same-bin DOT segregation | Policy | `StowStock.checkSegregation`, `product.Incompatible` |
 | Replay guard | Policy | `ReserveStock.activeReservationFor`, `isReplayOf` |
@@ -231,8 +237,9 @@ Omitted: the clean-count branch (only `CycleCountCompleted` with
 | H1 | A bin id is never validated against facility-layout's slot catalogue | [Context Map](/docs/ecosystem/context-map), "What is still not built" |
 | H2 | `Fragile`, `Oversized`, `HighValue` carry no placement rule | [Context Map](/docs/ecosystem/context-map); ADR 0009 |
 | H3 | **Decided 2026-10-06: kept permissive** (ADR 0013/0020) — the binary default `LOCATION_LOOKUP_MODE=permissive` stays: a cold facility cache would reject every receipt, and the cluster already injects `kafka` | `cmd/inventory/main.go` `buildLocationLookup`; ADR 0013, ADR 0020 |
-| H4 | ~~`ProductClassified` is raised but never published~~ **Resolved 2026-10-06**: published through the outbox on both topics (ADR 0031); `LocationRecorded` stays in-process (no consumer) | [ADR 0031](/docs/adr/0031), [Domain Events](./domain-events.md) |
+| H4 | ~~`ProductClassified` is raised but never published~~ **Resolved 2026-10-06**: published through the outbox on both topics (ADR 0031); `LocationRecorded` stays in-process (no consumer). **Superseded by ADR 0034**: product-master owns classification; this service's `ProductClassified` is now emitted only by the one-shot backfill | [ADR 0031](/docs/adr/0031), [ADR 0034](/docs/adr/0034), [Domain Events](./domain-events.md) |
 | H5 | **Decided 2026-10-06: kept** (ADR 0003) — no background sweeper for timed-out reservations; expiry stays lazy | [Domain Events](./domain-events.md#lazy-expiry-no-sweeper-resolved-at-the-next-read); ADR 0003 |
 | H6 | The `ReserveStock` replay guard is best-effort under concurrency | code comment on `activeReservationFor` in `reserve_stock.go` |
-| H7 | **Decided 2026-10-06: event-driven** (ADR 0032, *Proposed*) — picks are confirmed from a pick-completion event published by fulfillment-execution, never a sync REST/MCP call; blocked on fields that event does not carry yet | [ADR 0032](/docs/adr/0032), [Context Relationships](./context-relationships.md) |
+| H7 | **Decided 2026-10-07 (audit decision 18; supersedes the counting of 17a for line-aware work): confirm-pick is event-driven and PER LINE** ([ADR 0036](/docs/adr/0036), builds on ADR 0035) — picks are confirmed from fulfillment-execution's `TaskCompleted` (PICK, `order_ref`, `line_no`), never a sync REST/MCP call. order-management sends `lineNo` on `POST /reservations`, the Reservation stores it (`reservations.line_no`) and the event carries the task's `line_no`, so the consumer confirms exactly the ACTIVE reservation of (`order_ref`, `line_no`); the order's other lines stay ACTIVE. This closes ADR 0035's "one pick early" edge for line-aware events. The ADR 0035 counting (`order_pick_progress`, confirm on the order's LAST pick, never early) remains as the backward-compatible fallback for events without `line_no` and reservations with a NULL `line_no`. An expired one is skipped and counted | [ADR 0036](/docs/adr/0036), [ADR 0035](/docs/adr/0035), [Context Relationships](./context-relationships.md) |
 | H8 | Cycle-count overage is reported, never reconciled | `run_cycle_count.go` comment; [Use Cases](./use-cases.md) |
+| H9 | Short picks are not modelled: a Task carries no SKU or quantity, so a confirmed line's whole reserved quantity is picked (per-line identity, ADR 0036, makes partial picks expressible, but they still need per-line quantities in wes-work-planning's WorkUnit and fulfillment-execution's Task, and a business rule no ADR specifies) | [ADR 0035](/docs/adr/0035), [ADR 0036](/docs/adr/0036) |

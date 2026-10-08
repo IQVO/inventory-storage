@@ -24,8 +24,10 @@ of it is usable**. It answers the two questions everything downstream depends
 on: *where* a SKU physically is (bin-accurate, under chaotic stow with
 mandatory item + location scan) and *how much* of it can be promised
 (usable, not on-hand). Allocation is a revocable, expiring reservation, so a
-failed physical delivery never strands an order. It is also the source of
-truth for SKU handling classification (hazmat, temperature, DOT class).
+failed physical delivery never strands an order. It does **not** own SKU
+handling classification (hazmat, temperature, DOT class): product-master does,
+and this context keeps a version-guarded local copy of it for its own stow
+placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 
 ## Strategic Classification
 
@@ -39,8 +41,8 @@ truth for SKU handling classification (hazmat, temperature, DOT class).
 
 | Role | Stance |
 | --- | --- |
-| **System of record** | For `StockUnit`, `Bin`, `Reservation` and `ProductClassification`. No other context has write access to any of them. |
-| **Open Host Service** | For bin-accurate location, usable inventory and product classification, with a Published Language on two surfaces: REST (`apis/openapi.yaml`) and events (`apis/asyncapi.yaml`). |
+| **System of record** | For `StockUnit`, `Bin` and `Reservation`. No other context has write access to any of them. `ProductClassification` here is a local copy of product-master's classification, written only by the `warehouse.product-master.events` consumer ([ADR 0034](/docs/adr/0034)). |
+| **Open Host Service** | For bin-accurate location and usable inventory, with a Published Language on two surfaces: REST (`apis/openapi.yaml`) and events (`apis/asyncapi.yaml`). The classification read `GET /products/{sku}/classification` is deprecated. |
 | **Enforcer** | Runs every invariant on every write — capacity, usable, no double-consume, placement, DOT segregation — whoever the caller is. |
 | **Analytics data-product owner** | Owns its own analytical data product (Flow & Accuracy report, ADR 0011), fed only by its own events. |
 
@@ -50,7 +52,7 @@ truth for SKU handling classification (hazmat, temperature, DOT class).
 | --- | --- | --- | --- | --- |
 | `order-management` | ReserveStock | Command | REST `POST /reservations` (header `Idempotency-Key`) | C/S, caller-side ACL |
 | `order-management` | RevokeReservation | Command | REST `DELETE /reservations/{id}` | C/S, caller-side ACL |
-| `order-management`, `wes-work-planning`, `fulfillment-execution` | GetProductClassification | Query | REST `GET /products/{sku}/classification` | OHS/PL, caller-side ACL |
+| none in the fleet (deprecated) | GetProductClassification | Query | REST `GET /products/{sku}/classification`, served from the local copy until product-master ADR 0003 stage E; `order-management`, `wes-work-planning` and `fulfillment-execution` now keep their own copies from product-master | OHS/PL |
 | `network-fulfillment` | GetUsable | Query | REST `GET /inventory/{sku}/usable` | OHS/PL, caller-side ACL |
 | `warehouse-ops-agent` (console BFF) | GetReservationsByDemandRef | Query | REST `GET /reservations?demandRef=` | OHS/PL, Conformist |
 | `warehouse-ops-agent` | Flow & Accuracy report | Query | REST `GET /reports/flow-accuracy`, `GET /reports/flow-accuracy/freshness` (`cmd/inventory-reports`) | OHS/PL, Conformist |
@@ -65,8 +67,9 @@ truth for SKU handling classification (hazmat, temperature, DOT class).
 | Inbound dock (operator, simulator) | ReceiveStock | Command | REST `POST /stock/receive` (header `Idempotency-Key`) | OHS |
 | Inbound dock (operator, simulator) | StowStock | Command | REST `POST /stock/stow` | OHS |
 | Inventory control (operator, simulator) | RunCycleCount | Command | REST `POST /bins/{binId}/cycle-count` | OHS |
-| Catalogue owner (operator, simulator) | ClassifyProduct | Command | REST `PUT /products/{sku}/classification` | OHS |
-| Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/confirm-pick` | OHS — no sibling context calls it; **decided 2026-10-06**: production confirmation will come from fulfillment-execution's pick-completion event, consumed here (ADR 0032, *Proposed*, blocked on the event's fields) |
+| product-master | ProductClassified (local copy, ADR 0034) | Event | Kafka `warehouse.product-master.events` → `ApplyProductClassification` | Conformist (product-master's Published Language); `PUT /products/{sku}/classification` answers 410 |
+| Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/confirm-pick` | OHS — no sibling context calls it; **decided 2026-10-06: event-driven** — production confirmation comes from fulfillment-execution's `TaskCompleted` (next row), consumed here ([ADR 0035](/docs/adr/0035)) |
+| fulfillment-execution | TaskCompleted (PICK, `order_ref`, `line_no`) | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` → `ConfirmPicksForOrder` → with `line_no`, `ConfirmPick` for exactly that line's ACTIVE reservation; without it, counts the order's picks and confirms on the order's last pick (`TASK_COMPLETED_CONSUMER_MODE=kafka`, default off) | Conformist (fulfillment-execution's Published Language); per-line confirm, counting fallback, short picks not modelled ([ADR 0036](/docs/adr/0036), [ADR 0035](/docs/adr/0035)) |
 | Operator, `inventory-mfe` | GetBin, GetUsable | Query | REST `GET /bins/{binId}`, `GET /inventory/{sku}/usable` | OHS |
 | Kubernetes | liveness / readiness | Query | REST `GET /healthz`, `GET /readyz` | — |
 
@@ -76,8 +79,8 @@ truth for SKU handling classification (hazmat, temperature, DOT class).
 | --- | --- | --- | --- | --- |
 | `wes-work-planning` | StockReserved | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.reservation.StockReserved` (key = reservation id) | OHS/PL; downstream Conformist |
 | `wes-work-planning` | ReservationRevoked | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` (key = reservation id) | OHS/PL; downstream Conformist |
-| any sibling (no consumer yet) | ProductClassified | Event | Kafka `warehouse.inventory.events` (and `warehouse.inventory.analytics`), `com.warehouse.wms.inventory-storage.product.ProductClassified` (key = SKU; full-state replacement) — [ADR 0031](/docs/adr/0031) | OHS/PL; replaces polling `GET /products/{sku}/classification` |
-| own projector (`cmd/inventory-projector`) | StockReceived, ItemStowed, ItemUnlocated, StockReserved, StockPicked, ReservationExpired, ReservationRevoked, CycleCountCompleted, DiscrepancyDetected | Event | Kafka `warehouse.inventory.analytics`, `com.warehouse.wms.inventory-storage.<stock, reservation or bin>.<EventName>` (`ProductClassified` shares the topic and is ignored) | internal |
+| product-master (legacy importer) | ProductClassified (legacy) | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.product.ProductClassified` (key = SKU; full-state replacement), emitted **only** by the one-shot `republish-product-classifications` backfill ([ADR 0034](/docs/adr/0034); run once, 2026-10-07) | PL; product-master translates it in its importer (ACL) |
+| own projector (`cmd/inventory-projector`) | StockReceived, ItemStowed, ItemUnlocated, StockReserved, StockPicked, ReservationExpired, ReservationRevoked, CycleCountCompleted, DiscrepancyDetected | Event | Kafka `warehouse.inventory.analytics`, `com.warehouse.wms.inventory-storage.<stock, reservation or bin>.<EventName>` (nothing emits `ProductClassified` there since ADR 0034) | internal |
 | `facility-layout` | location classification | Query | REST `GET /locations/{locationCode}/classification` — only with `LOCATION_LOOKUP_MODE=http`, behind a circuit breaker | ACL; wired but unused (rollback) |
 | `facility-layout` (DLQ) | invalid facility message | Event | Kafka `warehouse.facility.events.dlq` (raw payload + `x-dlq-*` headers) | — |
 
@@ -99,7 +102,7 @@ The terms that carry the model:
 | **Reservation** | A revocable, expiring claim against usable, with allocations and pick locations. |
 | **Revoke / Expire / Confirm pick** | The three ways a reservation is resolved. |
 | **Cycle count** | Verifying a bin; shortfall marks units Unlocated, overage is reported. |
-| **ProductClassification** | SKU handling master data: handling tags, temperature class, DOT hazard class. |
+| **ProductClassification** | SKU handling master data: handling tags, temperature class, DOT hazard class — a local copy of product-master's, not authored here. |
 | **Demand reference** | The caller's opaque order+line key; replay-guard and lookup key. |
 
 ## Business Decisions
@@ -111,10 +114,10 @@ The terms that carry the model:
 | Reservations are revocable and expire after a timeout (default 30 min); expiry is lazy, on the next read. | ADR 0003, `DefaultReservationTimeout`, `expireIfDue` |
 | A retry for the same `(demandRef, sku, quantity)` returns the existing ACTIVE reservation. | `isReplayOf` |
 | Cycle-count shortfall marks whole units Unlocated; overage is reported, never auto-reconciled. | `RunCycleCount` |
-| This context owns product classification; placement rules are fail-open for unclassified SKUs and unknown bins, fail-closed only when a classified SKU's lookup fails. | ADR 0009 |
+| product-master owns product classification; this context keeps a version-guarded local copy and answers `410` to `PUT /products/{sku}/classification`. Placement rules are fail-open for unclassified SKUs and unknown bins, fail-closed only when a classified SKU's lookup fails. | ADR 0009, [ADR 0034](/docs/adr/0034) |
 | DOT segregation uses a 9 × 9 class-level matrix with four documented simplifications. | ADR 0010, `product.Incompatible` |
 | Bins are registered declaratively over REST; registration raises no event. | ADR 0025 |
-| `StockReserved`, `ReservationRevoked` and `ProductClassified` (since 2026-10-06, ADR 0031) are the integration events, plus the two transfer replies (ADR 0030). | `kafka.Publisher.Encode`, `apis/asyncapi.yaml` |
+| `StockReserved` and `ReservationRevoked` are the integration events, plus the transfer replies (ADR 0030, ADR 0033); the legacy `ProductClassified` (ADR 0031) is emitted only by the one-shot backfill since ADR 0034. | `kafka.Publisher.Encode`, `apis/asyncapi.yaml` |
 | Zone data comes from facility-layout's events into a local cache, not a per-stow call. | ADR 0013 |
 | No authentication on REST or MCP. | ADR 0015 |
 
@@ -152,14 +155,30 @@ The terms that carry the model:
 - ~~Should `ProductClassified` be published so siblings stop polling
   `GET /products/{sku}/classification`?~~ **Decided 2026-10-06: yes** —
   published through the outbox on both topics, additive ([ADR 0031](/docs/adr/0031)).
-  `LocationRecorded` stays in-process (no consumer).
+  `LocationRecorded` stays in-process (no consumer). **Superseded by
+  [ADR 0034](/docs/adr/0034):** product-master now owns classification and
+  siblings read product-master's `ProductClassified`; this service emits its
+  legacy type only from the one-shot backfill.
 - Should `StowStock` validate a bin against facility-layout's slot catalogue,
   not only against its own `LocationRepo`?
 - ~~Who should call `POST /reservations/{id}/confirm-pick` in production?~~
   **Decided 2026-10-06: nobody** — this context consumes fulfillment-execution's
-  pick-completion event and confirms the reservation itself; no sync REST/MCP
-  call from siblings ([ADR 0032](/docs/adr/0032), *Proposed*: the event does not
-  yet carry a reservation correlation, SKU or picked quantity).
+  `TaskCompleted` (PICK, additive `order_ref`) and confirms the reservations
+  itself, idempotently and atomically; no sync REST/MCP call from siblings
+  ([ADR 0035](/docs/adr/0035), supersedes ADR 0032). **Decided 2026-10-07 (audit
+  decision 18): per line** — with the additive `line_no` on `TaskCompleted`, and
+  the `line_no` that `Reservation` now stores (order-management sends `lineNo`),
+  exactly the picked line's reservation is confirmed ([ADR 0036](/docs/adr/0036));
+  the ADR 0035 counting (confirm on the order's **last** pick, never early) stays
+  as the fallback for events or reservations without a line.
+- Short picks: a Task carries no SKU or quantity, so a confirmed line's whole
+  reserved quantity is picked. Modelling a short pick needs
+  per-line quantities in work-planning's WorkUnit and fulfillment-execution's
+  Task, and a rule for the remainder — explicit limitation of
+  [ADR 0035](/docs/adr/0035), not yet decided.
+- ~~Per-line confirmation (order-management sends `line_no`, `Reservation` stores it,
+  `TaskCompleted` carries it)?~~ **Decided 2026-10-07: built** ([ADR 0036](/docs/adr/0036));
+  the pick counter remains only as the backward-compatible fallback.
 - ~~Should the default `LOCATION_LOOKUP_MODE` stay `permissive`?~~
   **Decided 2026-10-06: kept** (ADR 0013/0020) — a cold facility cache would
   reject every receipt; the cluster already injects `kafka`.

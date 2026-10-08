@@ -10,10 +10,9 @@ sidebar_position: 32
 
 ## Status
 
-**Proposed** (2026-10-06). The *direction* is decided and final; the
-*implementation* is blocked on missing fields in the upstream contract, named
-below. This record flips to **Accepted** in the change that implements the
-consumer.
+**Superseded by [ADR 0035](./0035-confirm-pick-from-task-completed.md)**
+(2026-10-07). Was Proposed on 2026-10-06; the direction decided here is kept and
+implemented by 0035.
 
 Does not change [ADR 0003](./0003-revocable-reservations.md): lazy reservation
 expiry is **kept** ("Decided 2026-10-06: kept").

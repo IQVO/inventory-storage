@@ -93,6 +93,9 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | reservation id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated` | reservation id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected` | transfer line id |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | transfer line id |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | transfer line id |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.product.ProductClassified` (backfill command only, ADR 0034) | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.StockReceived` | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | stock unit id |
@@ -104,10 +107,13 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | bin id |
 | _(none: in-process only, never published)_ | `com.warehouse.wms.inventory-storage.stock.LocationRecorded` | _n/a_ |
 
-`ProductClassified` (`internal/domain/product`) is a domain event delivered
-in-process only; neither Kafka publisher forwards it, so it has no wire
-type today. If it is ever published, its entity segment is `product`
-(`com.warehouse.wms.inventory-storage.product.ProductClassified`).
+`ProductClassified` (`internal/domain/product`), entity segment `product`
+(`com.warehouse.wms.inventory-storage.product.ProductClassified`), was
+published on both topics by ADR 0031. Since
+[ADR 0034](./0034-product-master-owns-classification.md) it is emitted only by
+the one-shot `republish-product-classifications` backfill, on
+`warehouse.inventory.events` (subject = SKU), and is retired at
+product-master ADR 0003 stage E.
 
 ### Consumers
 
@@ -127,6 +133,10 @@ type today. If it is ever published, its entity segment is `product`
    - `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`
    - `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned`
    - `com.warehouse.wms.facility-layout.zone.ZoneRegistered`
+   - `com.warehouse.wms.product-master.product.ProductClassified` (topic
+     `warehouse.product-master.events`, source `/warehouse/product-master`;
+     the local classification copy, ADR 0034 — every other product-master
+     type on that topic is ignored)
    - its own nine analytics types above (projector).
 3. Dedupe on the CloudEvents `id` (the projector's
    `analytics_processed_events.event_id` column is now populated from `id`).
@@ -142,6 +152,8 @@ These strings must be byte-identical on both sides:
 com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered       -> inventory-storage
 com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned   -> inventory-storage
 com.warehouse.wms.facility-layout.zone.ZoneRegistered                       -> inventory-storage
+com.warehouse.wms.product-master.product.ProductClassified                  -> inventory-storage (ADR 0034)
+com.warehouse.wms.inventory-storage.product.ProductClassified               -> product-master (legacy importer, backfill only)
 com.warehouse.wms.inventory-storage.reservation.StockReserved               -> wes-work-planning
 com.warehouse.wms.inventory-storage.reservation.ReservationRevoked          -> wes-work-planning
 com.warehouse.wes.order-management.order.OrderAllocated                     -> wes-work-planning

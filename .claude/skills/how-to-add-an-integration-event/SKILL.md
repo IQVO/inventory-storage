@@ -16,8 +16,10 @@ shared-broker reality has already caused a real incident once.
 
 Not every domain event this service raises belongs on the wire. Check
 `internal/adapters/outbound/kafka/publisher.go`'s doc comment — this repo
-forwards only `StockReserved`/`ReservationRevoked`, the two transfer replies and
-`ProductClassified` (ADR-0031); everything else is a
+forwards only `StockReserved`/`ReservationRevoked`, the transfer replies and
+receipt/stow facts (ADR-0030, ADR-0033), and the legacy `ProductClassified`
+(ADR-0031), which since ADR-0034 only the one-shot
+`republish-product-classifications` backfill emits; everything else is a
 local concern (with `EVENT_PUBLISHER=kafka` most of them also go to the
 separate `warehouse.inventory.analytics` topic, ADR-0011 — that is not the
 integration contract). Note that publishing goes through the transactional
@@ -87,10 +89,11 @@ the adapter layer). In the Kafka publisher adapter:
 Add a golden exact-JSON case to `internal/adapters/outbound/kafka/golden_test.go`
 (all CloudEvents attributes + `content-type` header) — never a real broker
 in a unit test. If this event
-now needs a `_integration_test.go` asserting real delivery, it MUST use
-testcontainers (see the fitness test `TestKafkaIntegrationTestsUseTestcontainers`
-in `internal/architecture/` — a skip-gated `KAFKA_BROKERS` test or a
-hardcoded `localhost:9092` fails CI).
+now needs a `_integration_test.go` asserting real delivery, it MUST start its
+broker through the shared `internal/testsupport/kafkatc` helper (testcontainers,
+cold-broker safe; see the fitness test `TestKafkaIntegrationTestsUseTestcontainers`
+in `internal/architecture/` — a skip-gated `KAFKA_BROKERS` test, a hardcoded
+`localhost:9092`, or starting the Kafka module directly fails CI).
 
 ## Consuming an integration event from a sibling context
 

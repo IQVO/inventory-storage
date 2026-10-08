@@ -57,36 +57,41 @@ flowchart TB
     WM["<b>workforce-management</b><br/>Supporting<br/>headcount + assignment"]
     FL["<b>facility-layout</b><br/>Generic<br/>physical warehouse map"]
     OM["<b>order-management</b><br/>WMS<br/>order intake · allocation"]
+    PM["<b>product-master</b><br/>WMS · Supporting<br/>SKU master data"]
 
     INV -->|"U → D · C/S<br/>Conformist to PL<br/><b>wired: Kafka</b>"| WP
     WM -->|"U → D · C/S<br/><b>wired: Kafka</b>"| WP
     WP -->|"U → D · C/S<br/><b>wired: Kafka</b>"| FE
     FE -->|"U → D<br/><b>wired: Kafka</b>"| WP
     FL -->|"OHS + PL · U → D<br/>INV is Conformist<br/><b>wired: Kafka</b> (ADR 0013)"| INV
+    PM -->|"OHS + PL · U → D<br/>INV is Conformist<br/><b>wired: Kafka</b> ProductClassified (ADR 0034)"| INV
     INV -->|"OHS · U → D · C/S<br/><b>wired: sync REST</b>"| OM
+    FE -->|"OHS + PL · U → D · CF<br/><b>wired: Kafka</b> TaskCompleted (ADR 0035, per-line ADR 0036)<br/>consumer off by default"| INV
 
     classDef this fill:#0f766e,stroke:#134e4a,color:#fff,stroke-width:3px;
     classDef other fill:#1e293b,stroke:#475569,color:#fff;
     classDef future fill:#475569,stroke:#94a3b8,color:#e2e8f0,stroke-dasharray: 5 5;
     class INV this;
-    class WP,FE,WM,OM,FL other;
+    class WP,FE,WM,OM,FL,PM other;
 ```
 
 Every edge above is implemented today. Arrows point upstream → downstream,
 not in the direction of the network call: `order-management` *calls* this
 service, but it is the downstream customer of this service's REST OHS.
-`wes-work-planning` and `fulfillment-execution` also read
-`GET /products/{sku}/classification` synchronously, `network-fulfillment`
-reads `GET /inventory/{sku}/usable`, and `warehouse-ops-agent` reads
-`GET /reservations?demandRef=`, the Flow & Accuracy report and two MCP read
-tools — the same OHS, omitted from the diagram for legibility; see the
-[Context Map](/docs/ecosystem/context-map) for every wire.
+`network-fulfillment` reads `GET /inventory/{sku}/usable`, and
+`warehouse-ops-agent` reads `GET /reservations?demandRef=`, the Flow &
+Accuracy report and two MCP read tools — the same OHS, omitted from the
+diagram for legibility; the one-shot legacy `ProductClassified` backfill
+towards product-master is omitted too. See the
+[Context Map](/docs/ecosystem/context-map) for every wire. No sibling reads
+`GET /products/{sku}/classification` any more (deprecated, [ADR 0034](/docs/adr/0034)).
 
 ## Relationship by relationship
 
 ### inventory-storage → wes-work-planning — **Customer/Supplier, Conformist downstream**
 
-The only consumer of this service's integration events.
+The consumer of this service's reservation events (`StockReserved`,
+`ReservationRevoked`).
 
 - **Direction:** upstream (supplier). This service publishes; Work Planning
   consumes.
@@ -105,33 +110,57 @@ The only consumer of this service's integration events.
   learns what a `StockUnit`, a `Bin` or an `Allocation` is — it holds only an
   observed usable count per SKU. That mutual ignorance is the boundary working.
 
-### inventory-storage ↔ fulfillment-execution — **indirect, via Work Planning**
+### inventory-storage ← fulfillment-execution — **Conformist, one event, wired over Kafka**
 
-There is **no event wiring** between these two. `fulfillment-execution`
-consumes `warehouse.work-planning.events` (`WorkReleased`) and publishes
-`warehouse.fulfillment.events`; it does not subscribe to
-`warehouse.inventory.events`, and this service does not subscribe to its
-topic. Its one call into this service is a read of this service's product
-classification master data (`GET /products/{sku}/classification`).
+`fulfillment-execution` consumes `warehouse.work-planning.events`
+(`WorkReleased`) and publishes `warehouse.fulfillment.events`; it does not
+subscribe to `warehouse.inventory.events`. This service subscribes to exactly one
+of its types, `TaskCompleted`, and conforms to it as published (no translation
+layer). It makes no call the other way: its handling classification comes
+from its own local copy of product-master's `ProductClassified` (its ADR 0039),
+not from this service.
 
 Strategically that is right: `fulfillment-execution` owns the *task* lifecycle
 and needs work to do, not stock truth. The accounting consequence of a pick
-reaches this service as a **pick-completion event**, not as a synchronous
-call. **Decided 2026-10-06 ([ADR 0032](/docs/adr/0032), *Proposed*):** this
-service will consume a pick-completion integration event published by
-`fulfillment-execution` and confirm the matching reservation itself (the
-existing `ConfirmPick` use case); neither `fulfillment-execution` nor
-`wes-work-planning` ever calls `POST /reservations/{id}/confirm-pick`. It is
-blocked today because no published event carries a reservation correlation
-(`reservation_id` or `demand_ref` + `sku`) and the picked quantity —
-`TaskCompleted` carries only `task_id`, `station_id`, `work_unit_id`,
-`associate_id`, `duration_seconds` and `task_type`. Until then only the
-`e2e-tests` warehouse-day simulator issues the command.
+reaches this service as an **event**, never as a synchronous call.
+**Decided 2026-10-06, implemented by [ADR 0035](/docs/adr/0035) (supersedes ADR
+0032), made per-line by [ADR 0036](/docs/adr/0036) (2026-10-07):** for a `PICK` task
+with an `order_ref` (the OrderId, = a reservation's `demand_ref`) and the additive
+`line_no`, `ConfirmPicksForOrder` confirms exactly the `ACTIVE` reservation of
+(`order_ref`, `line_no`) through the existing `ConfirmPick` use case, in the same
+transaction as the event's dedupe claim; the order's other lines stay `ACTIVE`.
+`Reservation` stores the line (order-management sends `lineNo` when it reserves).
+For a message without `line_no`, or for reservations made before the field existed,
+the ADR 0035 fallback counts the order's completed PICK tasks and, when the **last**
+one completes, confirms every `ACTIVE` reservation of the order; earlier picks only
+record progress, because confirming early would mark unpicked lines as picked.
+Neither `fulfillment-execution` nor
+`wes-work-planning` ever calls `POST /reservations/{id}/confirm-pick`.
+`order_ref` and `line_no` are additive optional fields of `TaskCompleted` v1 that
+fulfillment-execution adds; a message without `order_ref` is a no-op, and the
+consumer is
+off by default (`TASK_COMPLETED_CONSUMER_MODE`). A Task carries no SKU or quantity,
+so **short picks are not modelled**. The
+`e2e-tests` warehouse-day simulator and operators still use the REST route.
 
-The read of product classification master data
-(`GET /products/{sku}/classification`) can likewise be replaced by the
-published `ProductClassified` event ([ADR 0031](/docs/adr/0031)); moving off
-polling is `fulfillment-execution`'s own call.
+### inventory-storage ← product-master — **Conformist, wired over Kafka**
+
+`product-master` (WMS tier, Supporting subdomain) is the single source of
+truth for SKU product master data, including the handling classification this
+service's stow rules need. Since [ADR 0034](/docs/adr/0034) this service no
+longer owns that classification: it consumes
+`com.warehouse.wms.product-master.product.ProductClassified` from
+`warehouse.product-master.events`, as published (no translation layer), into a
+version-guarded local copy in `product_classifications`
+(`ApplyProductClassification`, consumer group from
+`PRODUCT_MASTER_CONSUMER_GROUP`). `StowStock`'s hazmat/temperature placement
+(ADR 0009) and same-bin DOT segregation (ADR 0010) read that copy and stay
+owned here — co-locating goods in a bin is still this context's job.
+`PUT /products/{sku}/classification` answers `410 classification-moved`; the
+`GET` is deprecated. The edge back is migration-only: the legacy
+`com.warehouse.wms.inventory-storage.product.ProductClassified` is emitted
+solely by the one-shot `republish-product-classifications` backfill, which
+product-master's legacy importer translates (product-master ADR 0003 stage B).
 
 ### inventory-storage ↔ workforce-management — **no relationship**
 
@@ -178,13 +207,13 @@ nothing checks that id against facility-layout's slot catalogue.
 ### order-management → inventory-storage — **Customer/Supplier, synchronous**
 
 `order-management` is a downstream **customer** of this service's REST Open
-Host Service: order allocation reserves stock with `POST /reservations`,
-cancellation revokes it with `DELETE /reservations/{id}`, and order intake
-reads `GET /products/{sku}/classification`. Every call runs through this
-service's own invariants; order management gets no write access to a
-`StockUnit`, and the edge is gated on its side by `INVENTORY_STORAGE_MODE` /
-`PRODUCT_CLASSIFICATION_MODE` (both defaulting to a no-network `permissive`
-stub).
+Host Service: order allocation reserves stock with `POST /reservations`, and
+cancellation revokes it with `DELETE /reservations/{id}`. Every call runs
+through this service's own invariants; order management gets no write access
+to a `StockUnit`, and the edge is gated on its side by `INVENTORY_STORAGE_MODE`
+(defaulting to a no-network `permissive` stub). Order intake no longer reads
+classification here: order-management keeps its own local copy of
+product-master's `ProductClassified` (its ADR 0036).
 
 ## Disciplines this map enforces
 

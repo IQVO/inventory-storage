@@ -45,6 +45,15 @@ type adapterSet struct {
 	uow             ports.UnitOfWork
 	pool            *pgxpool.Pool
 	close           func()
+	// transfers is the transfer_allocations ledger repo: Postgres-backed
+	// when a pool exists, in-memory otherwise. Shared by the allocation
+	// consumer and the destination receipt path (ADR 0031).
+	transfers ports.TransferAllocationRepo
+	// transferReceipts is the destination transfer_receipts repo (ADR
+	// 0031), same Postgres/in-memory selection as transfers.
+	transferReceipts ports.TransferReceiptRepo
+	// inventoryExceptions is the quarantine repo (ADR 0031).
+	inventoryExceptions ports.InventoryExceptionRepo
 }
 
 // buildAdapters wires the Postgres adapters when DATABASE_URL is set, or
@@ -76,11 +85,14 @@ func buildRepos(ctx context.Context, databaseURL, migrationsDatabaseURL, migrati
 		return adapterSet{}, err
 	}
 	return adapterSet{
-		stock:           postgres.NewStockRepo(pool),
-		locations:       postgres.NewLocationRepo(pool),
-		reservations:    postgres.NewReservationRepo(pool),
-		classifications: postgres.NewProductClassificationRepo(pool),
-		publisher:       events.NewLogPublisher(logger),
+		stock:               postgres.NewStockRepo(pool),
+		locations:           postgres.NewLocationRepo(pool),
+		reservations:        postgres.NewReservationRepo(pool),
+		classifications:     postgres.NewProductClassificationRepo(pool),
+		publisher:           events.NewLogPublisher(logger),
+		transfers:           postgres.NewTransferAllocationRepo(pool),
+		transferReceipts:    postgres.NewTransferReceiptRepo(pool),
+		inventoryExceptions: postgres.NewInventoryExceptionRepo(pool),
 		// UnitOfWork brackets every use case's Save(s) + Publish(es) in
 		// one Postgres transaction (ADR 0017). It is safe to hand out
 		// even when eventPublisher="log": OutboxPublisher is only ever
@@ -98,12 +110,15 @@ func buildRepos(ctx context.Context, databaseURL, migrationsDatabaseURL, migrati
 func memoryAdapters(logger *slog.Logger) adapterSet {
 	logger.Info("database url not configured; using in-memory adapters")
 	return adapterSet{
-		stock:           memory.NewStockRepo(),
-		locations:       memory.NewLocationRepo(),
-		reservations:    memory.NewReservationRepo(),
-		classifications: memory.NewProductClassificationRepo(),
-		publisher:       events.NewLogPublisher(logger),
-		close:           func() {},
+		stock:               memory.NewStockRepo(),
+		locations:           memory.NewLocationRepo(),
+		reservations:        memory.NewReservationRepo(),
+		classifications:     memory.NewProductClassificationRepo(),
+		publisher:           events.NewLogPublisher(logger),
+		transfers:           memory.NewTransferAllocationRepo(),
+		transferReceipts:    memory.NewTransferReceiptRepo(),
+		inventoryExceptions: memory.NewInventoryExceptionRepo(),
+		close:               func() {},
 	}
 }
 

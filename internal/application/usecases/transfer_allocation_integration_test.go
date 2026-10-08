@@ -38,7 +38,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	kafkago "github.com/segmentio/kafka-go"
 	"github.com/testcontainers/testcontainers-go"
-	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	inboundkafka "github.com/claudioed/inventory-storage/internal/adapters/inbound/kafka"
@@ -49,6 +48,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
+	"github.com/claudioed/inventory-storage/internal/testsupport/kafkatc"
 )
 
 // transferTestEnv owns the Postgres pool and Kafka broker for the
@@ -66,7 +66,7 @@ type transferTestEnv struct {
 
 var (
 	transferSharedBrokers   []string
-	transferSharedContainer testcontainers.Container
+	transferSharedContainer *kafkatc.Broker
 	transferSharedPool      *pgxpool.Pool
 )
 
@@ -82,7 +82,7 @@ func TestMain(m *testing.M) {
 		transferSharedPool.Close()
 	}
 	if transferSharedContainer != nil {
-		if err := testcontainers.TerminateContainer(transferSharedContainer); err != nil {
+		if err := transferSharedContainer.Terminate(); err != nil {
 			fmt.Fprintf(os.Stderr, "terminate kafka container: %v\n", err)
 		}
 	}
@@ -117,28 +117,18 @@ func transferSharedEnv(t *testing.T) *transferTestEnv {
 		}
 	}
 	if transferSharedBrokers == nil {
-		container, err := tckafka.Run(ctx, "confluentinc/confluent-local:7.6.1",
-			tckafka.WithClusterID("transfer-alloc-itest"),
-		)
+		// kafkatc.Start returns only once the broker is a usable group
+		// coordinator (a cold broker answers [15]
+		// GroupCoordinatorNotAvailable and kafka-go then sleeps a fixed
+		// 5 s JoinGroupBackoff per attempt — the "timed out waiting for
+		// the transfer consumer to settle" flake), so that cost is paid
+		// here, once, not inside the first test's timed window.
+		broker, err := kafkatc.Start(ctx, "transfer-alloc-itest")
 		if err != nil {
-			t.Fatalf("start kafka container: %v", err)
+			t.Fatalf("%v", err)
 		}
-		transferSharedContainer = container
-		brokers, err := container.Brokers(ctx)
-		if err != nil {
-			t.Fatalf("resolve kafka brokers: %v", err)
-		}
-		// A broker that accepts connections is NOT yet a usable group
-		// coordinator: the first group request creates __consumer_offsets
-		// (50 partitions) and answers [15] GroupCoordinatorNotAvailable
-		// until it exists. A consumer that hits that window sits in
-		// kafka-go's fixed 5 s JoinGroupBackoff per attempt, which on a
-		// loaded CI runner exceeded runConsumerUntil's budget (the
-		// "timed out waiting for the transfer consumer to settle; Run:
-		// (still running)" flake). Wait for readiness here, once, instead
-		// of racing it inside the first test's timed window.
-		waitForGroupCoordinator(t, brokers[0])
-		transferSharedBrokers = brokers
+		transferSharedContainer = broker
+		transferSharedBrokers = broker.Addrs
 	}
 
 	topic := fmt.Sprintf("%s.itest-%d", inboundkafka.Topic, time.Now().UnixNano())
@@ -179,34 +169,6 @@ func bootSharedPostgresForTransfers(ctx context.Context, t *testing.T) (*pgxpool
 }
 
 var transferPostgresContainer testcontainers.Container
-
-// waitForGroupCoordinator blocks until the broker can serve group
-// coordination (the internal __consumer_offsets topic exists and its
-// coordinator partition has a leader). It polls FindCoordinator for a
-// throwaway group — the very request whose [15] answer a cold broker
-// gives — and returns on the first success; the deadline only bounds a
-// broker that never becomes ready, it is not a sleep.
-func waitForGroupCoordinator(t *testing.T, broker string) {
-	t.Helper()
-	client := &kafkago.Client{Addr: kafkago.TCP(broker), Timeout: 10 * time.Second}
-	deadline := time.Now().Add(2 * time.Minute)
-	var last string
-	for time.Now().Before(deadline) {
-		resp, err := client.FindCoordinator(context.Background(), &kafkago.FindCoordinatorRequest{
-			Addr: kafkago.TCP(broker), Key: "transfer-itest-coordinator-warmup", KeyType: kafkago.CoordinatorKeyTypeConsumer,
-		})
-		switch {
-		case err != nil:
-			last = err.Error()
-		case resp.Error != nil:
-			last = resp.Error.Error()
-		default:
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	t.Fatalf("kafka group coordinator never became available on %s: %s", broker, last)
-}
 
 // createTransferTopic creates topic with numPartitions partitions on
 // broker and waits until the metadata is propagated. Creation errors

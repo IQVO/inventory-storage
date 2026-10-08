@@ -7,7 +7,7 @@ custom_edit_url: null
 
 
 
-SKU-level product classification (Hazmat/Fragile/TemperatureSensitive/ Oversized/HighValue): master data this service owns as source of truth, independent of any StockUnit or bin. Enforced by StowStock as hazmat/temperature placement rules via a synchronous read from the facility-layout bounded context (see ADR 0009).
+SKU-level product classification (Hazmat/Fragile/TemperatureSensitive/ Oversized/HighValue). Owned by product-master since ADR 0034: this service keeps a read-only local copy, fed by product-master's `ProductClassified` events, that StowStock reads to enforce hazmat/temperature placement (ADR 0009) and same-bin DOT segregation (ADR 0010). The write endpoint answers 410 and the read endpoint is deprecated.
 
 
 

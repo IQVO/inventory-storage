@@ -65,6 +65,32 @@ type ReservationMetrics interface {
 	ReservationRevoked(ctx context.Context)
 }
 
+// Outcomes ConfirmPicksForOrder reports to PickConfirmationMetrics, one per
+// reservation it looked at (ADR 0035).
+const (
+	// PickOutcomeConfirmed: an ACTIVE reservation was confirmed as picked.
+	PickOutcomeConfirmed = "confirmed"
+	// PickOutcomeExpired: the reservation had expired (before, or lazily on
+	// this lookup) so the completion could not confirm it. Skipped, never an
+	// error: alert on this one, it is stock that went back to usable while the
+	// physical pick still happened.
+	PickOutcomeExpired = "expired"
+	// PickOutcomeAlreadyPicked: already CONFIRMED (a redelivery, or the REST
+	// route got there first).
+	PickOutcomeAlreadyPicked = "already_picked"
+	// PickOutcomeRevoked: REVOKED before the pick completed.
+	PickOutcomeRevoked = "revoked"
+)
+
+// PickConfirmationMetrics records what the TaskCompleted consumer did with
+// each reservation of a completed order, so skipped (expired) confirmations
+// are observable. Use cases treat a nil value as "not instrumented".
+type PickConfirmationMetrics interface {
+	// PickConfirmation adds n to the counter for outcome (one of the
+	// PickOutcome* constants).
+	PickConfirmation(ctx context.Context, outcome string, n int)
+}
+
 // Clock abstracts current time so use cases and tests are deterministic.
 type Clock interface {
 	Now() time.Time
@@ -88,12 +114,55 @@ type UnitOfWork interface {
 	Execute(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
-// ProductClassificationRepo persists and retrieves ProductClassification
-// aggregates, keyed by SKU. This service is the source of truth for this
-// master data — see ADR 0009.
+// ProductClassificationRepo reads the local copy of a SKU's handling
+// classification, keyed by SKU. product-master owns this master data
+// (ADR 0034); StowStock and the deprecated GET endpoint read the copy
+// exactly as they read this service's own rows before the hand-over.
+// FindBySKU returns nil, nil for an unclassified SKU.
 type ProductClassificationRepo interface {
-	Save(ctx context.Context, c *product.ProductClassification) error
 	FindBySKU(ctx context.Context, sku shared.SKU) (*product.ProductClassification, error)
+}
+
+// ProductClassificationLocalCopy writes the local copy from product-master's
+// ProductClassified events (ADR 0034).
+type ProductClassificationLocalCopy interface {
+	// ApplyIfNewer upserts c for c.SKU() when version is greater than the
+	// stored version (an absent row counts as older than any version), and
+	// records source as the row's classification_source. It reports
+	// whether the row was written; a stale or equal version is a no-op
+	// (false, nil).
+	ApplyIfNewer(ctx context.Context, c *product.ProductClassification, version int64, source string) (bool, error)
+}
+
+// ProductClassificationCatalogue pages through every stored classification
+// in SKU order. Only the one-shot republish-product-classifications backfill
+// uses it (ADR 0034, stage B).
+type ProductClassificationCatalogue interface {
+	// ListAfter returns up to limit classifications whose SKU sorts
+	// strictly after afterSKU (afterSKU "" starts from the beginning).
+	ListAfter(ctx context.Context, afterSKU shared.SKU, limit int) ([]*product.ProductClassification, error)
+}
+
+// ProcessedEventRepo records which inbound CloudEvents a consumer has
+// already applied, so at-least-once delivery has an exactly-once effect.
+type ProcessedEventRepo interface {
+	// Claim records (consumer, eventID). It reports false when the pair was
+	// already recorded (a redelivery). Called inside the same UnitOfWork as
+	// the effect, so a rolled-back effect also un-claims the id.
+	Claim(ctx context.Context, consumer, eventID string) (bool, error)
+}
+
+// OrderPickProgressRepo counts, per order (demand_ref), how many PICK tasks
+// have completed, so the confirm-pick consumer can confirm the order's
+// reservations on the LAST pick (ADR 0035). A fulfillment-execution PICK task
+// is per order line and a Reservation has no line identity, so the count is
+// the only correlation available.
+type OrderPickProgressRepo interface {
+	// RecordPick adds one completed pick for demandRef (creating the row at 1)
+	// and returns the new count. now stamps updated_at, which the housekeeping
+	// sweeper ages out. Called inside the same UnitOfWork as the
+	// processed-event claim, so a rolled-back handling also un-counts the pick.
+	RecordPick(ctx context.Context, demandRef string, now time.Time) (int, error)
 }
 
 // TransferAllocationRepo persists and retrieves the transfer-allocation
@@ -107,6 +176,36 @@ type TransferAllocationRepo interface {
 	// DB unique constraint) so the use case can route the replay to the
 	// "return the original outcome" path.
 	Save(ctx context.Context, a *transfer.Allocation) error
+}
+
+// TransferReceiptRepo persists and retrieves destination transfer
+// receipts (ADR 0031): one row per arrived transfer line, DB-unique on
+// transfer_line_id — the idempotency anchor for BOTH the stage and the
+// stow step.
+type TransferReceiptRepo interface {
+	// FindByTransferLineID returns the receipt for that line, or nil
+	// when no receipt has ever been staged for it.
+	FindByTransferLineID(ctx context.Context, transferLineID string) (*transfer.Receipt, error)
+	// Save inserts a STAGED receipt. A second Save for an already-
+	// staged transfer_line_id must fail with
+	// ErrTransferReceiptAlreadyStaged (the DB unique constraint).
+	Save(ctx context.Context, r *transfer.Receipt) error
+	// SaveStowed updates the receipt to its STOWED terminal state,
+	// recording the stow legs. Saving a receipt that is not in STAGED
+	// state must fail with ErrTransferReceiptAlreadyStowed.
+	SaveStowed(ctx context.Context, r *transfer.Receipt) error
+}
+
+// InventoryExceptionRepo persists quarantined destination scans (ADR
+// 0031). Writing an exception changes NO stock; it exists so an
+// unrecognized arrival is auditable and resolvable by a human.
+type InventoryExceptionRepo interface {
+	// FindByScan returns the quarantine record for the exact same scan
+	// (line, destination, sku, quantity), or nil when this scan was
+	// never quarantined — the replay check that keeps a repeated
+	// identical scan from writing a second exception.
+	FindByScan(ctx context.Context, transferLineID string, destinationSiteID shared.SiteID, sku shared.SKU, receivedQty shared.Quantity) (*transfer.Exception, error)
+	Save(ctx context.Context, e *transfer.Exception) error
 }
 
 // LocationClassificationLookup is the outbound port for the synchronous

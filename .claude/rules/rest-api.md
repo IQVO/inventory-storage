@@ -19,8 +19,11 @@ paths:
                                                   capacity-below-occupancy — ADR-0025)
 - `GET  /bins/{binId}`                         -> GetBin ({binId, capacity, occupied, available})
 - `POST /bins/{binId}/cycle-count`             -> RunCycleCount
-- `PUT  /products/{sku}/classification`        -> ClassifyProduct
-- `GET  /products/{sku}/classification`        -> current ProductClassification
+- `PUT  /products/{sku}/classification`        -> 410 `classification-moved` (retired,
+                                                  ADR-0034: classify in product-master)
+- `GET  /products/{sku}/classification`        -> DEPRECATED: the local copy of
+                                                  product-master's classification
+                                                  (removed at product-master ADR 0003 stage E)
 - `GET  /healthz`
 - `GET  /readyz`                               -> 200 ready / 503 not_ready during
                                                   graceful shutdown (ADR-0020)

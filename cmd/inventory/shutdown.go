@@ -93,7 +93,7 @@ func stopTransferConsumer(logger *slog.Logger, transfer transferConsumerHandle) 
 	select {
 	case <-done:
 	case <-time.After(shutdownDrainTimeout):
-		logger.Warn("transfer allocation command consumer did not stop before the shutdown drain deadline")
+		logger.Warn("inbound Kafka consumers (transfer allocation, product-master, task-completed) did not stop before the shutdown drain deadline")
 	}
 	transfer.close()
 }

@@ -6,7 +6,7 @@ description: The eleven application-layer use cases, their collaborators, and th
 
 # Use Cases
 
-Eleven use cases, one struct each, in `internal/application/usecases`. Each
+Twelve use cases, one struct each, in `internal/application/usecases`. Each
 depends only on the domain and on `application/ports` — never on an adapter.
 Dependencies are plain struct fields, wired once per binary in
 `cmd/inventory/main.go` (REST) and `cmd/mcp/main.go` (MCP, which wires
@@ -21,13 +21,15 @@ Dependencies are plain struct fields, wired once per binary in
 | 5 | `ConfirmPick` | `POST /reservations/{id}/confirm-pick` | — | `StockPicked` (+ `ReservationExpired` via lazy expiry) |
 | 6 | `GetUsable` | `GET /inventory/{sku}/usable` | `check_availability`, resource `inventory://{sku}/usable` | — (read model) |
 | 7 | `RunCycleCount` | `POST /bins/{binId}/cycle-count` | — | `CycleCountCompleted`, `DiscrepancyDetected`, `ItemUnlocated` |
-| 8 | `ClassifyProduct` | `PUT /products/{sku}/classification` | — | `ProductClassified` (published on both topics via the outbox since 2026-10-06, ADR 0031) |
+| 8 | `ApplyProductClassification` | — (Kafka: `warehouse.product-master.events`, ADR 0034; `PUT /products/{sku}/classification` is 410) | — | — (local copy; `ProductClassified` only from the backfill command) |
 | 9 | `GetReservationsByDemandRef` | `GET /reservations?demandRef=` | — | `ReservationExpired` via lazy expiry only |
 | 10 | `RegisterBin` | `PUT /bins/{binId}` | — | — (local topology master data, ADR 0025) |
 | 11 | `GetBin` | `GET /bins/{binId}` | — | — (read) |
+| 12 | `ConfirmPicksForOrder` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted`, ADR 0035, ADR 0036) | — | `StockPicked` per confirmed reservation via `ConfirmPick`: the picked line's reservation when the event carries `line_no`, otherwise only on the order's last pick (+ `ReservationExpired` via lazy expiry) |
 
-`GET /products/{sku}/classification` has no use case of its own: the HTTP
-adapter reads `ProductClassificationRepo` directly for that single lookup.
+`GET /products/{sku}/classification` (deprecated, ADR 0034) has no use case
+of its own: the HTTP adapter reads `ProductClassificationRepo` (the local
+copy) directly for that single lookup.
 The MCP `get_bin_occupancy` tool likewise reads `StockRepo.FindByBin`
 directly, without a use case.
 
@@ -157,7 +159,11 @@ The algorithm:
    reservation for the *same* `(sku, quantity)` remains, return it unchanged —
    a client retry never double-reserves. A different SKU or quantity under
    the same `demandRef` is another order line, never a retry
-   (`isReplayOf`). This guard is best-effort: two concurrent first attempts
+   (`isReplayOf`). When the request names its line (`lineNo`, ADR 0036) the line
+   must match too, so two lines of one order with the same SKU and quantity stay
+   two reservations; an `ACTIVE` reservation with no line still answers a
+   line-aware retry (no double hold across the deploy). This guard is
+   best-effort: two concurrent first attempts
    can both pass it (see the code comment in `reserve_stock.go`).
 2. Load every `StockUnit` for the SKU.
 3. Sum `Usable()` across them; if the request exceeds the sum, fail early with
@@ -179,7 +185,9 @@ allocation is what makes a later revoke re-satisfiable from a different
 holding.
 
 **Fails when:** quantity ≤ 0 (422), empty `demandRef` (400
-`missing-demand-ref`, in the handler), usable insufficient (409), SKU has no
+`missing-demand-ref`, in the handler), `lineNo` present but outside 1..2147483647 (400
+`invalid-line-no`; the use case entry point is `ExecuteForLine`, `Execute` is the
+same without a line), usable insufficient (409), SKU has no
 stock at all (409), concurrent modification of a touched unit (409).
 
 ## 4. RevokeReservation(reservationId)
@@ -220,13 +228,15 @@ for a future stow. It then saves the reservation and publishes `StockPicked`.
 **Fails when:** reservation unknown (404), already resolved (409), expired
 (409 `ErrExpired`), a referenced stock unit or bin is missing (404).
 
-**Trigger.** Today only operators and the `e2e-tests` simulator call
-`POST /reservations/{id}/confirm-pick`. Decided 2026-10-06
-([ADR 0032](/docs/adr/0032), *Proposed*): in production the trigger is a
-pick-completion event from fulfillment-execution consumed by an idempotent
-Kafka consumer that calls this use case — never a sync REST/MCP call from a
-sibling; blocked until that event carries a reservation correlation and the
-picked quantity.
+**Trigger.** Operators and the `e2e-tests` simulator call
+`POST /reservations/{id}/confirm-pick`. In production the trigger is
+fulfillment-execution's `TaskCompleted`, consumed by `ConfirmPicksForOrder`
+(#12 below), which calls this use case once per reservation it confirms (the
+picked line's when the event carries `line_no`, the order's when its last pick
+completes) — never a sync
+REST/MCP call from a sibling. Decided 2026-10-06, implemented by
+[ADR 0035](/docs/adr/0035) (supersedes ADR 0032), per line since
+[ADR 0036](/docs/adr/0036).
 
 ## 6. GetUsable(sku)
 
@@ -268,39 +278,41 @@ Two deliberate choices are visible here:
 Already-`UNLOCATED` and `REMOVED` units are excluded from `systemQty` — you
 cannot lose the same stock twice.
 
-## 8. ClassifyProduct(sku, tags, temperatureClass, dotHazardClass)
+## 8. ApplyProductClassification (replaces ClassifyProduct, ADR 0034)
 
-Registers or replaces a SKU's `ProductClassification` — SKU-level master
-data this service owns as source of truth (ADR 0009), extended in ADR 0010
-with an optional DOT hazard class.
+product-master owns product classification since
+[ADR 0034](/docs/adr/0034); `ClassifyProduct` is removed and
+`PUT /products/{sku}/classification` answers `410 classification-moved`.
+`ApplyProductClassification` is the use case behind the
+`warehouse.product-master.events` consumer: it keeps this service's local
+copy of a SKU's `ProductClassification`, the copy `StowStock` reads.
 
-**Collaborators:** `ProductClassificationRepo`, `EventPublisher`, `Clock`,
+**Collaborators:** `ProductClassificationLocalCopy`, `ProcessedEventRepo`,
 `UnitOfWork`.
 
-**Idempotent by SKU:** classifying an already-classified SKU replaces its
-prior classification rather than erroring — re-classification (e.g. an item
-newly designated hazmat) is a legitimate operational action, the same
-"replace, don't error" pattern `RegisterStation` uses in
-`fulfillment-execution`.
+**Atomic and idempotent:** the CloudEvents `id` is claimed in
+`processed_events` and the row is upserted in ONE unit of work. The upsert
+applies only when the message's `version` is greater than the stored one
+(legacy rows are version 0), so redeliveries and out-of-order messages are
+harmless. No domain event is raised.
 
-**Fails when:** no handling tags supplied (400 `ErrNoHandlingTags`), an
-unknown tag (400 `ErrUnknownHandlingTag`), a duplicate tag (400
-`ErrDuplicateHandlingTag`), `TemperatureSensitive` without a valid
-`TemperatureClass` (400 `ErrTemperatureClassRequired` /
-`ErrUnknownTemperatureClass`), a `TemperatureClass` supplied without
-`TemperatureSensitive` (400 `ErrTemperatureClassNotApplicable`), a
-`DOTHazardClass` outside 1-9 (400 `ErrInvalidDOTHazardClass`), or a
-`DOTHazardClass` supplied without `Hazmat` (400
-`ErrDOTHazardClassNotApplicable`). All validation is delegated to the
-aggregate constructor `product.New` — this use case does not duplicate it.
+**Fails when:** the message breaks the classification invariants (built by
+the aggregate constructor `product.New`, as before) or carries no id or a
+version below 1 — `ErrMalformedProductClassification`, which the consumer
+logs and commits past; a database error is transient and retried.
+
+`RepublishProductClassifications` (stage B backfill, the
+`republish-product-classifications` subcommand) re-emits every stored row as
+the legacy `ProductClassified` through the outbox, in batches.
 
 `StowStock` (#2 above) is the consumer of this master data at stow time.
 
-**Publishes** `ProductClassified` through the outbox inside the same
-`UnitOfWork` as the save, on `warehouse.inventory.events` and
-`warehouse.inventory.analytics` (subject and key = SKU; a full-state
-replacement) — so siblings can keep a local copy instead of polling
-`GET /products/{sku}/classification` ([ADR 0031](/docs/adr/0031)).
+**Publishes** nothing on the normal path. Only `RepublishProductClassifications`
+puts the legacy `ProductClassified` into the outbox, for
+`warehouse.inventory.events` (subject and key = SKU; a full-state
+replacement); the per-write publication of [ADR 0031](/docs/adr/0031) ended
+with [ADR 0034](/docs/adr/0034), and siblings read product-master's
+`ProductClassified` instead of this service.
 
 ## 9. GetReservationsByDemandRef(demandRef)
 
@@ -354,6 +366,83 @@ adds `available = capacity - occupied`.
 
 **Fails when:** empty bin id (400), unknown bin (404 `bin-not-found`) —
 unlike `GetUsable`, there is no meaningful "empty" bin to return.
+
+## 12. ConfirmPicksForOrder(eventId, taskType, orderRef, lineNo?) (ADR 0035, ADR 0036)
+
+Turns "a PICK task for order X completed" into the physical decrement of the
+right reserved stock: exactly the picked line's (ADR 0036) when the event names
+its line, the order's on the last pick otherwise (ADR 0035). It is the use case
+behind the `warehouse.fulfillment.events` consumer; fulfillment-execution's
+`TaskCompleted` carries `task_type` and the additive optional `order_ref`, which
+is the OrderId order-management reserved against (a reservation's `demand_ref`),
+and the additive optional `line_no`, the order line the task was for. A PICK task
+is per order **line** and every one carries the same `order_ref`. Since ADR 0036 a
+`Reservation` stores its `line_no` (sent by order-management as `lineNo`), so a
+task that carries `line_no` maps to exactly its reservation. A task without it, or
+a reservation without it (created before migration 0035), cannot be matched, and
+the order's picks are counted instead (the ADR 0035 fallback below).
+
+**Collaborators:** `ReservationRepo` (`FindByDemandRef`), `OrderPickProgressRepo`
+(`RecordPick`, table `order_pick_progress`, fallback only), `ConfirmPick` (reused
+for every confirmation, its rules are not duplicated), `StockRepo`,
+`EventPublisher`, `Clock` (lazy expiry, counter timestamp), `ProcessedEventRepo`,
+`UnitOfWork`, `PickConfirmationMetrics`.
+
+**Does nothing** (a successful no-op) when `task_type` is not exactly `PICK`,
+when `order_ref` is empty (a producer that predates the field), or when no
+reservation carries that `demand_ref` (a transfer, whose demand ref is
+namespaced, or a non-inventory order). No progress row is left for an order
+that has no reservation, or only `REVOKED`/`EXPIRED` ones.
+
+**Per line (event has `line_no`, ADR 0036).** Among the order's reservations,
+those with `line_no` equal to the event's are walked in id order: `ACTIVE` is
+confirmed through `ConfirmPick` (normally exactly one; earlier attempts of the line
+are `REVOKED`), `CONFIRMED` and `REVOKED` are skipped, `EXPIRED` — or `ACTIVE` past
+its timeout, which lazy expiry resolves first (stock returned,
+`ReservationExpired` raised) — is skipped, logged and counted in
+`inventory.pick_confirmations{outcome=expired}`, never an error (outcome
+`LINE_SETTLED`). **Nothing is counted** and no `order_pick_progress` row is
+written; the order's other lines are not touched, so lines 1 and 3 picked
+confirms 1 and 3 and leaves 2 `ACTIVE`. If no reservation carries the line but
+the order has reservations with **no** `line_no`, the counting below applies to
+those line-less reservations only; if it has none, the event is a no-op
+(`LINE_NOT_FOUND`).
+
+**Counting fallback (event without `line_no`, or only line-less reservations can
+serve it; ADR 0035).** For a claimed event the pick is counted
+(`picked_tasks = picked_tasks + 1`) and compared with
+`needed = count(ACTIVE) + count(CONFIRMED)` of the counted reservations (`REVOKED`
+and `EXPIRED` are never picked, so an order with one revoked line needs one pick
+fewer). While `picked_tasks < needed` the event only records progress and
+returns success (`AWAITING_LAST_PICK`). If the count has reached `needed` but no
+reservation is `ACTIVE` any more, it is a no-op (`NOTHING_TO_CONFIRM`). On the
+last pick each counted reservation is walked exactly as above.
+
+**Atomic and idempotent:** the CloudEvents `id` claim in `processed_events`
+(consumer `task-completed-confirm-pick`), the counter increment (fallback only)
+and every confirmation commit in ONE unit of work, so a failure un-claims the id,
+un-counts the pick and the redelivery is applied in full. A redelivered id is
+skipped by the claim before anything is touched, so it can never be counted twice;
+a new id for a line or an order that is already confirmed only finds reservations
+that are no longer `ACTIVE`.
+
+**Retention.** `order_pick_progress` rows older than
+`ORDER_PICK_PROGRESS_RETENTION` (default 30 days, by `updated_at`) are deleted by
+the housekeeping sweeper (ADR 0026). A row swept while its order is still being
+picked restarts the count, which can only delay the confirmation (the
+reservations then expire lazily), never make it early. The per-line path writes no
+row.
+
+**Fails when:** the event has no id, or its `line_no` is outside 1..2147483647 (the 32-bit column)
+(`ErrMalformedPickCompletion`, which the consumer dead-letters at once; a
+non-integer `line_no` fails to decode and is dead-lettered the same way); a
+database error is transient and retried (5 attempts, then dead-lettered).
+
+**Limitations:** short picks are not modelled. A Task carries no SKU or quantity,
+so the whole reserved quantity of a confirmed line is picked. The counting
+fallback assumes one PICK task per live reservation (true today: one per order
+line) and keeps ADR 0035's "one pick early" edge (a line revoked or expired while
+its task is still being worked); the per-line path has no such edge.
 
 ## Cross-cutting patterns
 

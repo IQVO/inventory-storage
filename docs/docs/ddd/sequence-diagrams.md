@@ -2,7 +2,7 @@
 title: Sequence Diagrams
 sidebar_label: Sequence Diagrams
 sidebar_position: 10
-description: UML sequence diagrams for every command use case exposed over REST, MCP and Kafka, plus the outbox relay and both consumers — derived from the use-case function bodies, with idempotency, version checks, transaction boundaries and error branches.
+description: UML sequence diagrams for every command use case exposed over REST, MCP and Kafka, plus the outbox relay and the Kafka consumers — derived from the use-case function bodies, with idempotency, version checks, transaction boundaries and error branches.
 ---
 
 # Sequence Diagrams
@@ -242,7 +242,7 @@ sequenceDiagram
     participant SR as StockRepo
     participant LR as LocationRepo
     participant OB as Outbox
-    Note over C,H: Decided 2026-10-06 (ADR 0032, Proposed): in production the trigger<br/>becomes a pick-completion event consumed here. This REST route stays<br/>for operators and the simulator. No sync call from sibling contexts.
+    Note over C,H: Decided 2026-10-06 (ADR 0035): in production the trigger is fulfillment-execution's<br/>TaskCompleted, consumed here (diagram 13). This REST route stays for operators<br/>and the simulator. No sync call from sibling contexts.
     C->>H: POST /reservations/id/confirm-pick
     H->>UC: Execute(reservationId)
     UC->>RR: FindByID(id)
@@ -315,44 +315,40 @@ Source: `internal/application/usecases/run_cycle_count.go`.
 Omitted: an unknown bin is not an error here — it simply has system
 quantity 0.
 
-## 7. ClassifyProduct — `PUT /products/{sku}/classification`
+## 7. ApplyProductClassification — product-master's `ProductClassified` (ADR 0034)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
-    participant H as HTTP handler
-    participant PCR as ProductClassificationRepo
-    participant UC as ClassifyProduct
-    participant PC as ProductClassification
-    participant OB as Outbox
-    C->>H: PUT /products/sku/classification handlingTags, temperatureClass, dotHazardClass
-    H->>H: parse tags, temperature class, DOT class
-    alt unknown tag, class or DOT value
-        H-->>C: 400 problem
-    else parsed
-        H->>PCR: FindBySKU(sku), to choose 201 or 200
-        H->>UC: Execute(sku, tags, temperatureClass, dotHazardClass)
-        UC->>PC: product.New(...)
-        alt invariant violated
-            H-->>C: 400 no-handling-tags, temperature-class-required and similar
-        else valid
-            rect rgb(235, 235, 235)
-                UC->>PCR: Save(classification), upsert by SKU
-                UC->>OB: Publish ProductClassified, 2 outbox rows<br/>events + analytics topic, same transaction
-            end
-            H-->>C: 201 first time or 200 replaced
+    participant K as warehouse.product-master.events
+    participant CON as ProductMasterConsumer
+    participant UC as ApplyProductClassification
+    participant PE as processed_events
+    participant PCR as product_classifications
+    K->>CON: FetchMessage
+    alt not a CloudEvent, other type, bad payload or invariant
+        CON->>K: CommitMessages, skip
+    else ProductClassified
+        CON->>UC: Execute(eventId, sku, tags, classes, source, version)
+        rect rgb(235, 235, 235)
+            UC->>PE: Claim(consumer, eventId)
+            UC->>PCR: upsert WHERE stored version < version
+        end
+        alt transient DB error
+            CON->>CON: capped backoff, retry same message
+        else applied or no-op
+            CON->>K: CommitMessages
         end
     end
 ```
 
-Source: `internal/adapters/inbound/http/server.go` (`handleClassifyProduct`),
-`internal/application/usecases/classify_product.go`,
-`internal/domain/product/classification.go`,
-`internal/adapters/outbound/kafka/publisher.go` and `analytics_publisher.go`
-(both encoders map `ProductClassified`, [ADR 0031](/docs/adr/0031)).
-Omitted: the read `GET /products/{sku}/classification`, a direct repository
-lookup with no use case.
+`PUT /products/{sku}/classification` answers `410 classification-moved`
+without reading the body. Source:
+`internal/adapters/inbound/kafka/product_master_consumer.go`,
+`internal/application/usecases/apply_product_classification.go`,
+`internal/adapters/outbound/postgres/product_classification_repo.go`.
+Omitted: the deprecated read `GET /products/{sku}/classification`, a direct
+repository lookup on the local copy with no use case.
 
 ## 8. RegisterBin — `PUT /bins/{binId}`
 
@@ -540,3 +536,116 @@ Source: `internal/adapters/inbound/kafka/analytics_consumer.go`,
 `internal/adapters/outbound/analyticsstore/consumed_events_repo.go`,
 `postgres_projection.go`, `internal/adapters/inbound/http/reports_handler.go`.
 Omitted: tracing spans and the freshness endpoint.
+
+## 13. ConfirmPicksForOrder — fulfillment-execution's `TaskCompleted`, confirm exactly the picked line (ADR 0036; counting fallback ADR 0035)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K as warehouse.fulfillment.events
+    participant CON as TaskCompletedConsumer
+    participant UC as ConfirmPicksForOrder
+    participant CP as ConfirmPick
+    participant PE as processed_events
+    participant PP as order_pick_progress
+    participant RR as ReservationRepo
+    participant OB as Outbox
+    participant DLQ as warehouse.fulfillment.events.dlq
+    K->>CON: FetchMessage
+    alt not a CloudEvent
+        CON->>K: CommitMessages, skip with a sampled WARN
+    else other type
+        CON->>K: CommitMessages
+    else TaskCompleted with an undecodable payload (incl. a non-integer line_no)
+        CON->>DLQ: raw message plus x-dlq headers
+        CON->>K: CommitMessages, only after the DLQ write succeeded
+    else TaskCompleted
+        CON->>UC: Execute(eventId, taskType, orderRef, lineNo?)
+        alt task_type is not PICK or order_ref is empty
+            UC-->>CON: IGNORED, nothing claimed
+        else line_no outside 1..2147483647
+            UC-->>CON: malformed, dead-lettered like any poison message
+        else PICK for an order
+            rect rgb(235, 235, 235)
+                UC->>PE: Claim(task-completed-confirm-pick, eventId)
+                alt already claimed
+                    UC-->>CON: DUPLICATE, nothing is touched
+                else first delivery
+                    UC->>RR: FindByDemandRef(orderRef)
+                    alt no reservation for the order
+                        UC-->>CON: NO_RESERVATIONS, a no-op
+                    else line_no present and some reservation has that line_no
+                        Note over UC: PER-LINE path (ADR 0036): only that line, nothing is counted
+                        loop each reservation of (orderRef, line_no), in id order
+                            alt CONFIRMED or REVOKED
+                                UC->>UC: skip and count
+                            else EXPIRED, or ACTIVE past its timeout
+                                UC->>UC: lazy expiry returns the stock, skip, count, WARN
+                            else ACTIVE
+                                UC->>CP: Execute(reservationId)
+                                CP->>OB: StockUnit.Pick, Bin.Release, Publish StockPicked
+                            end
+                        end
+                        UC-->>CON: LINE_SETTLED, other lines stay ACTIVE
+                    else line_no present, none has it, and no reservation lacks a line_no
+                        UC-->>CON: LINE_NOT_FOUND, a no-op
+                    else no line_no, or line_no present and only legacy reservations (line_no NULL) can serve it
+                        Note over UC: COUNTING fallback (ADR 0035), over all reservations when the event has no line_no, over the line-less ones only when it has one
+                        Note over UC: needed = ACTIVE + CONFIRMED (REVOKED and EXPIRED do not count)
+                        alt needed is 0
+                            UC-->>CON: NOTHING_TO_CONFIRM, no progress row is left
+                        else
+                            UC->>PP: upsert picked_tasks + 1 (same transaction as the claim)
+                            alt picked_tasks is below needed
+                                UC-->>CON: AWAITING_LAST_PICK, nothing is confirmed
+                            else picked_tasks reached needed but no ACTIVE reservation is left
+                                UC-->>CON: NOTHING_TO_CONFIRM
+                            else the LAST pick
+                                loop each counted reservation, in id order
+                                    alt CONFIRMED or REVOKED
+                                        UC->>UC: skip and count
+                                    else EXPIRED, or ACTIVE past its timeout
+                                        UC->>UC: lazy expiry returns the stock, skip, count, WARN
+                                    else ACTIVE
+                                        UC->>CP: Execute(reservationId)
+                                        CP->>OB: StockUnit.Pick, Bin.Release, Publish StockPicked
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        alt transient failure, rolled back with the claim (and the counter)
+            CON->>CON: capped backoff, retry the same message, 5 attempts
+            CON->>DLQ: then dead-letter, and only then commit
+        else settled
+            CON->>K: CommitMessages
+        end
+    end
+```
+
+A PICK task is per order **line**. Since ADR 0036 the `Reservation` stores the
+order line it was made for (`reservations.line_no`, sent by order-management as
+`lineNo`) and `TaskCompleted` carries the task's `line_no`, so a pick confirms
+**exactly its own line**: lines 1 and 3 picked, line 2 not, confirms 1 and 3 and
+leaves 2 `ACTIVE` with its stock still reserved. Nothing is counted on that path
+and no `order_pick_progress` row is written, so ADR 0035's "one pick early"
+edge (a revoked or expired line shifting the count) is closed for line-aware
+events. The counting of ADR 0035 stays as the backward-compatible fallback: for
+an event without `line_no`, or for reservations made before `line_no` existed
+(`NULL`), the consumer counts the order's completed PICK tasks and confirms only
+on the **last** one (confirming early would mark unpicked lines as picked with no
+undo, confirming late is safe: the reservation keeps the stock unavailable, and
+expires lazily if it is never confirmed). The counter row is deleted by the
+housekeeping sweeper after `ORDER_PICK_PROGRESS_RETENTION` (default 30 days). A
+redelivered event id is stopped by the claim before anything is touched. No
+reservation for the order (a transfer or a non-inventory order) settles as a
+successful no-op. Short picks are not modelled (a Task carries no SKU or
+quantity). Source:
+`internal/adapters/inbound/kafka/task_completed_consumer.go`,
+`internal/application/usecases/confirm_picks_for_order.go`, `confirm_pick.go`,
+`internal/adapters/outbound/postgres/order_pick_progress_repo.go`, `sweeper.go`,
+`cmd/inventory/confirmpick.go`. Omitted: the `bootretry` around the first
+broker dial and tracing spans.
