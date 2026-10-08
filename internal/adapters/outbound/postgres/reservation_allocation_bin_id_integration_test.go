@@ -148,6 +148,14 @@ func TestPostgres_Migration0008_BackfillsAllocationBinID(t *testing.T) {
 		t.Fatalf("expected bin_id backfilled to LEGACY-BIN, got %v", binID)
 	}
 
+	// The repository reads the CURRENT schema (later migrations added columns
+	// such as reservations.line_no, ADR 0036), so bring the database fully up
+	// before hydrating the legacy rows through it; the down migration below
+	// then walks back to 0007.
+	if err := m.Up(); err != nil {
+		t.Fatalf("migrate up to head: %v", err)
+	}
+
 	res, err := postgres.NewReservationRepo(pool).FindByID(ctx, "res-legacy")
 	if err != nil || res == nil {
 		t.Fatalf("find legacy reservation: %v", err)
