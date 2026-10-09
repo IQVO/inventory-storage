@@ -114,7 +114,12 @@ on `warehouse.product-master.events` feeds the local classification copy via
 `warehouse.fulfillment.events` confirms the order's picked reservations via
 `ConfirmPicksForOrder`: exactly the picked line's reservation when the event
 carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick
-otherwise ([ADR 0035](/docs/adr/0035)).
+otherwise ([ADR 0035](/docs/adr/0035)), and
+`com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` on
+`warehouse.inbound-receiving.events` books a received `Good` line as staged
+stock via `BookInboundReceiptLine` → `ReceiveStock` (the same `StockReceived`
+as `POST /stock/receive`; `Damaged` is not booked in v1,
+[ADR 0037](/docs/adr/0037)).
 
 `dataschema` is `urn:warehouse:inventory-storage:events:<EventName>:v1` on
 the integration topic and `urn:warehouse:inventory-storage:analytics:<EventName>:v1`
@@ -128,6 +133,7 @@ on the analytics topic.
 | LocationSlotRegistered | `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | `warehouse.facility.events` | same | maps `locationCode` → `zoneId` (derived from the code when absent) |
 | LocationSlotDecommissioned | `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `warehouse.facility.events` | same | drops the slot, so it answers `Known=false` |
 | TaskCompleted | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `warehouse.fulfillment.events` | `TaskCompletedConsumer` (fixed group `inventory-storage-confirm-pick`, FirstOffset, `TASK_COMPLETED_CONSUMER_MODE=kafka`, default off) | for `task_type=PICK` with `order_ref`: with the additive optional `line_no` ([ADR 0036](/docs/adr/0036)) confirms exactly the ACTIVE reservation of (`order_ref`, `line_no`) (`StockPicked`), skipping CONFIRMED/REVOKED/EXPIRED (expired counted) and leaving the order's other lines ACTIVE; nothing is counted. Without `line_no`, or for reservations with no `line_no`, the ADR 0035 fallback counts the pick for the order (`order_pick_progress`, one PICK task per order line) and, only on the LAST pick (count reaches the ACTIVE + CONFIRMED reservations), confirms every ACTIVE one. Claim, counter (fallback only) and confirmations in one transaction; no `order_ref` or no reservations is a no-op; a `line_no` outside 1..2147483647 is dead-lettered ([ADR 0036](/docs/adr/0036)) |
+| ReceiptLineReceived | `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` | `warehouse.inbound-receiving.events` | `InboundReceiptConsumer` (stable group from `INBOUND_RECEIPT_CONSUMER_GROUP`, unset = consumer off, FirstOffset) | for `condition=Good`: `BookInboundReceiptLine` claims the CloudEvents `id` (`processed_events`) and runs `ReceiveStock` in one transaction, so one `StockReceived` (analytics topic) per id, staged and not yet usable ([ADR 0037](/docs/adr/0037)); `Damaged` is claimed, logged and counted, not booked; an empty `sku`, a non-positive `quantity` or an unknown `condition` is logged and committed past |
 | all nine analytics types above | `com.warehouse.wms.inventory-storage.*` | `warehouse.inventory.analytics` | `cmd/inventory-projector` (group `inventory-analytics`, FirstOffset) | upserts `flow_accuracy_rollup`, dedupes on the CloudEvents `id`; a `ProductClassified` on the same topic would be acknowledged and ignored (none is published there since ADR 0034) |
 
 Any other `type` on `warehouse.facility.events` is ignored; a message that

@@ -188,6 +188,14 @@ config:
   # into product_classifications; empty = consumer not started. Requires
   # database.* and kafka.enabled.
   productMasterConsumerGroup: ""
+  # inbound-receiving receipt consumer (ADR-0037). Set to a stable group id
+  # (e.g. inventory-storage-inbound-receipt) to consume inbound-receiving's
+  # ReceiptLineReceived from warehouse.inbound-receiving.events and book every
+  # condition=Good line as a staged receipt (ReceiveStock; Damaged is counted,
+  # not booked); empty = consumer not started. Requires database.* and
+  # kafka.enabled, and EVENT_PUBLISHER=kafka for StockReceived to leave the
+  # service.
+  inboundReceiptConsumerGroup: ""
   # TaskCompleted confirm-pick consumer (ADR-0035). "kafka" enables consuming
   # fulfillment-execution's TaskCompleted from warehouse.fulfillment.events,
   # counting each PICK task per order (order_ref) and confirming every ACTIVE
@@ -224,7 +232,9 @@ database:
 # config.transferAllocationConsumerMode=kafka, CONSUMES
 # network-inventory-planning's transfer allocation commands; when
 # config.productMasterConsumerGroup is set it also CONSUMES product-master's
-# ProductClassified (ADR-0034); when config.taskCompletedConsumerMode=kafka it
+# ProductClassified (ADR-0034); when config.inboundReceiptConsumerGroup is set
+# it also CONSUMES inbound-receiving's ReceiptLineReceived (ADR-0037); when
+# config.taskCompletedConsumerMode=kafka it
 # also CONSUMES fulfillment-execution's TaskCompleted (ADR-0035).
 # kafka.enabled gates EVENT_PUBLISHER=kafka.
 kafka:

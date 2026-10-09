@@ -28,6 +28,7 @@ flowchart LR
     FL["facility-layout<br/>Generic"]
     INV["inventory-storage<br/>Core · WMS"]
     PM["product-master<br/>Supporting · WMS"]
+    IR["inbound-receiving<br/>Supporting · WMS"]
     WP["wes-work-planning<br/>Core · WES"]
     OM["order-management<br/>WMS"]
     FE["fulfillment-execution<br/>Core · WES"]
@@ -43,6 +44,7 @@ flowchart LR
     INV -->|"U OHS+PL to D CF<br/>Kafka warehouse.inventory.events<br/>StockReserved, ReservationRevoked · LIVE"| WP
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST POST /reservations, DELETE /reservations/id · LIVE"| OM
     FE -.->|"U OHS+PL to D CF<br/>Kafka warehouse.fulfillment.events<br/>TaskCompleted (PICK, order_ref, line_no) · WIRED, OFF BY DEFAULT, ADR 0035/0036"| INV
+    IR -.->|"U OHS+PL to D CF<br/>Kafka warehouse.inbound-receiving.events<br/>ReceiptLineReceived (Good lines to staged stock) · WIRED, OFF BY DEFAULT, ADR 0037"| INV
     INV -->|"U OHS+PL to D ACL<br/>REST GET /inventory/sku/usable · LIVE"| NF
     NIP -->|"U OHS+PL to D CF<br/>Kafka warehouse.network-inventory-planning.events<br/>TransferAllocationRequested · LIVE, ADR 0030"| INV
     INV -->|"U OHS+PL to D<br/>Kafka warehouse.inventory.events<br/>transfer replies, receipt and stow facts · LIVE"| NIP
@@ -53,7 +55,7 @@ flowchart LR
     classDef other fill:#1e293b,stroke:#475569,color:#fff;
     classDef absent fill:#e2e8f0,stroke:#94a3b8,color:#334155,stroke-dasharray: 5 5;
     class INV this;
-    class FL,PM,WP,OM,FE,NF,NIP,OA other;
+    class FL,PM,WP,OM,FE,NF,NIP,OA,IR other;
     class WM absent;
 ```
 
@@ -98,6 +100,7 @@ bounded context).
 | 10 | `inventory-storage` ↔ `workforce-management` | Separate Ways | — | no client, topic or type in either repo | **Deliberately absent** |
 | 11 | `network-inventory-planning` → `inventory-storage` | OHS + PL / CF | Kafka `warehouse.network-inventory-planning.events`: `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` (a command, ADR 0030) | here: `internal/adapters/inbound/kafka/transfer_consumer.go` (`TRANSFER_ALLOCATION_CONSUMER_MODE`, group `TRANSFER_ALLOCATION_CONSUMER_GROUP`, default `inventory-storage-transfer-allocation`) | **Live** (`warehouse-infra` sets `kafka`); binary default `off` |
 | 12 | `inventory-storage` → `network-inventory-planning` | OHS + PL / — | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated`, `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected` (ADR 0030), `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged`, `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` (ADR 0033) | here: `internal/adapters/outbound/kafka/publisher.go` (via outbox relay); there: `internal/adapters/inbound/kafka/transfer_reply_consumer.go` | **Live** |
+| 13 | `inbound-receiving` → `inventory-storage` | OHS + PL / CF | **Built ([ADR 0037](/docs/adr/0037)); inbound-receiving's ADR 0003 is the producer side.** Kafka `warehouse.inbound-receiving.events`, `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` (key = ASN number, subject = receipt id; every other inbound-receiving type is committed past). A `condition=Good` line runs the existing `ReceiveStock` use case (the same `StockReceived` as `POST /stock/receive`, quantity staged and not yet usable, stow still the RF action) in one transaction with the CloudEvents-id claim; `Damaged` is not booked in v1 (counted in `inventory.inbound_receipt_units`). No sync call either way, no acknowledgement event back | here: `internal/adapters/inbound/kafka/inbound_receipt_consumer.go`, `internal/application/usecases/book_inbound_receipt_line.go` (group from `INBOUND_RECEIPT_CONSUMER_GROUP`, unset = consumer off); there: inbound-receiving's outbox relay | **Wired, off by default** (`INBOUND_RECEIPT_CONSUMER_GROUP`; needs `DATABASE_URL`, `KAFKA_BROKERS`, and `EVENT_PUBLISHER=kafka` for `StockReceived` to leave the service; the cluster does not set the group yet) |
 
 All REST and MCP surfaces are unauthenticated (ADR 0015). Every Kafka
 message is CloudEvents 1.0 structured mode (ADR 0024).

@@ -71,7 +71,12 @@ info:
     0035) to confirm a completed order's reservations as picked once the order's
     LAST PICK task completes (one PICK task per order line, counted per order);
     that raises this service's own `StockPicked` (analytics topic) per
-    reservation.
+    reservation. And it consumes inbound-receiving's `ReceiptLineReceived`
+    from `warehouse.inbound-receiving.events` (channel below, ADR 0037): a
+    line with `condition=Good` is booked as a staged receipt through the
+    existing ReceiveStock use case (the same `StockReceived` as
+    `POST /stock/receive`, analytics topic; quantity staged, stow stays the RF
+    action); `Damaged` is not booked in v1.
 
 
     **CloudEvents is mandatory (ADR-0024).** Every message on both topics is
@@ -123,6 +128,11 @@ tags:
     description: >
       Events consumed from the fulfillment-execution bounded context (wes
       subdomain): TaskCompleted, from which picks are confirmed (ADR 0035).
+  - name: inbound-receiving
+    description: >
+      Events consumed from the inbound-receiving bounded context (wms
+      subdomain): ReceiptLineReceived, from which Good lines are booked as
+      staged stock (ADR 0037).
 
 servers:
   production:
@@ -315,6 +325,43 @@ channels:
           description: Consumed from the fulfillment-execution bounded context.
       message:
         $ref: "#/components/messages/FulfillmentTaskCompleted"
+
+  warehouse.inbound-receiving.events:
+    description: >
+      inbound-receiving's integration topic, its Published Language for ASNs,
+      dock appointments and receipts (inbound-receiving ADR 0003; the
+      `InboundReceivingTopic` constant in
+      `internal/adapters/inbound/kafka/inbound_receipt_consumer.go`). CONSUMED
+      by this service (ADR 0037), not published: key = ASN number,
+      `source=/warehouse/inbound-receiving`, `subject` = the receipt id. Only
+      `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` is acted
+      on; `ASNRegistered`, `ASNCancelled`, `DockAppointment*`, `ReceiptOpened`
+      and `ReceiptClosed` share the topic and are committed past untouched. The
+      consumer runs only when `INBOUND_RECEIPT_CONSUMER_GROUP` is set (stable
+      group id; also requires `DATABASE_URL` and `KAFKA_BROKERS`).
+    publish:
+      operationId: bookInboundReceiptLine
+      summary: Book a received Good line as a staged receipt.
+      description: >
+        At-least-once, fixed group: FetchMessage, then CommitMessages only after
+        the handler settles. For `condition=Good` the CloudEvents `id` is
+        claimed in `processed_events` (consumer `inbound-receipt-line`) in the
+        SAME transaction as the existing ReceiveStock use case, which raises
+        `StockReceived` through the outbox (analytics topic): the units are
+        staged and not yet usable, and stow stays the RF action (item scan plus
+        location scan). `POST /stock/receive` is unchanged and keeps working
+        for ad-hoc receipts. `condition=Damaged` is NOT booked in v1
+        (quarantine is a later ADR): it is claimed, logged at INFO and counted
+        in `inventory.inbound_receipt_units{outcome=damaged_not_booked}`.
+        A redelivered `id` is a no-op. A transient failure retries the same
+        message with capped backoff; a message that is not a valid CloudEvent,
+        has an undecodable payload, an empty `sku`, a non-positive `quantity` or an
+        unknown `condition` is logged (WARN) and committed past.
+      tags:
+        - name: inbound-receiving
+          description: Consumed from the inbound-receiving bounded context.
+      message:
+        $ref: "#/components/messages/InboundReceivingReceiptLineReceived"
 
 components:
   messages:
@@ -593,6 +640,68 @@ components:
               duration_seconds: 245
               task_type: PICK
               order_ref: ORD-1001
+
+    InboundReceivingReceiptLineReceived:
+      name: InboundReceivingReceiptLineReceived
+      title: Receipt Line Received (from inbound-receiving, consumed)
+      summary: A quantity was received against an ASN line at the dock; Good units are booked as staged stock here.
+      description: >
+        CONSUMED, not produced (ADR 0037). Pinned by inbound-receiving's
+        `apis/asyncapi.yaml` (the handover event of its ADR 0003): type
+        `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived`,
+        `source=/warehouse/inbound-receiving`, subject = the receipt id, Kafka
+        key = the ASN number. `data` is snake_case:
+        `{receipt_id, asn_number, line_no, sku, quantity, condition,
+        received_at}` with `condition` one of `Good` or `Damaged`. This service
+        books `sku` and `quantity` of a `Good` line through ReceiveStock (its
+        own clock stamps the resulting `StockReceived`; `received_at`,
+        `receipt_id`, `asn_number` and `line_no` are logged, not stored) and
+        does not book a `Damaged` line.
+      contentType: application/cloudevents+json
+      tags:
+        - name: inbound-receiving
+          description: Consumed from inbound-receiving.
+      payload:
+        $ref: "#/components/schemas/InboundReceivingReceiptLineReceivedEvent"
+      examples:
+        - name: goodLine
+          summary: 40 good units of SKU-1 received against line 1 of ASN-1001.
+          payload:
+            specversion: "1.0"
+            id: 3f8f6c2e-9b1a-4d6e-8a52-0c7d1e4b9a10
+            source: /warehouse/inbound-receiving
+            type: com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived
+            subject: rcpt-223e4567-e89b-12d3-a456-426614174000
+            time: "2026-10-09T08:10:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inbound-receiving:events:ReceiptLineReceived:v1
+            data:
+              receipt_id: rcpt-223e4567-e89b-12d3-a456-426614174000
+              asn_number: ASN-1001
+              line_no: 1
+              sku: SKU-1
+              quantity: 40
+              condition: Good
+              received_at: "2026-10-09T08:10:00Z"
+        - name: damagedLine
+          summary: 4 damaged units of SKU-1; recorded by inbound-receiving, not booked here.
+          payload:
+            specversion: "1.0"
+            id: 5b7d9e11-2c4a-4f68-9d03-7a1e6c8b2f40
+            source: /warehouse/inbound-receiving
+            type: com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived
+            subject: rcpt-223e4567-e89b-12d3-a456-426614174000
+            time: "2026-10-09T08:12:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inbound-receiving:events:ReceiptLineReceived:v1
+            data:
+              receipt_id: rcpt-223e4567-e89b-12d3-a456-426614174000
+              asn_number: ASN-1001
+              line_no: 1
+              sku: SKU-1
+              quantity: 4
+              condition: Damaged
+              received_at: "2026-10-09T08:12:00Z"
 
     StockReserved:
       name: StockReserved
@@ -1446,6 +1555,79 @@ components:
                 absent the ADR 0035 last-pick counting applies. A value outside
                 1..2147483647 (the 32-bit line_no column) or a non-integer is a
                 malformed payload (dead-lettered).
+
+    InboundReceivingReceiptLineReceivedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of inbound-receiving's ReceiptLineReceived v1
+        as consumed here (not composed from CloudEventBase, whose `source` is
+        this service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events under consumer `inbound-receipt-line`).
+        source:
+          type: string
+          enum: ["/warehouse/inbound-receiving"]
+        type:
+          type: string
+          const: "com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived"
+        subject:
+          type: string
+          description: The receipt id (the Kafka key is the ASN number).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:inbound-receiving:events:ReceiptLineReceived:v1
+        data:
+          type: object
+          required:
+            - receipt_id
+            - asn_number
+            - line_no
+            - sku
+            - quantity
+            - condition
+            - received_at
+          properties:
+            receipt_id:
+              type: string
+            asn_number:
+              type: string
+            line_no:
+              type: integer
+              minimum: 1
+            sku:
+              type: string
+              description: Must be non-empty; an empty SKU is logged and committed past.
+            quantity:
+              type: integer
+              minimum: 1
+              description: Units received on this occurrence. A value <= 0 is logged and committed past.
+            condition:
+              type: string
+              enum: [Good, Damaged]
+              description: Only Good is booked as stock (ADR 0037); Damaged is counted and ignored; any other value is logged and committed past.
+            received_at:
+              type: string
+              format: date-time
 
     StockReservedEvent:
       description: >

@@ -55,6 +55,11 @@ type config struct {
 	// (ADR 0034). Empty means the consumer is not started.
 	productMasterConsumerGroup string
 
+	// inboundReceiptConsumerGroup is INBOUND_RECEIPT_CONSUMER_GROUP: the
+	// stable consumer group of the inbound-receiving receipt consumer
+	// (ADR 0037). Empty means the consumer is not started.
+	inboundReceiptConsumerGroup string
+
 	// taskCompletedConsumerMode is TASK_COMPLETED_CONSUMER_MODE: "off"
 	// (default) or "kafka" — see buildTaskCompletedConsumer (ADR 0035).
 	taskCompletedConsumerMode string
@@ -82,6 +87,8 @@ func loadConfig() config {
 		transferConsumerGroup: os.Getenv("TRANSFER_ALLOCATION_CONSUMER_GROUP"),
 
 		productMasterConsumerGroup: os.Getenv("PRODUCT_MASTER_CONSUMER_GROUP"),
+
+		inboundReceiptConsumerGroup: os.Getenv("INBOUND_RECEIPT_CONSUMER_GROUP"),
 
 		taskCompletedConsumerMode:  getenv("TASK_COMPLETED_CONSUMER_MODE", "off"),
 		taskCompletedConsumerGroup: os.Getenv("TASK_COMPLETED_CONSUMER_GROUP"),

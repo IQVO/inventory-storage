@@ -8,13 +8,14 @@ paths:
 # Cross-service integration events (Kafka)
 
 This service PUBLISHES integration events over Kafka to the fleet's shared
-broker. It CONSUMES four sibling topics: `warehouse.facility.events`
+broker. It CONSUMES five sibling topics: `warehouse.facility.events`
 (facility-layout) into a local location-classification cache,
 `warehouse.network-inventory-planning.events` (transfer commands),
 `warehouse.product-master.events` (product-master, ADR-0034) into the local
-copy of product classifications, and `warehouse.fulfillment.events`
-(fulfillment-execution `TaskCompleted`, ADR-0035) to confirm picks — see
-"Consumed" below.
+copy of product classifications, `warehouse.fulfillment.events`
+(fulfillment-execution `TaskCompleted`, ADR-0035) to confirm picks, and
+`warehouse.inbound-receiving.events` (inbound-receiving `ReceiptLineReceived`,
+ADR-0037) to book Good lines as staged stock — see "Consumed" below.
 
 ## Envelope: CloudEvents 1.0, mandatory (ADR-0024)
 
@@ -159,6 +160,33 @@ not the event stream.
 - Integration test: `internal/application/usecases/product_master_handover_integration_test.go`
   (testcontainers Kafka + Postgres: event -> local copy -> hazmat stow
   placement).
+
+## Consumed: `warehouse.inbound-receiving.events` (ADR-0037)
+
+- Adapter: `internal/adapters/inbound/kafka/inbound_receipt_consumer.go`
+  (`InboundReceivingTopic`). Started only when `INBOUND_RECEIPT_CONSUMER_GROUP`
+  is set (a stable group id from configuration; unset = not started; chart
+  `config.inboundReceiptConsumerGroup`). Also requires `DATABASE_URL` and
+  `KAFKA_BROKERS`, else boot fails. Wiring: `cmd/inventory/inboundreceipt.go`.
+- Dispatches ONLY on the full type
+  `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived`, `data`
+  `{receipt_id, asn_number, line_no, sku, quantity, condition, received_at}` with
+  `condition` `Good` or `Damaged`; the ASN, appointment, `ReceiptOpened` and
+  `ReceiptClosed` types (and anything else) are committed past untouched.
+- `BookInboundReceiptLine` claims the CloudEvents `id` in `processed_events`
+  (consumer `inbound-receipt-line`) and runs the EXISTING `ReceiveStock` in ONE
+  UnitOfWork: `Good` -> `StockReceived` through the outbox (analytics topic),
+  staged and not yet usable, stow stays the RF action — the same effect as
+  `POST /stock/receive`, which is unchanged. `Damaged` is claimed and NOT booked
+  in v1 (INFO log, `inventory.inbound_receipt_units{outcome=damaged_not_booked}`).
+  Receipt context is not stored on the stock event.
+- At-least-once checklist: `FetchMessage`, commit after the handler settles,
+  capped-backoff retry of the SAME message on transient (DB) errors; not a
+  CloudEvent / undecodable payload / empty `sku` / `quantity` <= 0 / unknown
+  `condition` -> WARN and commit past (never claimed).
+- Integration test: `internal/application/usecases/inbound_receipt_handover_integration_test.go`
+  (testcontainers Kafka + Postgres: `ReceiptLineReceived` -> `StockReceived`
+  analytics outbox row; Damaged, invalid and redelivered lines add none).
 
 ## Consumed: `warehouse.fulfillment.events` (ADR-0035)
 

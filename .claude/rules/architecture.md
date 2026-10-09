@@ -65,7 +65,8 @@ structs across the wire; every response is a DTO.
   `warehouse.facility.events` into a local location-classification cache
   (`LOCATION_LOOKUP_MODE=kafka`, ADR-0013), plus the transfer-command,
   product-master and fulfillment (`TaskCompleted`, confirm-pick, ADR-0035)
-  topics — see `integration-events.md`. Every REST and MCP endpoint is
+  topics, and inbound-receiving's `ReceiptLineReceived` (Good lines booked as
+  staged stock, ADR-0037) — see `integration-events.md`. Every REST and MCP endpoint is
   unauthenticated (ADR-0015).
 - API contracts are the single source of truth for generated docs:
   `apis/openapi.yaml` (REST, Spectral-linted) and `apis/asyncapi.yaml`
@@ -74,7 +75,7 @@ structs across the wire; every response is a DTO.
 
 ## ADR index (check before re-litigating a decision)
 
-`docs/docs/adr/0001..0036`: hexagonal layering ADR-0001, chaotic storage
+`docs/docs/adr/0001..0037`: hexagonal layering ADR-0001, chaotic storage
 ADR-0002, revocable reservations ADR-0003, DOT hazard segregation ADR-0010,
 facility-layout events cache ADR-0013, why the REST identity/bearer-auth
 layer was added then removed ADR-0014/0015, standard metrics convention
@@ -88,5 +89,7 @@ transfer allocation ADR-0030, publish ProductClassified ADR-0031,
 confirm-pick event-driven ADR-0032 (superseded by 0035), destination transfer
 receipt custody ADR-0033, product-master owns classification ADR-0034,
 confirm picks on the LAST pick from TaskCompleted ADR-0035 (the fallback),
-reservations store the order line and picks are confirmed per line ADR-0036. The full
+reservations store the order line and picks are confirmed per line ADR-0036,
+stock receipts from inbound-receiving (Good `ReceiptLineReceived` lines booked
+as staged stock) ADR-0037. The full
 index with every Status is `docs/docs/adr/about.md`.

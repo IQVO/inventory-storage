@@ -65,6 +65,7 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | `facility-layout` | LocationSlotDecommissioned | Event | Kafka `warehouse.facility.events`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | Conformist |
 | Inventory control (operator, `e2e-tests` simulator) | RegisterBin | Command | REST `PUT /bins/{binId}` | OHS |
 | Inbound dock (operator, simulator) | ReceiveStock | Command | REST `POST /stock/receive` (header `Idempotency-Key`) | OHS |
+| inbound-receiving | ReceiptLineReceived (`Good` lines, ADR 0037) | Event | Kafka `warehouse.inbound-receiving.events` → `BookInboundReceiptLine` → `ReceiveStock` (`INBOUND_RECEIPT_CONSUMER_GROUP`, default off); `Damaged` lines are not booked | Conformist (inbound-receiving's Published Language); the REST route above is unchanged |
 | Inbound dock (operator, simulator) | StowStock | Command | REST `POST /stock/stow` | OHS |
 | Inventory control (operator, simulator) | RunCycleCount | Command | REST `POST /bins/{binId}/cycle-count` | OHS |
 | product-master | ProductClassified (local copy, ADR 0034) | Event | Kafka `warehouse.product-master.events` → `ApplyProductClassification` | Conformist (product-master's Published Language); `PUT /products/{sku}/classification` answers 410 |

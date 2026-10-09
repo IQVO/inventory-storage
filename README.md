@@ -405,6 +405,26 @@ product-master event types are ignored.
 `GET /products/{sku}/classification` is deprecated (served from the local
 copy until product-master ADR 0003 stage E).
 
+### Consumed: inbound-receiving's ReceiptLineReceived → staged stock (ADR-0037)
+
+inbound-receiving owns ASNs, dock appointments and receipts. When it counts a
+line it publishes `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived`
+on `warehouse.inbound-receiving.events`. A line with `condition=Good` is booked
+through the existing `ReceiveStock` use case, so the effect is the same as
+`POST /stock/receive`: `StockReceived` on the analytics topic, the quantity
+**staged and not yet usable**, stow still the RF action (item scan plus location
+scan). The CloudEvents `id` is claimed in `processed_events` in the same
+transaction, so a redelivery books nothing twice. A `Damaged` line is **not
+booked** in v1 (INFO log and
+`inventory.inbound_receipt_units{outcome=damaged_not_booked}`); an invalid line
+(empty `sku`, `quantity` <= 0, unknown `condition`, not a CloudEvent) is logged
+and skipped. Other inbound-receiving event types are ignored. `POST /stock/receive`
+is unchanged and keeps serving ad-hoc receipts.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `INBOUND_RECEIPT_CONSUMER_GROUP` | unset (consumer off) | Stable consumer group id, e.g. `inventory-storage-inbound-receipt`. When set, `DATABASE_URL` and `KAFKA_BROKERS` are required, and `EVENT_PUBLISHER=kafka` for `StockReceived` to leave the service. Chart value `config.inboundReceiptConsumerGroup`. |
+
 One-shot backfill (product-master ADR 0003 stage B) — re-emits every stored
 classification as the legacy `ProductClassified` through the outbox, which the
 running pod's relay publishes; safe to re-run:
