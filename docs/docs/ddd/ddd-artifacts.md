@@ -31,7 +31,7 @@ naming the files it came from and a note on what it omits.
 | [Domain Events](./domain-events.md) | — (event catalogue) | Every event published and consumed: full CloudEvents type, topic, key, payload, producer, consumers. |
 | [Domain Message Flow](./domain-message-flow.md) | [Domain Message Flow Modelling](https://github.com/ddd-crew/domain-message-flow-modelling) | Four business scenarios as numbered command / query / event flows between contexts. |
 | [EventStorming](./eventstorming.md) | [EventStorming glossary and cheat sheet](https://github.com/ddd-crew/eventstorming-glossary-cheat-sheet) | Design-level process maps with the standard sticky colours and real hotspots. |
-| [Use Cases](./use-cases.md) | — | The eleven application use cases, their collaborators and algorithms. |
+| [Use Cases](./use-cases.md) | — | The application use cases, their collaborators and algorithms. |
 
 ## UML and data
 

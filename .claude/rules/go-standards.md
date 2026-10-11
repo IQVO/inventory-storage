@@ -23,9 +23,10 @@ Moved here from CLAUDE.md; the gate commands and the testcontainers rule stay th
 - Typed domain errors mapped to HTTP status (RFC 7807 problem details) in the
   adapter. gofmt/go vet clean; every package has a doc comment.
 - Table-driven tests: domain + application (in-memory adapter); one httptest
-  per endpoint; build-tagged Postgres integration test (`-tags=integration`,
-  skipped without `DATABASE_URL`). CI's `integration` job runs Postgres only,
-  no Kafka service.
+  per endpoint; build-tagged integration tests (`-tags=integration`) that boot
+  their own testcontainers Postgres or Kafka in `TestMain` (never skipped,
+  never an external `DATABASE_URL`). CI's `integration` job runs
+  `go test -tags=integration ./...` with no `services:` container.
 - `make check` (fmt-check, vet, build, lint, test — ~1 min, no DB) after
   every change, before committing.
 - `make check-all` before pushing: adds the 90% coverage gate, `arch-test`

@@ -720,13 +720,13 @@ go vet ./...
 go test ./...
 go test -race ./...
 
-# Postgres integration tests (build-tagged): each test boots its own Postgres
-# via testcontainers, so they need Docker but no DATABASE_URL / compose service
-go test -tags integration ./internal/adapters/outbound/postgres/...
-
-# Kafka integration test for the facility-layout cache: starts its own
-# broker via testcontainers, so it needs Docker but no external Kafka
-go test -tags integration ./internal/adapters/outbound/facilitycache/...
+# Integration tests (build-tagged; needs Docker only): every suite boots its
+# own infrastructure via testcontainers — Postgres (one container per package,
+# migrations applied once into a template DB, each test clones it) and/or a
+# Kafka broker (internal/testsupport/kafkatc). Never an external
+# DATABASE_URL/KAFKA_BROKERS, never t.Skip — the same command CI's
+# `integration` job runs.
+go test -tags=integration ./... -race -count=1
 ```
 
 Each of the four named invariants has a dedicated failing-path test:
@@ -737,6 +737,42 @@ Each of the four named invariants has a dedicated failing-path test:
 | Stow requires item + location | `TestNewStockUnit_RequiresSKU` / `_RequiresBin` (domain) |
 | Reservation <= usable | `TestStockUnit_Reserve_ExceedsUsable_Rejected` (domain), `TestReserveStock_ExceedsUsable_Rejected` (use case) |
 | Revoke returns to usable | `TestStockUnit_ReleaseReservation_ReturnsToUsable` (domain), `TestRevokeReservation_ReturnsQuantityToUsable` (use case) |
+
+### Integration suites (testcontainers)
+
+The `-tags=integration` suites (`make integration`) prove the use cases and
+adapters against real infrastructure each suite boots itself. The shape is
+shared: a `TestMain` starts ONE container set per package (containers are slow
+to boot — Postgres, and for the Kafka suites a broker via
+`internal/testsupport/kafkatc`), applies the migrations ONCE into a template
+database, and each test then gets its own database cloned from that template
+(`CREATE DATABASE ... TEMPLATE`, a file-level copy); per-test isolation for
+Kafka comes from a unique timestamped topic plus unique SKUs/bins, never from
+separate infrastructure. Highlights, all on real Postgres/Kafka:
+
+- `internal/application/usecases/transfer_allocation_integration_test.go` —
+  the ADR 0030 command/reply contract: a duplicate command yields ONE
+  reservation and one decrement; other-site stock untouched; insufficient
+  stock yields exactly one rejection; a forced outbox failure rolls
+  everything back.
+- `internal/application/usecases/inbound_receipt_handover_integration_test.go`
+  — ADR 0037 end to end: an inbound-receiving `ReceiptLineReceived` on Kafka
+  becomes a `StockReceived` analytics outbox row in the same transaction as
+  the `processed_events` claim; damaged/unknown/redelivered messages leave
+  nothing behind.
+- `internal/adapters/inbound/mcp/streamable_http_integration_test.go` — the
+  MCP server on the real Streamable HTTP transport (SDK client against
+  `httptest`), with real Postgres-backed use cases behind it: initialize,
+  tools/list, tools/call for every tool; domain rejections come back as TOOL
+  errors, not transport errors.
+- `internal/adapters/inbound/kafka/analytics_consumer_integration_test.go` —
+  the analytics projector against a real broker and real analytical Postgres:
+  analytics CloudEvents in, the Inventory Flow & Accuracy read model out
+  (asserted through the same reader `cmd/inventory-reports` serves).
+- `internal/application/usecases/transfer_race_and_error_branches_test.go`
+  (unit, no container) — the scripted-race companion to the transfer suite:
+  in-transaction replay/conflict re-checks, unique-constraint race recovery,
+  and error propagation from every port the happy-path tests never fail.
 
 ## BDD / Acceptance tests
 

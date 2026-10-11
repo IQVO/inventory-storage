@@ -38,9 +38,11 @@ definition of done: `.claude/rules/go-standards.md`.
 
 ## Testing hard rules
 
-- Use **testcontainers** for any new Kafka integration test, never a
-  skip-gated external broker (fleet-wide rule; CI's `integration` job runs
-  Postgres only, no Kafka service).
+- Use **testcontainers** for any new Kafka or Postgres integration test, never
+  a skip-gated external broker or `DATABASE_URL` (fleet-wide rule). CI's
+  `integration` job runs `go test -tags=integration ./... -race -count=1` with
+  no `services:` container: every suite boots its own Postgres or Kafka
+  (`internal/testsupport/kafkatc`) in `TestMain`.
 - Every domain invariant needs a failing-path test (bin-capacity rejection,
   stow-requires-item-and-location, reservation <= usable, revoke returns to
   usable).
