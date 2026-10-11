@@ -149,7 +149,11 @@ the telemetry adapter):
 | `MIGRATIONS_DATABASE_URL` | `DATABASE_URL` | Direct (non-PgBouncer) DSN used only for the migration step (ADR 0023) |
 | `EVENT_PUBLISHER` | `log` | `kafka` swaps in the integration + analytics publishers; with `DATABASE_URL` set they are reached through the transactional outbox and a background relay (ADR 0017) |
 | `OUTBOX_RELAY_INTERVAL` | `1s` | Poll interval of the outbox relay (`EVENT_PUBLISHER=kafka` with Postgres only) |
-| `HOUSEKEEPING_INTERVAL` / `IDEMPOTENCY_KEY_TTL` / `OUTBOX_RETENTION` | `1h` / `24h` / `168h` | Housekeeping sweeper (ADR 0026); `0` disables the sweeper or keeps that table's rows forever |
+| `HOUSEKEEPING_INTERVAL` / `IDEMPOTENCY_KEY_TTL` / `OUTBOX_RETENTION` / `ORDER_PICK_PROGRESS_RETENTION` | `1h` / `24h` / `168h` / `720h` | Housekeeping sweeper (ADR 0026); `0` disables the sweeper or keeps that table's rows forever (the last is the confirm-pick counter, ADR 0035) |
+| `TRANSFER_ALLOCATION_CONSUMER_MODE` / `TRANSFER_ALLOCATION_CONSUMER_GROUP` | `off` / `inventory-storage-transfer-allocation` | `kafka` enables the site-scoped transfer-allocation command consumer (ADR 0030); requires `DATABASE_URL` and `KAFKA_BROKERS` |
+| `TASK_COMPLETED_CONSUMER_MODE` / `TASK_COMPLETED_CONSUMER_GROUP` | `off` / `inventory-storage-confirm-pick` | `kafka` enables the TaskCompleted confirm-pick consumer (ADR 0035/0036); requires `DATABASE_URL` and `KAFKA_BROKERS` |
+| `PRODUCT_MASTER_CONSUMER_GROUP` | *(unset — consumer off)* | Group id for the product-master classification consumer (ADR 0034); setting it enables the consumer |
+| `INBOUND_RECEIPT_CONSUMER_GROUP` | *(unset — consumer off)* | Group id for the inbound-receiving receipt consumer (ADR 0037); setting it enables the consumer |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated broker list |
 | `LOCATION_LOOKUP_MODE` | `permissive` | `kafka` (Kafka-fed facility-layout cache; requires `KAFKA_BROKERS`), `http` (sync call), or `permissive` (no lookup) |
 | `FACILITY_LAYOUT_BASE_URL` | *(unset)* | facility-layout base URL for `LOCATION_LOOKUP_MODE=http` |
@@ -173,7 +177,7 @@ request:
 | `bdd` | godog acceptance suite over the Gherkin specs in `features/` |
 | `contract` | Schemathesis property-based contract tests driven from `apis/openapi.yaml` |
 | `evals-tests` | The MCP eval gate (E1 schema, E2 wire conformance, E3 behavioral) as its own named check — the same suites also run inside `test` |
-| `integration` | Real Postgres 16 service container for the Postgres adapters; testcontainers-started Kafka for the facility-layout cache consumer |
+| `integration` | The whole `-tags=integration` tree: every Postgres and Kafka test boots its own container via testcontainers (no service container, no `DATABASE_URL`; the Ryuk reaper is disabled on the ephemeral runner) |
 | `mutation-fast` | `gremlins` on `internal/domain/stock` — blocking |
 | `mutation` | `gremlins` on all of `internal/domain` (scheduled/dispatch only) |
 | `drift` | Dead code, `go mod tidy -diff`, knip, coverage quality (scheduled/dispatch only, advisory) |

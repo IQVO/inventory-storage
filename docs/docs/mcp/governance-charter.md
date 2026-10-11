@@ -186,8 +186,14 @@ Jaeger and Grafana alongside HTTP.
 `get_inventory_flow_accuracy_report` when `REPORTS_BASE_URL` is set, one
 resource template (`inventory://{sku}/usable`) and one prompt
 (`triage_low_stock`). Each tool call gets an OTel span (`mcp.tool <name>`).
-Not yet implemented here: write-tool rate limiting (§8.2), a dedicated audit
-record per call (§9), and MCP-specific invocation/denial counters (§9).
+The transport-level requirement of §10.1 is met end to end by
+`streamable_http_integration_test.go` (#171): the real Streamable HTTP
+handler behind an `httptest.Server`, driven by the SDK's own client
+(`initialize` → `tools/list` → `tools/call` for every registered tool), with
+real Postgres-backed use cases — domain rejections come back as TOOL errors,
+never transport errors. Not yet implemented here: write-tool rate limiting
+(§8.2), a dedicated audit record per call (§9), and MCP-specific
+invocation/denial counters (§9).
 
 ## 11. Changing this charter
 

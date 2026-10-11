@@ -1,12 +1,12 @@
 ---
 title: Use Cases
 sidebar_label: Use Cases
-description: The eleven application-layer use cases, their collaborators, and their failure modes.
+description: The application-layer use cases, their collaborators, and their failure modes.
 ---
 
 # Use Cases
 
-Twelve use cases, one struct each, in `internal/application/usecases`. Each
+Sixteen use cases, one struct each, in `internal/application/usecases`. Each
 depends only on the domain and on `application/ports` — never on an adapter.
 Dependencies are plain struct fields, wired once per binary in
 `cmd/inventory/main.go` (REST) and `cmd/mcp/main.go` (MCP, which wires
@@ -27,6 +27,13 @@ Dependencies are plain struct fields, wired once per binary in
 | 11 | `GetBin` | `GET /bins/{binId}` | — | — (read) |
 | 12 | `ConfirmPicksForOrder` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted`, ADR 0035, ADR 0036) | — | `StockPicked` per confirmed reservation via `ConfirmPick`: the picked line's reservation when the event carries `line_no`, otherwise only on the order's last pick (+ `ReservationExpired` via lazy expiry) |
 | 13 | `BookInboundReceiptLine` | — (Kafka: `warehouse.inbound-receiving.events` `ReceiptLineReceived`, ADR 0037) | — | `StockReceived` through `ReceiveStock` for a `Good` line (analytics topic); a `Damaged` line raises nothing |
+| 14 | `AllocateTransferStock` | — (Kafka: `warehouse.network-inventory-planning.events` `TransferAllocationRequested`, ADR 0030) | — | `TransferStockAllocated` or `TransferStockAllocationRejected` (integration topic, through the outbox) |
+| 15 | `StageTransferReceipt` | `POST /transfers/{transferLineId}/receipt` | — | `TransferReceiptStaged` for a recognized `ALLOCATED` line (ADR 0033); a quarantine publishes nothing |
+| 16 | `StowTransferStock` | `POST /transfers/{transferLineId}/stow` | — | `TransferStockStowed` — the only event that raises destination usable (ADR 0033) |
+
+(`RepublishProductClassifications`, the one-shot `republish-product-classifications`
+backfill subcommand, is covered under #8 rather than tabulated: it is a maintenance
+command, not an operation trigger.)
 
 `GET /products/{sku}/classification` (deprecated, ADR 0034) has no use case
 of its own: the HTTP adapter reads `ProductClassificationRepo` (the local
@@ -444,6 +451,118 @@ so the whole reserved quantity of a confirmed line is picked. The counting
 fallback assumes one PICK task per live reservation (true today: one per order
 line) and keeps ADR 0035's "one pick early" edge (a line revoked or expired while
 its task is still being worked); the per-line path has no such edge.
+
+## 13. BookInboundReceiptLine(eventId, receiptId, asn, lineNo, sku, qty, condition) (ADR 0037)
+
+Turns a counted receipt line from inbound-receiving into staged stock. A
+`condition=Good` line runs the **existing `ReceiveStock`** (rules are not
+duplicated): `StockReceived` on the analytics topic, the quantity staged and
+not yet usable, stow still the RF action — the same effect as
+`POST /stock/receive`. A `Damaged` line is claimed but **not booked** in v1
+(outcome `DAMAGED_NOT_BOOKED`, INFO log, counted in
+`inventory.inbound_receipt_units{outcome=damaged_not_booked}`); units are
+counted only after the transaction commits, so a rolled-back attempt never
+inflates the counter.
+
+**Collaborators:** `ReceiveStock` (as a `stockReceiver` interface),
+`ProcessedEventRepo`, `UnitOfWork`, `InboundReceiptMetrics` (optional).
+
+**Atomic and idempotent:** the CloudEvents `id` claim in `processed_events`
+(consumer name `inbound-receipt-line`) and `ReceiveStock`'s outbox write
+commit in ONE unit of work (ReceiveStock's own bracket joins it), so a
+redelivery is skipped by the claim and can never double-book.
+
+**Fails when:** no event id, empty SKU, quantity ≤ 0 or a `condition` outside
+`Good | Damaged` (`ErrMalformedInboundReceiptLine` — deterministic: the
+consumer logs it and commits past, never retries); a repository error is
+transient and retried.
+
+## 14. AllocateTransferStock(command) (ADR 0030)
+
+The command/reply leg of the site-scoped transfer saga: holds origin-site
+stock for a planning transfer line and answers with a ledgered outcome,
+`ALLOCATED` or `REJECTED`, **exactly once per `transfer_line_id`**.
+
+**Collaborators:** `StockRepo`, `ReservationRepo`, `TransferAllocationRepo`
+(the `transfer_allocations` ledger), `EventPublisher`, `Clock`, `UnitOfWork`.
+
+**Idempotency is database-level, not use-case-level:** the ledger row is
+unique on `transfer_line_id`, and the entire decision — stock decrements, the
+`Reservation` holding the stock, the ledger row and the outbox rows for the
+reply — commits in ONE unit of work. A replayed command either finds the
+ledger row on the read path (returns the original outcome, touches nothing)
+or races the insert and fails on the unique constraint (re-reads the original
+and returns it), so a line can never be decided — or stock double-decremented
+— twice. This is exactly what the scripted-race suite in
+`transfer_race_and_error_branches_test.go` pins: the in-transaction
+re-checks, the unique-constraint race recovery, and error propagation from
+every port the happy-path tests never fail.
+
+Stock without a recorded site (rows persisted before the site migration)
+answers `ORIGIN_SITE_UNKNOWN` while continuing to serve ordinary demand.
+
+**Fails when:** the command is malformed (empty ids, non-positive quantity —
+`ErrMalformedTransferCommand`, deterministic, committed past); insufficient
+usable at the origin site answers `REJECTED`/`INSUFFICIENT_USABLE` (a reply,
+not an error); the same line id with a different payload answers
+`REJECTED`/`IDEMPOTENCY_CONFLICT`.
+
+## 15. StageTransferReceipt(command) (ADR 0033)
+
+The destination-receiving half: a destination site scanned an arrival and
+counted `receivedQuantity` against a transfer line. The lookup key is the
+`transfer_allocations` ledger row for the line — the same anchor the origin
+side decided against.
+
+**Collaborators:** `TransferAllocationRepo`, `TransferReceiptRepo`,
+`InventoryExceptionRepo`, `EventPublisher`, `Clock`, `UnitOfWork`.
+
+- **Recognized `ALLOCATED` row** → a `transfer_receipts` row is created
+  (`STAGED`, `expected_quantity` from the ledger, `variance = received −
+  expected` SIGNED) and `TransferReceiptStaged` is published through the
+  same transactional outbox. **No usable stock moves at stage.**
+- **Quarantine** — no ledger row (never allocated here), a `REJECTED` row, a
+  `transferId` mismatch, or a destination equal to the transfer's own origin
+  site → an `inventory_exceptions` row is written, nothing that could raise
+  availability is published, and the caller gets an explicit problem
+  (422 with the exception's coordinates). A quarantine is a **committed
+  outcome, not a rollback**; a repeated identical quarantined scan is a
+  benign replay.
+
+**Idempotency is database-level:** the receipt row is unique on the line id.
+A replayed identical stage returns the original receipt (`Replay=true`)
+touching nothing; the same id with a different payload is refused
+(`ErrTransferReceiptConflict`).
+
+**Fails when:** the command is malformed (`ErrMalformedReceiptCommand`);
+see quarantine cases above (`ErrTransferLineUnrecognized`,
+`ErrTransferNotAllocated`, `ErrTransferWrongDestination`).
+
+## 16. StowTransferStock(lineId, bins) (ADR 0033)
+
+Places a `STAGED` receipt's goods into destination bins — the **only** path
+that raises the destination site's usable stock for a transfer, exactly once
+per line. Rules, in order:
+
+1. The receipt must exist and be `STAGED` (stow-before-stage is
+   `ErrReceiptNotStaged`; an already-`STOWED` receipt is the replay case).
+2. Every requested bin must be registered and belong to the receipt's
+   `destination_site_id` — site custody fails closed: another site's bin or a
+   legacy site-less bin rejects with `ErrBinWrongSite` (409).
+3. The bin quantities must sum **exactly** to `received_quantity`
+   (`ErrStowQuantityMismatch`): a partial stow would strand dock stock, a
+   padded one would invent it.
+4. One `StockUnit` per bin leg is created **at the destination site**, bin
+   occupancy is taken, the receipt moves `STAGED → STOWED` and
+   `TransferStockStowed` is published — all in ONE unit of work.
+
+**Idempotency is database-level:** a replayed stow returns the original
+stow legs and `StockUnit`s (`Replay=true`), creates no second `StockUnit`
+and publishes nothing new; a concurrent double-stow loses the state-guard
+race and is routed to the replay path.
+
+**Fails when:** malformed command (`ErrMalformedStowCommand`), receipt not
+staged (409), wrong-site bin (409), quantity mismatch (409).
 
 ## Cross-cutting patterns
 
