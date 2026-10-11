@@ -155,12 +155,10 @@ go vet ./...
 go test ./...
 go test ./... -race
 
-# Postgres-backed integration tests (skipped without DATABASE_URL)
-DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable' \
-  go test -tags=integration ./internal/adapters/outbound/postgres/...
-
-# Kafka-backed integration test (starts its own broker via testcontainers; needs Docker)
-go test -tags=integration ./internal/adapters/outbound/facilitycache/...
+# Integration tests (build-tagged; needs Docker only — every suite boots its
+# own Postgres and/or Kafka via testcontainers; never an external
+# DATABASE_URL/KAFKA_BROKERS, never skipped)
+go test -tags=integration ./... -race -count=1
 
 # Gherkin acceptance suite
 go test -run TestFeatures ./...
