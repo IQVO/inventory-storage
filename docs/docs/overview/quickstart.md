@@ -1,10 +1,29 @@
 ---
+id: quickstart
 title: Quickstart
 sidebar_label: Quickstart
 description: Run the service locally and walk every endpoint with curl.
 ---
 
 # Quickstart
+
+## Prerequisites
+
+| Tool | Why |
+| --- | --- |
+| Go (version from `go.mod`) | build and run the four binaries |
+| Docker | `docker compose up -d postgres` (Option B) and the testcontainers integration suite |
+| `make` | the local quality gate (`make help`) |
+| golangci-lint v2.13.1, gremlins v0.6.0, govulncheck, `schemathesis==4.28.0` | optional: `make lint`, `make mutation`, `make vuln`, `make contract` |
+| The warehouse-infra kind cluster | only for Kafka: the platform's single broker is published on `localhost:9092`; this repo has no Kafka in `docker-compose.yml` |
+
+## Build and check
+
+```bash
+make build        # go build ./...
+make check        # fmt-check vet build lint test  (what the pre-push hook runs)
+make check-all    # check + coverage gate + arch-test + bdd
+```
 
 ## Run it
 
@@ -51,6 +70,40 @@ Add `LOCATION_LOOKUP_MODE=kafka` to also build the facility-layout location
 cache from `warehouse.facility.events` (startup then waits for the replay to
 finish). See [Integration](/docs/ecosystem/integration) for what lands on the
 wire and what is consumed.
+
+### The other three binaries
+
+```bash
+# MCP server on :8090 (own in-memory store unless DATABASE_URL is set)
+go run ./cmd/mcp
+
+# Analytics: needs a second Postgres database for the read model
+export ANALYTICS_DATABASE_URL='postgres://inventory:***@localhost:5432/inventory_analytics?sslmode=disable'
+KAFKA_BROKERS=localhost:9092 go run ./cmd/inventory-projector   # admin /healthz on :8091
+go run ./cmd/inventory-reports                                  # reports REST on :8092
+curl -s 'localhost:8092/reports/flow-accuracy?from=2026-10-01T00:00:00Z&to=2026-10-02T00:00:00Z'
+# {"rows":[...]}
+```
+
+The projector only sees events when `cmd/inventory` runs with
+`EVENT_PUBLISHER=kafka` against the same broker. Create the analytical database
+first (`createdb`, or `CREATE DATABASE inventory_analytics;` in the compose
+Postgres); the projector applies `migrations/analytics` itself.
+
+### Through the cluster gateway
+
+With warehouse-infra running, the deployed API is behind Kong at
+`http://localhost:8000/api/inventory-storage/` (the prefix is stripped), e.g.
+`curl http://localhost:8000/api/inventory-storage/healthz`.
+
+## Seeding
+
+There is no seed script: the walk below *is* the seed. Register bins with
+`PUT /bins/{binId}`, then receive and stow stock. Product classifications
+cannot be written here any more (`PUT /products/{sku}/classification` answers
+`410 classification-moved`); they arrive from product-master when
+`PRODUCT_MASTER_CONSUMER_GROUP` is set, so a SKU without one is stowed without
+hazmat/temperature checks.
 
 ## Walk the API
 
@@ -148,6 +201,8 @@ The full status-code and problem-type table is in the
 [ADR 0005](/docs/adr/0005-rfc-7807-problem-details) for why.
 
 ## Tests
+
+See [Testing](../development/testing.md) for every layer and CI job.
 
 ```bash
 go build ./...
