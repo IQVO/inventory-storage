@@ -65,14 +65,18 @@ Feature: Stow placement rules
     And the Usable inventory for SKU "SKU-OXI" is 0
 
   @bdd
-  Scenario: Compatible DOT hazard classes, and a SKU's own earlier stow, share a bin
+  Scenario: Compatible DOT hazard classes share a bin, and a SKU never conflicts with its own earlier stow
     Given a Bin "D-2-1" with capacity 20
+    And a Bin "D-2-2" with capacity 20
     And Bin "D-2-1" sits in a hazmat-rated zone
+    And Bin "D-2-2" sits in a hazmat-rated zone
     And SKU "SKU-FLAM" is classified by product-master as Hazmat with DOT hazard class 3
     And SKU "SKU-SOLID" is classified by product-master as Hazmat with DOT hazard class 4
+    And SKU "SKU-GAS" is classified by product-master as Hazmat with DOT hazard class 2
     And 4 units of SKU "SKU-FLAM" are Stowed into Bin "D-2-1"
     When I Stow 2 units of SKU "SKU-SOLID" into Bin "D-2-1"
     Then the response status is 201
-    When I Stow 3 units of SKU "SKU-FLAM" into Bin "D-2-1"
+    Given 2 units of SKU "SKU-GAS" are Stowed into Bin "D-2-2"
+    When I Stow 3 units of SKU "SKU-GAS" into Bin "D-2-2"
     Then the response status is 201
-    And the Usable inventory for SKU "SKU-FLAM" is 7
+    And the Usable inventory for SKU "SKU-GAS" is 5
