@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -233,5 +234,44 @@ func TestTransferStowEndpoint_StowBeforeStageIs409(t *testing.T) {
 	})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// apis/openapi.yaml documents 400 (not the service-wide 422 zero-quantity, and
+// never a 500) for an empty destination site and a non-positive quantity on the
+// two transfer endpoints.
+func TestTransferEndpoints_RejectBadScalarsWithBadRequest(t *testing.T) {
+	cases := []struct {
+		name, path, slug string
+		body             map[string]any
+	}{
+		{"missing destination site", "/transfers/tl-1/receipt", "empty-site-id",
+			map[string]any{"transferId": "tr-1", "sku": "SKU-T", "receivedQuantity": 5}},
+		{"blank destination site", "/transfers/tl-1/receipt", "empty-site-id",
+			map[string]any{"transferId": "tr-1", "destinationSiteId": "  ", "sku": "SKU-T", "receivedQuantity": 5}},
+		{"zero received quantity", "/transfers/tl-1/receipt", "quantity-not-positive",
+			map[string]any{"transferId": "tr-1", "destinationSiteId": "SITE-DEST", "sku": "SKU-T", "receivedQuantity": 0}},
+		{"negative received quantity", "/transfers/tl-1/receipt", "quantity-not-positive",
+			map[string]any{"transferId": "tr-1", "destinationSiteId": "SITE-DEST", "sku": "SKU-T", "receivedQuantity": -1}},
+		{"zero bin quantity", "/transfers/tl-1/stow", "quantity-not-positive",
+			map[string]any{"bins": []map[string]any{{"binId": "BIN-D1", "quantity": 0}}}},
+		{"negative bin quantity", "/transfers/tl-1/stow", "quantity-not-positive",
+			map[string]any{"bins": []map[string]any{{"binId": "BIN-D1", "quantity": -3}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := newTransferServer()
+			rec := postJSON(t, ts.handler, tc.path, tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+			var problem map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+				t.Fatalf("problem body: %v", err)
+			}
+			if typ, _ := problem["type"].(string); !strings.HasSuffix(typ, "/"+tc.slug) {
+				t.Fatalf("problem type = %q, want suffix /%s", typ, tc.slug)
+			}
+		})
 	}
 }

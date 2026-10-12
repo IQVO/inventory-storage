@@ -107,10 +107,7 @@ Feature: Edge cases when scanning received transfer goods
     When a POST is sent to "/transfers/tl-1/receipt" with the body {"destinationSiteId":"SITE-DEST","sku":"SKU-R1","receivedQuantity":5}
     Then the problem detail type is "transfer-id-required"
 
-  # Defects found by this suite (apis/openapi.yaml 400: "destinationSiteId
-  # missing or empty, receivedQuantity not positive"). Excluded from the run
-  # until fixed; they describe the documented behaviour.
-  @bdd @known-bug
+  @bdd
   Scenario Outline: A scan with an empty destination site or a non-positive quantity is a bad request
     When a POST is sent to "/transfers/tl-1/receipt" with the body <body>
     Then the response status is 400
@@ -122,3 +119,15 @@ Feature: Edge cases when scanning received transfer goods
       | {"transferId":"tr-1","destinationSiteId":"","sku":"SKU-R1","receivedQuantity":5}             |
       | {"transferId":"tr-1","destinationSiteId":"SITE-DEST","sku":"SKU-R1","receivedQuantity":0}    |
       | {"transferId":"tr-1","destinationSiteId":"SITE-DEST","sku":"SKU-R1","receivedQuantity":-1}   |
+
+  @bdd
+  Scenario: A scan with no destination site names the missing site
+    When a POST is sent to "/transfers/tl-1/receipt" with the body {"transferId":"tr-1","sku":"SKU-R1","receivedQuantity":5}
+    Then the response status is 400
+    And the problem detail type is "empty-site-id"
+
+  @bdd
+  Scenario: A scan with a non-positive quantity names the quantity
+    When a POST is sent to "/transfers/tl-1/receipt" with the body {"transferId":"tr-1","destinationSiteId":"SITE-DEST","sku":"SKU-R1","receivedQuantity":0}
+    Then the response status is 400
+    And the problem detail type is "quantity-not-positive"
