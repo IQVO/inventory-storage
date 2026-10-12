@@ -1,4 +1,5 @@
 ---
+id: integration
 title: Integration Guide
 sidebar_label: Integration Guide
 description: How to integrate with inventory-storage — topic, envelope, payloads, configuration, and how to verify it end to end.
@@ -8,6 +9,41 @@ description: How to integrate with inventory-storage — topic, envelope, payloa
 
 Everything a downstream team needs to consume this service, and everything an
 operator needs to run it against the shared broker.
+
+## Every edge at a glance
+
+The relationship patterns, code paths on both sides and live/wired status are on
+the [context map](./context-map.md); this table is the operational view: how
+each edge behaves when the other side fails, as implemented here.
+
+### Upstream (this service consumes or calls)
+
+| Upstream | Protocol and contract | Switch here | When it fails |
+| --- | --- | --- | --- |
+| facility-layout | Kafka `warehouse.facility.events` (`ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned`) → in-process location cache | `LOCATION_LOOKUP_MODE=kafka` | Startup blocks up to 60 s for the replay and fails if it does not finish; malformed facts go to `warehouse.facility.events.dlq`; an empty cache answers `Known=false` (stow allowed, fail-open). |
+| facility-layout | REST `GET /locations/{locationCode}/classification` | `LOCATION_LOOKUP_MODE=http` + `FACILITY_LAYOUT_BASE_URL` | 3 attempts per call inside a circuit breaker; an open breaker falls back to permissive (fail-open); a plain error blocks only hazmat / temperature-sensitive SKUs (`409 location-classification-unavailable`). |
+| product-master | Kafka `warehouse.product-master.events`, `ProductClassified` → `product_classifications` | `PRODUCT_MASTER_CONSUMER_GROUP` | Transient errors retry the same message without limit; poison is logged and skipped. While it is off or behind, stows use the last local copy (or none). |
+| network-inventory-planning | Kafka `warehouse.network-inventory-planning.events`, `TransferAllocationRequested` (command) | `TRANSFER_ALLOCATION_CONSUMER_MODE=kafka` | Same retry rule; replies (`TransferStockAllocated` / `...Rejected`) are only sent once the command is handled. |
+| inbound-receiving | Kafka `warehouse.inbound-receiving.events`, `ReceiptLineReceived` → `ReceiveStock` | `INBOUND_RECEIPT_CONSUMER_GROUP` | Same retry rule; dedupe through `processed_events`. |
+| fulfillment-execution | Kafka `warehouse.fulfillment.events`, `TaskCompleted` (PICK, `order_ref`, optional `line_no`) → confirm picks | `TASK_COMPLETED_CONSUMER_MODE=kafka` | 5 attempts, then `warehouse.fulfillment.events.dlq`; poison straight to the DLQ. While off, reservations stay `ACTIVE` until confirmed over REST or expired. |
+
+### Downstream (others consume or call this service)
+
+| Downstream | Protocol and contract | Failure behaviour on this side |
+| --- | --- | --- |
+| wes-work-planning | Kafka `warehouse.inventory.events`: `StockReserved`, `ReservationRevoked` | Outbox: a broker outage delays events (relay retries the oldest row) but never loses or reorders them per key. |
+| network-inventory-planning | Kafka `warehouse.inventory.events`: `TransferStockAllocated`, `TransferStockAllocationRejected`, `TransferReceiptStaged`, `TransferStockStowed` | Same outbox guarantee. |
+| product-master | Kafka `warehouse.inventory.events`: legacy `product.ProductClassified`, only from the re-publish backfill | Same. |
+| order-management | REST `POST /reservations` (`Idempotency-Key`), `DELETE /reservations/{id}` | Synchronous: `409 insufficient-usable` / `concurrent-modification`, `422 idempotency-key-reused`. A retried POST with the same key and body replays the stored response. |
+| network-fulfillment | REST `GET /inventory/{sku}/usable` | Read-only; no side effects. |
+| warehouse-ops-agent | REST `GET /reservations?demandRef=`; reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP `check_availability`, `get_bin_occupancy` ([MCP tools](../mcp/tools.md)) | Read-only. MCP sessions are per process; reports reflect the projector's lag. |
+| warehouse-console | the inventory micro-frontend (`web/`) calls this REST API through Kong; CORS allows `CORS_ALLOWED_ORIGINS` | Standard RFC 7807 problems. |
+| inventory-projector (this repo) | Kafka `warehouse.inventory.analytics` | Analytics only; invalid CloudEvents are skipped, no DLQ. |
+
+Absent on purpose: no edge to workforce-management (Separate Ways), and no
+outbound REST or MCP call from this service to any sibling except the optional
+facility-layout lookup. Every route, topic and group is also on the
+[Runbook](../operations/runbook.md#kafka).
 
 ## What this service publishes
 
