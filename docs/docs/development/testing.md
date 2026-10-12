@@ -156,9 +156,14 @@ subset `./internal/domain/stock` blocks every PR (`mutation-fast`); the whole
 ### Frontend and chart
 
 `web/` (the inventory micro-frontend) has its own Vitest suite (`npm test`),
-oxlint and `tsc -b`, run by the `web` job. `charts/inventory-storage/tests/test_service_selectors.py`
-checks Service selectors; it is run by hand
-(`python3 charts/inventory-storage/tests/test_service_selectors.py`), not by CI.
+oxlint and `tsc -b`, run by the `web` job. The chart has two tests, both run
+by the `chart-tests` CI job: `charts/inventory-storage/tests/render_test.sh`
+(the API Deployment mounts the env ConfigMap with `envFrom`, tuned `config.*`
+values reach it, the other workloads do not mount it) and
+`charts/inventory-storage/tests/test_service_selectors.py` (each Service
+selects exactly one Deployment). Run them locally with
+`bash charts/inventory-storage/tests/render_test.sh` and
+`python3 charts/inventory-storage/tests/test_service_selectors.py`.
 
 ## CI jobs
 
@@ -182,6 +187,7 @@ checks Service selectors; it is run by hand
 | `vuln` | govulncheck v1.1.4 | always |
 | `docs-api-drift` | `npm run clean-api-docs inventory && npm run gen-api-docs inventory`, then `git diff --exit-code -- docs/api-reference/rest` | always |
 | `helm-lint` | `ct lint --charts charts/inventory-storage` | pull requests |
+| `chart-tests` | `bash charts/inventory-storage/tests/render_test.sh` (ConfigMap `envFrom` mount, config values) and `python3 charts/inventory-storage/tests/test_service_selectors.py` (with PyYAML pinned) | always |
 | `arch-test` | `go test ./internal/architecture/... -v` | always |
 | `web` | builds warehouse-ui-kit `develop`, then lint, `tsc -b`, test, build of `web/` | always |
 | `trivy-scan` | image build + Trivy, blocking on fixable CRITICAL/HIGH | pull requests |
