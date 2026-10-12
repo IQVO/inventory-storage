@@ -117,6 +117,7 @@ They run in `make test` and again, by name, in the `evals-tests` CI job.
 | `TestReplayConsumersSetCommitInterval` | A kafka-go reader on a process-unique group (the facility cache's full replay) sets `CommitInterval`. |
 | `TestDomainHasNoWireStructTags` (+ detector test) | No `json:` / `db:` tags on domain types. |
 | `TestOutboxRelaysPassAttemptCap` (+ `TestOutboxRelayCapSensorFailsOnBadFixtures`) | Every non-test `NewOutboxRelay` call under `cmd/` passes `WithMaxAttempts` ([ADR 0038](../adr/0038-outbox-relay-attempt-cap.md)), so one poison row cannot block the relay forever. |
+| `TestMCPOptionalToolInputsCarryOmitempty` (+ `TestMCPOptionalToolInputsSensorFailsOnBadFixtures`) | An MCP tool input field whose `jsonschema` description says "optional" carries `omitempty`, or the SDK advertises it as required and calls without it fail (gap fix D16). |
 
 ### Integration (testcontainers)
 
