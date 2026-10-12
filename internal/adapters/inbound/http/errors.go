@@ -22,6 +22,7 @@ func statusFor(err error) int {
 		return http.StatusNotFound
 
 	case errors.Is(err, shared.ErrEmptySKU),
+		errors.Is(err, shared.ErrEmptySiteID),
 		errors.Is(err, shared.ErrEmptyBinID),
 		errors.Is(err, reservation.ErrInvalidLineNo),
 		errors.Is(err, stock.ErrStowRequiresItemAndLocation),
@@ -98,6 +99,7 @@ func problemCatalog() []struct {
 		{usecases.ErrProductClassificationNotFound, problemInfo{"product-classification-not-found", "Product classification not found"}},
 
 		{shared.ErrEmptySKU, problemInfo{"empty-sku", "SKU must not be empty"}},
+		{shared.ErrEmptySiteID, problemInfo{"empty-site-id", "Site ID must not be empty"}},
 		{shared.ErrEmptyBinID, problemInfo{"empty-bin-id", "Bin ID must not be empty"}},
 		{reservation.ErrInvalidLineNo, problemInfo{"invalid-line-no", "lineNo must be between 1 and 2147483647"}},
 		{stock.ErrStowRequiresItemAndLocation, problemInfo{"stow-requires-item-and-location", "Stow requires both an item scan and a location scan"}},
