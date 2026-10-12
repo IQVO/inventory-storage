@@ -1,0 +1,251 @@
+---
+id: runbook
+title: Runbook
+sidebar_label: Runbook
+description: How inventory-storage is deployed, migrated and operated — Deployments, probes, Kafka topics and consumer groups, outbox relay, DLQs, housekeeping, scaling and routine procedures.
+---
+
+# Runbook
+
+Everything here is derived from `charts/inventory-storage`, the four
+composition roots under `cmd/` and the adapters they wire. Variable names are
+explained in [Configuration](./configuration.md); failure modes in
+[Troubleshooting](./troubleshooting.md).
+
+## Deployment
+
+The Helm chart is `charts/inventory-storage` (chart name `inventory-storage`).
+The `release` CI job publishes it to `oci://ghcr.io/iqvo/inventory-storage` and
+the image to `ghcr.io/iqvo/inventory-storage` on every push to `main`. One image
+carries all four binaries; each Deployment picks its binary with `command:`.
+
+| Deployment (component label) | Binary | Enabled by | Container port | Service | Probes |
+| --- | --- | --- | --- | --- | --- |
+| `<release>` (`api`) | `cmd/inventory` (image default) | always | `8080` (`http`) | `<release>`, ClusterIP `80 → http` | startup `GET /healthz` (2 s × 30), liveness `GET /healthz` (10 s), readiness `GET /readyz` (5 s) |
+| `<release>-projector` (`analytics-projector`) | `/app/inventory-projector` | `analytics.enabled` | `8091` (`admin`) | none (it serves no traffic) | startup, liveness and readiness all `GET /healthz` on `admin` |
+| `<release>-reports` (`analytics-reports`) | `/app/inventory-reports` | `analytics.enabled` | `8092` (`http`) | `<release>-reports`, ClusterIP `80 → http` | all three `GET /healthz` |
+| `<release>-mcp` (`mcp`) | `/app/mcp` | `mcp.enabled` | `8090` (`http`) | `<release>-mcp`, ClusterIP `8090 → 8090` | all three `GET /healthz` |
+| `<release>-frontend` | nginx serving `web/` | `frontend.enabled` | `8080` | ClusterIP `80` | — (static assets; reached through warehouse-infra's Nginx gateway at `/mfes/inventory-storage/`, never through Kong) |
+
+In the warehouse-infra kind cluster the REST API is reached through Kong at
+`http://localhost:8000/api/inventory-storage/...` (prefix stripped), e.g.
+`curl http://localhost:8000/api/inventory-storage/healthz`. REST and MCP are
+unauthenticated.
+
+`terminationGracePeriodSeconds` is `30` on the API Deployment: 10 s HTTP drain,
+up to 10 s for the consumers and the outbox relay to stop, plus margin for the
+readiness probe to observe the flip.
+
+### What the probes mean
+
+| Endpoint | Binary | Answers |
+| --- | --- | --- |
+| `GET /healthz` | all four | `200 {"status":"ok"}` as soon as the listener is up. |
+| `GET /readyz` | `cmd/inventory` only | `200 {"status":"ready"}` until SIGTERM; `503 {"status":"not_ready"}` from the first step of graceful shutdown (`internal/adapters/inbound/http/readiness.go`). |
+
+Readiness does **not** check Postgres or Kafka at request time. Everything the
+API depends on is verified *before* the listener opens, in this order
+(`cmd/inventory/main.go`): telemetry, migrations + pool ping (under boot retry),
+the location lookup (with `LOCATION_LOOKUP_MODE=kafka` it blocks until the
+facility cache has replayed `warehouse.facility.events`, up to 60 s), then every
+enabled consumer. A pod that cannot reach its database or broker therefore
+never answers `/healthz` and is restarted once the startup probe's 60 s budget
+runs out. The startup probe exists for this fleet's ~10 s first-dial reset
+(Istio native sidecars), which `bootretry` absorbs.
+
+### Graceful shutdown (`cmd/inventory`)
+
+On SIGTERM (`cmd/inventory/shutdown.go`, [ADR 0020](../adr/0020-resilience-circuit-breaker-retry-dlq-shutdown.md)):
+
+1. `/readyz` flips to `503`.
+2. The HTTP server stops accepting connections and drains for up to 10 s.
+3. The shared consumer context is cancelled; the facility cache, transfer,
+   product-master, TaskCompleted and inbound-receipt consumers get up to 10 s
+   each to return, then their readers close.
+4. Deferred: the outbox relay stops (10 s bound) and its writer closes, the
+   Kafka writers close, the housekeeping sweeper stops (10 s bound), the pool
+   closes, and telemetry flushes (5 s bound).
+
+`cmd/mcp`, `cmd/inventory-reports` and `cmd/inventory-projector` stop their HTTP
+server with a 10 s drain; the projector cancels its consumer first.
+
+## Migrations
+
+| Database | Files | Applied by | DSN used |
+| --- | --- | --- | --- |
+| OLTP | `migrations/*.sql` (golang-migrate, `0001`–`0008`, `0030`–`0035`) | `cmd/inventory` **and** `cmd/mcp`, at every start, before the pool opens | `MIGRATIONS_DATABASE_URL`, falling back to `DATABASE_URL` |
+| Analytical | `migrations/analytics/*.sql` (`0001_report`) | `cmd/inventory-projector`, at every start | `ANALYTICS_DATABASE_URL` |
+
+There is no separate migration Job. golang-migrate serializes concurrent runs
+with a session-scoped `pg_advisory_lock`, which PgBouncer's transaction pooling
+cannot honour, so in the cluster `MIGRATIONS_DATABASE_URL` must be a **direct**
+connection ([ADR 0023](../adr/0023-migrations-direct-postgres-connection.md)).
+The chart mounts it from the same secret with `optional: true`, so a secret
+without that key still boots (and migrates through `DATABASE_URL`).
+
+Tables created by the OLTP migrations: `bins`, `stock_units`, `reservations`,
+`reservation_allocations`, `product_classifications`, `outbox_events`
+(`0005` drops the original `events` table of `0001`), `idempotency_keys`,
+`transfer_allocations`, `transfer_receipts`, `inventory_exceptions`,
+`processed_events`, `order_pick_progress`. Analytical tables:
+`analytics_processed_events`, `analytics_consumed_events`,
+`flow_accuracy_rollup`. Column-level detail is on
+[Entity relationship](../ddd/entity-relationship.md).
+
+A failed migration fails startup (after 5 boot-retry attempts) and the pod
+crash-loops; see [Troubleshooting](./troubleshooting.md#migration-failure).
+
+## Kafka
+
+One broker serves the whole platform: the in-cluster Bitnami Kafka deployed by
+warehouse-infra (`kafka:9092` inside the cluster, `localhost:9092` from the
+host through its external listener). Every message produced or accepted is a
+CloudEvents 1.0 **structured-mode** JSON event with the
+`content-type: application/cloudevents+json; charset=UTF-8` header
+(`internal/adapters/kafka/cloudevents/cloudevents.go`,
+[ADR 0024](../adr/0024-cloudevents-mandatory-envelope.md)). Writers auto-create
+topics and route by key hash ([ADR 0021](../adr/0021-kafka-producer-partition-key.md)).
+
+### Produced
+
+| Topic | Producer | Event `type`s (`com.warehouse.wms.inventory-storage.` …) | Key |
+| --- | --- | --- | --- |
+| `warehouse.inventory.events` | `cmd/inventory` (relay or direct), `cmd/mcp` (outbox or direct) | `reservation.StockReserved`, `reservation.ReservationRevoked`, `reservation.TransferStockAllocated`, `reservation.TransferStockAllocationRejected`, `stock.TransferReceiptStaged`, `stock.TransferStockStowed`, `product.ProductClassified` (only from the re-publish command since ADR 0034) | reservation id, transfer line id, or SKU |
+| `warehouse.inventory.analytics` | same | `stock.StockReceived`, `stock.ItemStowed`, `stock.ItemUnlocated`, `reservation.StockReserved`, `reservation.StockPicked`, `reservation.ReservationExpired`, `reservation.ReservationRevoked`, `bin.CycleCountCompleted`, `bin.DiscrepancyDetected`, `product.ProductClassified` | reservation id, SKU or bin id |
+| `warehouse.fulfillment.events.dlq` | `cmd/inventory` TaskCompleted consumer | the original message, raw, plus `x-dlq-source-topic`, `x-dlq-error`, `x-dlq-failed-at` headers | original key |
+| `warehouse.facility.events.dlq` | `cmd/inventory` facility cache consumer | the original message, raw, plus `x-dlq-*` headers | original key |
+
+Payloads are on [Integration events](../api-reference/events.md).
+
+### Consumed
+
+| Topic | Event `type` handled | Binary / switch | Consumer group | Retry and poison handling |
+| --- | --- | --- | --- | --- |
+| `warehouse.facility.events` | `com.warehouse.wms.facility-layout.zone.ZoneRegistered`, `...locationslot.LocationSlotRegistered`, `...locationslot.LocationSlotDecommissioned` | `cmd/inventory`, `LOCATION_LOOKUP_MODE=kafka` | **unique per process**: `inventory-storage-facility-location-cache-<host>-<pid>-<nanos>`, full replay on every start | malformed messages go to `warehouse.facility.events.dlq` |
+| `warehouse.network-inventory-planning.events` | `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` | `cmd/inventory`, `TRANSFER_ALLOCATION_CONSUMER_MODE=kafka` | `inventory-storage-transfer-allocation` (override `TRANSFER_ALLOCATION_CONSUMER_GROUP`) | transient errors retry the same message forever (200 ms → 5 s); poison is logged and committed past; no DLQ |
+| `warehouse.product-master.events` | `com.warehouse.wms.product-master.product.ProductClassified` | `cmd/inventory`, `PRODUCT_MASTER_CONSUMER_GROUP` set | the configured value (no default) | same as transfer; dedupe through `processed_events` |
+| `warehouse.inbound-receiving.events` | `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` | `cmd/inventory`, `INBOUND_RECEIPT_CONSUMER_GROUP` set | the configured value (no default) | same as transfer; dedupe through `processed_events` |
+| `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `cmd/inventory`, `TASK_COMPLETED_CONSUMER_MODE=kafka` | `inventory-storage-confirm-pick` (override `TASK_COMPLETED_CONSUMER_GROUP`) | 5 attempts then DLQ; poison straight to `warehouse.fulfillment.events.dlq`; offset committed only after the DLQ write |
+| `warehouse.inventory.analytics` | the analytics types above | `cmd/inventory-projector` | `inventory-analytics` | invalid CloudEvents are logged at WARN and skipped (no DLQ); dedupe through `analytics_consumed_events` |
+
+Every group-based consumer starts a **new** group at the earliest offset
+(`StartOffset: FirstOffset`) and commits only after the handler settles.
+Messages whose `type` the consumer does not handle are committed past.
+
+## Outbox relay
+
+With `EVENT_PUBLISHER=kafka` and `DATABASE_URL`, use cases write one
+`outbox_events` row per (event, topic) inside their own transaction, and a
+single relay goroutine in `cmd/inventory` drains them
+(`internal/adapters/outbound/postgres/outbox_relay.go`):
+
+- every `OUTBOX_RELAY_INTERVAL` (default 1 s) it claims up to 100 unpublished
+  rows in id order with `FOR UPDATE SKIP LOCKED`, so several replicas can relay
+  concurrently without double-sending a row;
+- a full batch is followed immediately by the next pass;
+- a send failure increments `attempts`, stores `last_error`, and **stops the
+  pass at that row** (no attempt cap, no DLQ): the next pass retries it, so a
+  broken broker holds back everything behind it rather than reordering.
+
+`cmd/mcp` writes outbox rows but runs no relay: MCP-initiated revocations reach
+Kafka only while a `cmd/inventory` pod with `EVENT_PUBLISHER=kafka` is running
+against the same database.
+
+## Housekeeping
+
+`cmd/inventory` (Postgres mode only) runs one sweeper goroutine
+(`internal/adapters/outbound/postgres/sweeper.go`,
+[ADR 0026](../adr/0026-housekeeping-sweeper-idempotency-keys-and-outbox.md))
+every `HOUSEKEEPING_INTERVAL` (1 h). It deletes `idempotency_keys` older than
+`IDEMPOTENCY_KEY_TTL` (24 h), **published** `outbox_events` older than
+`OUTBOX_RETENTION` (7 d) and `order_pick_progress` rows idle for
+`ORDER_PICK_PROGRESS_RETENTION` (30 d). Unpublished outbox rows are never swept.
+
+Reservation expiry has **no** sweeper: an expired reservation is resolved lazily
+the next time it is read, which raises `ReservationExpired`
+([Domain events](../ddd/domain-events.md)).
+
+## Scaling
+
+- HPAs exist for `api` (1–4), `projector` (1–2), `reports` (1–3) and `frontend`
+  (1–3), all at 70 % CPU and all `enabled: false` by default. When an HPA is on,
+  the Deployment omits `replicas:` so the HPA owns it
+  ([ADR 0022](../adr/0022-horizontal-autoscaling-and-pgxpool-tuning.md)).
+- `api` scales freely: its only in-process cache is the facility cache, built by
+  a per-process consumer group; the stable-group consumers share partitions via
+  normal rebalancing; the relay uses `SKIP LOCKED`.
+- `projector` is capped at 2 because the analytics topic is keyed per SKU and
+  the workload is light idempotent upserts.
+- `mcp` has **no** HPA: the MCP SDK keeps sessions in process memory and the
+  Service has no session affinity, so keep `mcp.replicaCount` at 1.
+- Each `api` pod holds up to 10 Postgres connections, each `mcp` pod up to 10,
+  the projector and reports 5 each: size PgBouncer / `max_connections` for
+  `replicas × MaxConns`.
+
+## Routine procedures
+
+### Re-publish product classifications
+
+The one-shot subcommand re-emits `ProductClassified` for every row of the local
+`product_classifications` copy, through the outbox (ADR 0034 backfill):
+
+```bash
+DATABASE_URL=postgres://... go run ./cmd/inventory republish-product-classifications
+# republished 42 product classifications
+```
+
+In the cluster run it with the same image (`/app/inventory` is the default
+entrypoint) and the API's `DATABASE_URL`. It exits `0` on success, `1` on error
+(printing how many rows were enqueued before the failure) and `2` for an
+unknown subcommand. The rows reach Kafka only through a running relay.
+
+### Replay a consumer
+
+All group consumers commit offsets per message, start new groups at the
+earliest offset and dedupe where re-delivery matters (`processed_events` for
+product-master, inbound receipts and TaskCompleted; `analytics_consumed_events`
+for the projector; the transfer ledger for allocation commands). To replay:
+
+- **Facility cache** — restart the `api` pods; each start replays the topic
+  from the beginning under a new group.
+- **Group consumers** — stop the consumer (scale `api` to 0 or switch its mode
+  `off` / unset its group), reset the group with the Kafka CLI
+  (`kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group <group> --topic <topic> --reset-offsets --to-earliest --execute`),
+  then restart. Alternatively point the switch at a fresh group id.
+- **Analytics read model** — reset group `inventory-analytics`. Event ids
+  already in `analytics_consumed_events` (consumer gate) and
+  `analytics_processed_events` (projection claim) are skipped, so a full
+  rebuild also needs those two tables and `flow_accuracy_rollup` truncated on
+  the analytical database first.
+
+### Inspect and re-drive a DLQ
+
+```bash
+kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic warehouse.fulfillment.events.dlq --from-beginning \
+  --property print.headers=true
+```
+
+`x-dlq-error` says why the message failed. Nothing consumes the DLQ topics;
+after fixing the cause, re-produce the original value (unchanged, it is still a
+valid CloudEvent) onto the source topic. TaskCompleted handling is idempotent
+per event id through `processed_events`.
+
+### Inspect stuck outbox rows
+
+```sql
+SELECT id, topic, event_type, attempts, last_error, created_at
+FROM outbox_events
+WHERE published_at IS NULL
+ORDER BY id
+LIMIT 20;
+```
+
+The lowest id with `attempts > 0` is the row the relay keeps failing on.
+
+### Rotate database credentials
+
+DSNs are read once at startup. Update the secret named by
+`database.existingSecret` (keys `DATABASE_URL` and `MIGRATIONS_DATABASE_URL`)
+or the analytics secret, then `kubectl rollout restart` the affected
+Deployments (`api` and `mcp` for OLTP, `projector` and `reports` for analytics).
