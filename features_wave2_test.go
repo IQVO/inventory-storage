@@ -33,6 +33,9 @@ type wave2State struct {
 	bookInbound      *usecases.BookInboundReceiptLine
 	confirmPicks     *usecases.ConfirmPicksForOrder
 	allocateTransfer *usecases.AllocateTransferStock
+	// allocateErr is the outcome of the last allocation command in the
+	// transfer-saga scenarios (features_transfer_saga_test.go).
+	allocateErr error
 }
 
 // fakeSlotLookup stands in for the synchronous facility-layout read behind

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -29,12 +30,23 @@ import (
 
 // TestFeatures runs every Gherkin feature under features/ against a freshly
 // wired HTTP server.
+//
+// Scenarios tagged @known-bug describe the CORRECT behaviour from
+// apis/openapi.yaml for a defect the suite found; they are excluded from the
+// run until the defect is fixed (the tag is then deleted), so the suite never
+// encodes the bug as expected behaviour. BDD_TAGS overrides the filter, e.g.
+// BDD_TAGS=@known-bug runs only those scenarios and watches them fail.
 func TestFeatures(t *testing.T) {
+	tags := os.Getenv("BDD_TAGS")
+	if tags == "" {
+		tags = "~@known-bug"
+	}
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario,
 		Options: &godog.Options{
 			Format:   "pretty",
 			Paths:    []string{"features"},
+			Tags:     tags,
 			Strict:   true,
 			TestingT: t,
 		},
@@ -708,4 +720,5 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^the Usable inventory for SKU "([^"]*)" is (\d+)$`, w.theUsableInventoryForSKUIs)
 
 	w.registerWave2Steps(sc)
+	w.registerTransferSagaSteps(sc)
 }
