@@ -137,10 +137,7 @@ Feature: Stowing received transfer goods
     When a POST is sent to "/transfers/tl-1/stow" with the body {"bins":[]}
     Then the problem detail type is "bins-required"
 
-  # Defect found by this suite (apis/openapi.yaml 400: "a quantity not
-  # positive"): the service answers 422 zero-quantity instead. Excluded from the
-  # run until fixed; it describes the documented behaviour.
-  @bdd @known-bug
+  @bdd
   Scenario Outline: A non-positive bin quantity is a bad request
     Given the destination Site "SITE-DEST" scans 5 units of SKU "SKU-S1" for transfer "tr-1" line "tl-1"
     When a POST is sent to "/transfers/tl-1/stow" with the body {"bins":[{"binId":"BIN-D1","quantity":<qty>}]}
@@ -151,3 +148,10 @@ Feature: Stowing received transfer goods
       | qty |
       | 0   |
       | -3  |
+
+  @bdd
+  Scenario: A non-positive bin quantity names the quantity
+    Given the destination Site "SITE-DEST" scans 5 units of SKU "SKU-S1" for transfer "tr-1" line "tl-1"
+    When a POST is sent to "/transfers/tl-1/stow" with the body {"bins":[{"binId":"BIN-D1","quantity":0}]}
+    Then the response status is 400
+    And the problem detail type is "quantity-not-positive"

@@ -40,6 +40,13 @@ func (s *Server) handleStageTransferReceipt(w http.ResponseWriter, r *http.Reque
 		writeError(w, r, err)
 		return
 	}
+	// apis/openapi.yaml answers a non-positive receivedQuantity 400 on this
+	// endpoint (unlike the service-wide 422 zero-quantity), so it is checked
+	// here, before the shared constructor would map it to 422.
+	if req.ReceivedQuantity <= 0 {
+		writeProblem(w, http.StatusBadRequest, problemInfo{"quantity-not-positive", "quantity must be positive"}, "receivedQuantity must be greater than zero", r.URL.Path)
+		return
+	}
 	receivedQty, err := shared.NewPositiveQuantity(req.ReceivedQuantity)
 	if err != nil {
 		writeError(w, r, err)
@@ -94,6 +101,11 @@ func (s *Server) handleStowTransferStock(w http.ResponseWriter, r *http.Request)
 		binID, err := shared.NewBinId(b.BinID)
 		if err != nil {
 			writeError(w, r, shared.ErrEmptyBinID)
+			return
+		}
+		// Documented as 400 for this endpoint; see handleStageTransferReceipt.
+		if b.Quantity <= 0 {
+			writeProblem(w, http.StatusBadRequest, problemInfo{"quantity-not-positive", "quantity must be positive"}, "each bin quantity must be greater than zero", r.URL.Path)
 			return
 		}
 		qty, err := shared.NewPositiveQuantity(b.Quantity)

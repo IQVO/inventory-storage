@@ -68,7 +68,7 @@ the code writes them. Variables are explained in
 | `422 transfer-scan-quarantined` (body has an `exception` object) | The destination scan has no ALLOCATED ledger row for that line; an `inventory_exceptions` row was written instead of stock. | Check `transfer_allocations` for the line; the transfer-allocation consumer must be on at the origin. |
 | `410 classification-moved` | `PUT /products/{sku}/classification` is retired: product-master owns classification ([ADR 0034](../adr/0034-product-master-owns-classification.md)). | Classify in product-master. |
 | `404 product-classification-not-found` | The local copy has no row for the SKU. | Is `PRODUCT_MASTER_CONSUMER_GROUP` set and the consumer running? |
-| `400 missing-demand-ref`, `400 invalid-line-no`, `400 counted-quantity-required`, `400 capacity-required`, `400 transfer-id-required`, `400 bins-required`, `400 malformed-request-body`, `400 empty-sku`, `400 empty-bin-id` | Request validation in the handlers. | Fix the request. |
+| `400 missing-demand-ref`, `400 invalid-line-no`, `400 counted-quantity-required`, `400 capacity-required`, `400 transfer-id-required`, `400 bins-required`, `400 malformed-request-body`, `400 empty-sku`, `400 empty-bin-id`, `400 empty-site-id`, `400 quantity-not-positive` | Request validation in the handlers. | Fix the request. |
 | `422 capacity-out-of-range`, `422 negative-quantity`, `422 zero-quantity`, `422 invalid-bin-capacity` | Quantity / capacity value objects. | Fix the value. |
 | `400 invalid-report-query`, `500 report-store-error` (reports binary) | Missing / non-RFC3339 `from`/`to`, `granularity` other than `hour`; analytical DB error. | Fix the query; check the projector's database. |
 
