@@ -44,7 +44,7 @@ otherwise.
 | `TASK_COMPLETED_CONSUMER_MODE` | `off` | no | `kafka` starts the fulfillment-execution `TaskCompleted` confirm-pick consumer ([ADR 0035](../adr/0035-confirm-pick-from-task-completed.md), [ADR 0036](../adr/0036-per-line-confirm-pick.md)). Requires `DATABASE_URL` and `KAFKA_BROKERS`; dials the first broker under boot retry before starting. | `config.go`, `confirmpick.go` |
 | `TASK_COMPLETED_CONSUMER_GROUP` | `inventory-storage-confirm-pick` | no | Consumer group of that consumer. | `config.go`, `confirmpick.go` |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:5182` | no | Comma-separated origins allowed by the CORS middleware (methods GET/POST/PUT/DELETE; headers `Accept`, `Content-Type`, `Authorization`, `Idempotency-Key`). The defaults are the console shell's and this context's micro-frontend dev servers. | `internal/adapters/inbound/http/server.go` |
-| `LOG_LEVEL` | `info` | no | `debug`, `warn` or `error` (case-insensitive); anything else is `info`. Logs are JSON on stdout. | `config.go` |
+| `LOG_LEVEL` | `info` | no | `debug`, `warn`/`warning` or `error` (case-insensitive); anything else is `info`. Logs are JSON on stdout. | `config.go` |
 | `OTEL_SERVICE_NAME` | `inventory-storage` | no | `service.name` on every span, metric and log. | `config.go` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | no | OTLP/gRPC collector for traces and metrics. A value without a scheme gets `http://` prepended. Export is non-blocking: an unreachable collector costs telemetry, never availability. | `config.go`, `internal/adapters/outbound/telemetry/telemetry.go` |
 | `SERVICE_VERSION` | `dev` | no | `service.version` resource attribute. | `config.go` |
@@ -101,7 +101,7 @@ Read in `cmd/mcp/main.go`. See [MCP tools](../mcp/tools.md) for what it serves.
 | `EVENT_PUBLISHER` | `log` | no | `kafka`: with `DATABASE_URL`, `revoke_reservation` writes `outbox_events` rows that the **`cmd/inventory` relay** drains (this binary runs no relay); without `DATABASE_URL` it publishes directly to Kafka. |
 | `KAFKA_BROKERS` | *(none)* | when `EVENT_PUBLISHER=kafka` and no `DATABASE_URL` | Comma-separated brokers for the direct publisher. Startup fails with `EVENT_PUBLISHER=kafka without DATABASE_URL requires KAFKA_BROKERS to be set`. |
 | `REPORTS_BASE_URL` | *(unset)* | no | Base URL of `cmd/inventory-reports`. Setting it registers the read-only `get_inventory_flow_accuracy_report` tool (HTTP client timeout 10 s). |
-| `LOG_LEVEL` | `info` | no | `debug`, `warn`, `error`; anything else is `info`. |
+| `LOG_LEVEL` | `info` | no | `debug`, `warn`/`warning`, `error` (case-insensitive); anything else is `info`. |
 | `OTEL_SERVICE_NAME` | `inventory-storage-mcp` | no | `service.name`. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | no | OTLP/gRPC collector. |
 | `SERVICE_VERSION` | `dev` | no | `service.version`. |
@@ -116,7 +116,7 @@ These are constants in code; changing them is a code change.
 | OLTP `pgxpool` `MaxConns` / `statement_timeout` | `10` / `5s` | `internal/adapters/outbound/postgres/pool.go` ([ADR 0022](../adr/0022-horizontal-autoscaling-and-pgxpool-tuning.md)) |
 | Projector pool `MaxConns` / `statement_timeout` | `5` / `10s` | `internal/adapters/outbound/analyticsstore/pool.go` |
 | Reports pool `MaxConns` / `statement_timeout` | `5` / `15s`, read-only | `internal/adapters/outbound/analyticsstore/pool.go` |
-| Boot retry (migrations, DB ping, broker dials) | 5 attempts, waits 1 s, 2 s, 4 s, 8 s | `internal/adapters/outbound/bootretry/retry.go` ([ADR 0028](../adr/0028-bootretry-boot-time-dial-retry.md)) |
+| Boot retry (migrations, DB ping, broker dials) | 5 attempts, waits 1 s, 2 s, 4 s, 8 s: 15 s of backoff in total (no wait after the fifth attempt) plus the attempts' own duration; the code comment said "~31s" until gap fix D22, and ADR 0028's body still does | `internal/adapters/outbound/bootretry/retry.go` ([ADR 0028](../adr/0028-bootretry-boot-time-dial-retry.md)) |
 | Outbox relay batch size | 100 rows per pass; attempt cap `OUTBOX_MAX_ATTEMPTS` (default 20, ADR 0038) | `internal/adapters/outbound/postgres/outbox_relay.go`, `cmd/inventory/config.go` |
 | Facility cache replay wait | 60 s (`WaitReadyTimeout`) | `internal/adapters/outbound/facilitycache/consumer.go` |
 | facility-layout circuit breaker | trips at 5 consecutive failures or > 50 % failures over ≥ 10 requests; 30 s open; 1 half-open probe; 3 attempts per call (50 ms → 500 ms back-off) | `internal/resilience/breaker.go`, `internal/adapters/outbound/facilitylayout/breaker.go` |

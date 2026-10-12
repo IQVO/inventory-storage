@@ -118,16 +118,16 @@ func (c config) publisherBrokers() []string {
 }
 
 // newLogger builds the process-wide structured logger. LOG_LEVEL maps
-// debug|info|warn|error (case-insensitive) to the matching slog.Level,
-// defaulting to Info for unset or unrecognized values. Logs are emitted as
-// JSON to stdout, wrapped so that any record written with a span-carrying
-// context also carries trace_id/span_id.
+// debug|info|warn|warning|error (case-insensitive) to the matching
+// slog.Level, defaulting to Info for unset or unrecognized values. Logs are
+// emitted as JSON to stdout, wrapped so that any record written with a
+// span-carrying context also carries trace_id/span_id.
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level
 	switch strings.ToLower(level) {
 	case "debug":
 		lvl = slog.LevelDebug
-	case "warn":
+	case "warn", "warning":
 		lvl = slog.LevelWarn
 	case "error":
 		lvl = slog.LevelError

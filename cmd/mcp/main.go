@@ -298,14 +298,15 @@ func closeKafkaWriters(writer *kafkago.Writer, analyticsPub *kafkaadapter.Analyt
 }
 
 // newLogger builds the process-wide structured logger, mirroring
-// cmd/inventory: JSON to stdout, wrapped so a record written with a
+// cmd/inventory: LOG_LEVEL debug|info|warn|warning|error (case-insensitive,
+// default info), JSON to stdout, wrapped so a record written with a
 // span-carrying context also carries trace_id/span_id.
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level
 	switch strings.ToLower(level) {
 	case "debug":
 		lvl = slog.LevelDebug
-	case "warn":
+	case "warn", "warning":
 		lvl = slog.LevelWarn
 	case "error":
 		lvl = slog.LevelError
