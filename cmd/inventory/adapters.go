@@ -196,7 +196,9 @@ func withOutboxKafka(set adapterSet, k kafkaPublishers, logger *slog.Logger) ada
 func startOutboxRelay(pool *pgxpool.Pool, brokers []string, logger *slog.Logger) func() {
 	relaySink := kafkaadapter.NewRelaySink(brokers)
 	interval := outboxRelayInterval(logger)
-	relay := postgres.NewOutboxRelay(pool, relaySink, postgres.WithLogger(logger), postgres.WithInterval(interval))
+	maxAttempts := outboxMaxAttempts(logger)
+	relay := postgres.NewOutboxRelay(pool, relaySink, postgres.WithLogger(logger), postgres.WithInterval(interval),
+		postgres.WithMaxAttempts(maxAttempts))
 	relayCtx, stopRelay := context.WithCancel(context.Background())
 	relayDone := make(chan struct{})
 	go func() {
@@ -204,7 +206,7 @@ func startOutboxRelay(pool *pgxpool.Pool, brokers []string, logger *slog.Logger)
 		// Run only ever returns nil, on ctx cancellation.
 		_ = relay.Run(relayCtx)
 	}()
-	logger.Info("outbox relay started", "interval", interval)
+	logger.Info("outbox relay started", "interval", interval, "max_attempts", maxAttempts)
 
 	return func() {
 		stopRelay()

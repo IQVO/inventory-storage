@@ -442,12 +442,15 @@ sequenceDiagram
     participant K as Kafka
     participant WP as wes-work-planning
     loop every OUTBOX_RELAY_INTERVAL, default 1s
-        RL->>DB: BEGIN, SELECT unpublished ORDER BY id LIMIT batch FOR UPDATE SKIP LOCKED
+        RL->>DB: BEGIN, SELECT unpublished AND attempts below OUTBOX_MAX_ATTEMPTS ORDER BY id LIMIT batch FOR UPDATE SKIP LOCKED
         loop each row in id order
             RL->>RS: Send(topic, key, value, headers)
             RS->>K: WriteMessages, Hash balancer on key
             alt send failed
                 RL->>DB: UPDATE attempts + 1, last_error, COMMIT, stop this pass
+                opt attempts reached OUTBOX_MAX_ATTEMPTS, default 20 (ADR 0038)
+                    RL->>RL: log ERROR, row excluded from later claims until re-armed
+                end
             else sent
                 RL->>DB: UPDATE published_at = now()
             end

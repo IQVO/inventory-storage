@@ -116,6 +116,7 @@ They run in `make test` and again, by name, in the `evals-tests` CI job.
 | `TestCloudEventsOnly` | No `EVENT_ENVELOPE_MODE` toggle anywhere, and a module that talks to Kafka imports the CloudEvents SDK. |
 | `TestReplayConsumersSetCommitInterval` | A kafka-go reader on a process-unique group (the facility cache's full replay) sets `CommitInterval`. |
 | `TestDomainHasNoWireStructTags` (+ detector test) | No `json:` / `db:` tags on domain types. |
+| `TestOutboxRelaysPassAttemptCap` (+ `TestOutboxRelayCapSensorFailsOnBadFixtures`) | Every non-test `NewOutboxRelay` call under `cmd/` passes `WithMaxAttempts` ([ADR 0038](../adr/0038-outbox-relay-attempt-cap.md)), so one poison row cannot block the relay forever. |
 
 ### Integration (testcontainers)
 
@@ -123,7 +124,9 @@ They run in `make test` and again, by name, in the `evals-tests` CI job.
 starts its own `postgres` and/or Kafka container
 (`internal/testsupport/kafkatc` waits for the group coordinator before tests
 run). Covered: every Postgres repository, migrations, optimistic concurrency,
-the idempotency middleware (including `lineNo`), the outbox publisher and relay,
+the idempotency middleware (including `lineNo`), the outbox publisher and relay
+(including the attempt cap: a poison row, then a good row that publishes, and
+the re-arm SQL, `outbox_relay_cap_integration_test.go`),
 the sweeper, pool limits, rehydration, the transfer, confirm-pick, inbound
 receipt and product-master hand-overs at the use-case level, the analytics
 store, the facility cache consumer, publisher partitioning, the MCP

@@ -30,6 +30,7 @@ otherwise.
 | `EVENT_PUBLISHER` | `log` | no | `kafka` (case-insensitive) switches the publisher to the integration + analytics Kafka fan-out: through the transactional outbox and relay when `DATABASE_URL` is set ([ADR 0017](../adr/0017-transactional-outbox.md)), directly to Kafka otherwise. Any other value logs events to stdout. | `config.go`, `adapters.go` |
 | `KAFKA_BROKERS` | publishers: `localhost:9092`; consumers: *(none)* | for any consumer | Comma-separated broker list. Read twice: `adapters.go` falls back to `localhost:9092` for the publishers and the outbox relay, while `config.go` leaves the consumer broker list empty when unset, so `LOCATION_LOOKUP_MODE=kafka` and every consumer switch below fail startup with "... requires KAFKA_BROKERS to be set". | `config.go`, `adapters.go` |
 | `OUTBOX_RELAY_INTERVAL` | `1s` | no | Poll interval of the outbox relay (only runs with `EVENT_PUBLISHER=kafka` and `DATABASE_URL`). An unparsable value logs a warning and uses `1s`. | `config.go` |
+| `OUTBOX_MAX_ATTEMPTS` | `20` | no | Outbox relay attempt cap ([ADR 0038](../adr/0038-outbox-relay-attempt-cap.md)): a row that has failed this many sends is excluded from the relay's claims and logged at ERROR (`outbox_id`, `topic`, `event_type`, `key`). It stays in `outbox_events` until re-armed (see [Runbook](./runbook.md#outbox-relay)); later rows, including rows with the same key, overtake it. `0` = unlimited (one poison row blocks the relay forever). An invalid or negative value logs a warning and uses `20`. | `config.go`, `adapters.go` |
 | `HOUSEKEEPING_INTERVAL` | `1h` | no | How often the housekeeping sweeper runs ([ADR 0026](../adr/0026-housekeeping-sweeper-idempotency-keys-and-outbox.md)). `0` disables the sweeper. Postgres mode only. | `housekeeping.go` |
 | `IDEMPOTENCY_KEY_TTL` | `24h` | no | Age after which an `idempotency_keys` row is deleted. `0` keeps rows forever. | `housekeeping.go` |
 | `OUTBOX_RETENTION` | `168h` | no | Age after which a **published** `outbox_events` row is deleted. `0` keeps rows forever. | `housekeeping.go` |
@@ -116,7 +117,7 @@ These are constants in code; changing them is a code change.
 | Projector pool `MaxConns` / `statement_timeout` | `5` / `10s` | `internal/adapters/outbound/analyticsstore/pool.go` |
 | Reports pool `MaxConns` / `statement_timeout` | `5` / `15s`, read-only | `internal/adapters/outbound/analyticsstore/pool.go` |
 | Boot retry (migrations, DB ping, broker dials) | 5 attempts, waits 1 s, 2 s, 4 s, 8 s | `internal/adapters/outbound/bootretry/retry.go` ([ADR 0028](../adr/0028-bootretry-boot-time-dial-retry.md)) |
-| Outbox relay batch size | 100 rows per pass, no attempt cap | `internal/adapters/outbound/postgres/outbox_relay.go` |
+| Outbox relay batch size | 100 rows per pass; attempt cap `OUTBOX_MAX_ATTEMPTS` (default 20, ADR 0038) | `internal/adapters/outbound/postgres/outbox_relay.go`, `cmd/inventory/config.go` |
 | Facility cache replay wait | 60 s (`WaitReadyTimeout`) | `internal/adapters/outbound/facilitycache/consumer.go` |
 | facility-layout circuit breaker | trips at 5 consecutive failures or > 50 % failures over ≥ 10 requests; 30 s open; 1 half-open probe; 3 attempts per call (50 ms → 500 ms back-off) | `internal/resilience/breaker.go`, `internal/adapters/outbound/facilitylayout/breaker.go` |
 | TaskCompleted handling attempts before DLQ | 5 | `internal/adapters/inbound/kafka/task_completed_consumer.go` |
@@ -134,7 +135,7 @@ These are constants in code; changing them is a code change.
 | --- | --- |
 | `config.httpAddr`, `config.eventPublisher`, `config.migrationsPath`, `config.logLevel` | `HTTP_ADDR`, `EVENT_PUBLISHER`, `MIGRATIONS_PATH`, `LOG_LEVEL` (API; MCP reuses the last three) |
 | `config.locationLookupMode`, `config.facilityLayoutBaseUrl` | `LOCATION_LOOKUP_MODE`, `FACILITY_LAYOUT_BASE_URL` (API) |
-| `config.outboxRelayInterval`, `config.housekeepingInterval`, `config.idempotencyKeyTtl`, `config.outboxRetention`, `config.orderPickProgressRetention` | `OUTBOX_RELAY_INTERVAL`, `HOUSEKEEPING_INTERVAL`, `IDEMPOTENCY_KEY_TTL`, `OUTBOX_RETENTION`, `ORDER_PICK_PROGRESS_RETENTION` (API) |
+| `config.outboxRelayInterval`, `config.outboxMaxAttempts`, `config.housekeepingInterval`, `config.idempotencyKeyTtl`, `config.outboxRetention`, `config.orderPickProgressRetention` | `OUTBOX_RELAY_INTERVAL`, `OUTBOX_MAX_ATTEMPTS`, `HOUSEKEEPING_INTERVAL`, `IDEMPOTENCY_KEY_TTL`, `OUTBOX_RETENTION`, `ORDER_PICK_PROGRESS_RETENTION` (API) |
 | `config.transferAllocationConsumerMode` / `...Group`, `config.productMasterConsumerGroup`, `config.inboundReceiptConsumerGroup`, `config.taskCompletedConsumerMode` / `...Group` | the matching consumer variables (API) |
 | `database.existingSecret` + `existingSecretKey` / `migrationsExistingSecretKey` | `DATABASE_URL` / `MIGRATIONS_DATABASE_URL` (`optional: true`) (API and MCP) |
 | `kafka.enabled`, `kafka.brokers` | `KAFKA_BROKERS` (API and MCP only when enabled; projector always) |

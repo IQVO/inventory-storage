@@ -84,6 +84,8 @@ spec:
             {{- end }}
             - name: OUTBOX_RELAY_INTERVAL
               value: {{ .Values.config.outboxRelayInterval | quote }}
+            - name: OUTBOX_MAX_ATTEMPTS
+              value: {{ .Values.config.outboxMaxAttempts | quote }}
             - name: HOUSEKEEPING_INTERVAL
               value: {{ .Values.config.housekeepingInterval | quote }}
             - name: IDEMPOTENCY_KEY_TTL
