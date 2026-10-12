@@ -61,8 +61,11 @@ type adapterSet struct {
 // database. The event publisher defaults to that same memory/Postgres
 // choice ("log"), or can be switched to the Kafka integration-events
 // publisher via eventPublisher="kafka" (EVENT_PUBLISHER env), independent of
-// which repos are in use. On error the returned set carries a no-op closer.
-func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migrationsPath, eventPublisher string, logger *slog.Logger) (adapterSet, error) {
+// which repos are in use. publisherBrokers is the broker list for that Kafka
+// path (config.publisherBrokers: KAFKA_BROKERS read once in loadConfig, with
+// the single localhost:9092 fallback); it is ignored otherwise. On error the
+// returned set carries a no-op closer.
+func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migrationsPath, eventPublisher string, publisherBrokers []string, logger *slog.Logger) (adapterSet, error) {
 	set, err := buildRepos(ctx, databaseURL, migrationsDatabaseURL, migrationsPath, logger)
 	if err != nil {
 		return adapterSet{close: func() {}}, err
@@ -70,7 +73,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migr
 	if !strings.EqualFold(eventPublisher, "kafka") {
 		return set, nil
 	}
-	return withKafkaPublishing(set, logger), nil
+	return withKafkaPublishing(set, publisherBrokers, logger), nil
 }
 
 // buildRepos selects the repository set: Postgres-backed when databaseURL
@@ -143,8 +146,7 @@ func (k kafkaPublishers) logConfigured(logger *slog.Logger, mode string) {
 // withKafkaPublishing switches set's publisher to the Kafka integration +
 // analytics fan-out: direct when there is no Postgres, transactional outbox
 // (ADR 0017) when there is.
-func withKafkaPublishing(set adapterSet, logger *slog.Logger) adapterSet {
-	brokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
+func withKafkaPublishing(set adapterSet, brokers []string, logger *slog.Logger) adapterSet {
 	writer := kafkaadapter.NewWriter(brokers...)
 	k := kafkaPublishers{
 		brokers:     brokers,

@@ -43,7 +43,7 @@ type config struct {
 
 	locationLookupMode    string
 	facilityLayoutBaseURL string
-	kafkaBrokers          []string // KAFKA_BROKERS split on ","; nil when unset
+	kafkaBrokers          []string // KAFKA_BROKERS split on ","; nil when unset (publishers: see publisherBrokers)
 
 	// transferConsumerMode is TRANSFER_ALLOCATION_CONSUMER_MODE: "off"
 	// (default) or "kafka" — see buildTransferAllocationConsumer.
@@ -99,6 +99,22 @@ func loadConfig() config {
 		cfg.kafkaBrokers = strings.Split(raw, ",")
 	}
 	return cfg
+}
+
+// defaultPublisherBroker is the one KAFKA_BROKERS fallback in this binary:
+// the Kafka publishers and the outbox relay dial it when KAFKA_BROKERS is
+// unset (local runs). The consumers have no fallback on purpose.
+const defaultPublisherBroker = "localhost:9092"
+
+// publisherBrokers is the broker list of the Kafka publishers and the outbox
+// relay (EVENT_PUBLISHER=kafka): KAFKA_BROKERS as read by loadConfig, or
+// defaultPublisherBroker when it is unset. Consumers use kafkaBrokers
+// directly, which stays nil when unset so their boot checks fail loudly.
+func (c config) publisherBrokers() []string {
+	if len(c.kafkaBrokers) == 0 {
+		return []string{defaultPublisherBroker}
+	}
+	return c.kafkaBrokers
 }
 
 // newLogger builds the process-wide structured logger. LOG_LEVEL maps

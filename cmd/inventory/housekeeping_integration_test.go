@@ -41,7 +41,7 @@ func TestBuildAdapters_StartsHousekeepingSweeperFromEnv(t *testing.T) {
 	t.Setenv("OUTBOX_RETENTION", "1h")
 	t.Setenv("ORDER_PICK_PROGRESS_RETENTION", "1h")
 
-	adapters, err := buildAdapters(ctx, url, url, migrationsDirForTest(t), "log", quietLogger())
+	adapters, err := buildAdapters(ctx, url, url, migrationsDirForTest(t), "log", nil, quietLogger())
 	if err != nil {
 		t.Fatalf("buildAdapters: %v", err)
 	}
