@@ -1,4 +1,5 @@
 ---
+id: introduction
 slug: /overview
 title: Introduction
 sidebar_label: Introduction
@@ -126,3 +127,16 @@ transfer commands, ADR 0030) and the synchronous callers.
   chart, bounded context canvas, aggregate design canvas, EventStorming,
   message flows, UML/ER/sequence diagrams, all derived from the code.
 - **[ADRs](/docs/adr)** — the consequential decisions, in Nygard format.
+- **[Configuration](../operations/configuration.md)** — every environment
+  variable of the four binaries.
+- **[Runbook](../operations/runbook.md)**,
+  **[Observability](../operations/observability.md)** and
+  **[Troubleshooting](../operations/troubleshooting.md)** — deploying, watching
+  and fixing it.
+- **[Testing](../development/testing.md)** — the test pyramid, `make` targets
+  and CI jobs.
+- **[Integration](../ecosystem/integration.md)** and
+  **[MCP tools](../mcp/tools.md)** — every upstream, downstream and agent-facing
+  contract.
+- **[Use cases](../ddd/use-cases.md)** and
+  **[Subdomain classification](../ddd/subdomain-classification.md)**.
