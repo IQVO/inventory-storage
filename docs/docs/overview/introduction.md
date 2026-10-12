@@ -103,6 +103,8 @@ flowchart LR
   class FL gen;
 ```
 
+Source: `internal/adapters/outbound/kafka/publisher.go`, `internal/adapters/outbound/facilitycache/consumer.go`, `internal/adapters/inbound/kafka/product_master_consumer.go`; sibling edges from the [context map](/docs/ecosystem/context-map).
+
 Solid edges are Kafka topics; the dotted edge is a synchronous REST call
 into this service (`order-management` is the only command caller among the
 sibling contexts; `network-fulfillment` and `warehouse-ops-agent` only

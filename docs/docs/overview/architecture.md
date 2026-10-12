@@ -140,6 +140,8 @@ flowchart TB
   class HTTP,PG,MEM,EV,KAF adp;
 ```
 
+Source: `internal/architecture/architecture_test.go`, `internal/application/ports/ports.go`.
+
 Solid arrows are compile-time imports; dashed arrows are interface
 satisfaction. Note that **no arrow points from the application layer into an
 adapter** — the application only ever names an interface in
