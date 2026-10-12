@@ -1,4 +1,5 @@
 ---
+id: introduction
 slug: /overview
 title: Introduction
 sidebar_label: Introduction
@@ -102,6 +103,8 @@ flowchart LR
   class FL gen;
 ```
 
+Source: `internal/adapters/outbound/kafka/publisher.go`, `internal/adapters/outbound/facilitycache/consumer.go`, `internal/adapters/inbound/kafka/product_master_consumer.go`; sibling edges from the [context map](/docs/ecosystem/context-map).
+
 Solid edges are Kafka topics; the dotted edge is a synchronous REST call
 into this service (`order-management` is the only command caller among the
 sibling contexts; `network-fulfillment` and `warehouse-ops-agent` only
@@ -126,3 +129,16 @@ transfer commands, ADR 0030) and the synchronous callers.
   chart, bounded context canvas, aggregate design canvas, EventStorming,
   message flows, UML/ER/sequence diagrams, all derived from the code.
 - **[ADRs](/docs/adr)** — the consequential decisions, in Nygard format.
+- **[Configuration](../operations/configuration.md)** — every environment
+  variable of the four binaries.
+- **[Runbook](../operations/runbook.md)**,
+  **[Observability](../operations/observability.md)** and
+  **[Troubleshooting](../operations/troubleshooting.md)** — deploying, watching
+  and fixing it.
+- **[Testing](../development/testing.md)** — the test pyramid, `make` targets
+  and CI jobs.
+- **[Integration](../ecosystem/integration.md)** and
+  **[MCP tools](../mcp/tools.md)** — every upstream, downstream and agent-facing
+  contract.
+- **[Use cases](../ddd/use-cases.md)** and
+  **[Subdomain classification](../ddd/subdomain-classification.md)**.

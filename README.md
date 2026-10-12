@@ -28,6 +28,18 @@ generated from `apis/openapi.yaml` plus a hand-authored Events page from
 Records. Source lives in [`docs/`](docs/) (Docusaurus); it is built and
 deployed to GitHub Pages by [`.github/workflows/docs.yml`](.github/workflows/docs.yml).
 
+Page index (source paths under `docs/docs/`):
+
+| Area | Pages |
+| --- | --- |
+| Overview | [Introduction](docs/docs/overview/introduction.md), [Architecture](docs/docs/overview/architecture.md) (binaries, ports, data stores), [Quickstart](docs/docs/overview/quickstart.md) |
+| Operations | [Configuration](docs/docs/operations/configuration.md) (every env var per binary), [Runbook](docs/docs/operations/runbook.md), [Observability](docs/docs/operations/observability.md), [Troubleshooting](docs/docs/operations/troubleshooting.md) |
+| Development | [Testing](docs/docs/development/testing.md) (test pyramid, `make` targets, CI jobs) |
+| Ecosystem | [Context map](docs/docs/ecosystem/context-map.md), [Integration](docs/docs/ecosystem/integration.md) |
+| DDD | [Use cases](docs/docs/ddd/use-cases.md), [Subdomain classification](docs/docs/ddd/subdomain-classification.md), and the artifact pack under [`docs/docs/ddd/`](docs/docs/ddd/) |
+| APIs | [REST reference](docs/docs/api-reference/overview.md), [Integration events](docs/docs/api-reference/events.md), [MCP tools](docs/docs/mcp/tools.md), [MCP governance charter](docs/docs/mcp/governance-charter.md), [Flow & Accuracy report](docs/docs/analytics/inventory-flow-accuracy-report.md) |
+| Decisions | [ADR index](docs/docs/adr/about.md) (37 ADRs) |
+
 ## Layering (hexagonal / ports & adapters)
 
 Strict dependency rule: **domain depends on nothing; application depends on
