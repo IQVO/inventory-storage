@@ -129,7 +129,11 @@ These are constants in code; changing them is a code change.
 ## Helm values to environment
 
 `charts/inventory-storage` renders these variables; anything else goes through
-`extraEnv` (API) or `mcp.extraEnv` (MCP).
+`extraEnv` (API) or `mcp.extraEnv` (MCP). Every `config.*` key is rendered into
+the chart ConfigMap, which the **API Deployment mounts with
+`envFrom: configMapRef`** (explicit `env` entries win for the same key); the
+MCP, projector and reports Deployments set their own explicit `env` only and do
+not mount it. `charts/inventory-storage/tests/render_test.sh` asserts the mount.
 
 | Values key | Variable (Deployment) |
 | --- | --- |

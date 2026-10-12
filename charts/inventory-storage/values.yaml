@@ -152,6 +152,10 @@ environment: "local"
 # Falls back to in-memory adapters + log-only event publishing when
 # database.url / kafka.enabled are left empty, same as running the binary
 # locally with no env vars set.
+#
+# Every key below is rendered into templates/configmap.yaml and reaches
+# cmd/inventory through the api Deployment's `envFrom: configMapRef` (gap fix
+# D14); explicit env/extraEnv entries win for the same key.
 config:
   httpAddr: ":8080"
   eventPublisher: "log"   # "log" or "kafka"
