@@ -84,7 +84,9 @@ func NewProductMasterConsumerForTopic(topic string, brokers []string, groupID st
 	return &ProductMasterConsumer{Reader: reader, Apply: apply, Logger: logger}
 }
 
-// Run consumes until ctx is cancelled or the reader fails.
+// Run consumes until ctx is cancelled or the reader fails. A cancellation is a
+// clean stop and returns nil, even when it lands mid-handle: the in-flight
+// message stays uncommitted and is redelivered on the next start.
 func (c *ProductMasterConsumer) Run(ctx context.Context) error {
 	backoff := c.Backoff
 	if backoff == nil {
@@ -110,12 +112,17 @@ func (c *ProductMasterConsumer) Run(ctx context.Context) error {
 				"error", err, "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				// Shutdown landed mid-handle: a clean stop. The offset was not
+				// committed, so the message is redelivered and deduplicated.
+				return nil
 			case <-time.After(backoff(attempt)):
 			}
 		}
 
 		if err := c.Reader.CommitMessages(ctx, msg); err != nil {
+			if ctx.Err() != nil {
+				return nil // shutdown: the uncommitted message is redelivered and deduplicated
+			}
 			return fmt.Errorf("commit product-master message: %w", err)
 		}
 	}

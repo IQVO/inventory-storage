@@ -155,7 +155,9 @@ func newDeadLetterWriter(brokers []string, topic string) *kafkago.Writer {
 	}
 }
 
-// Run consumes until ctx is cancelled or the reader fails.
+// Run consumes until ctx is cancelled or the reader fails. A cancellation is a
+// clean stop and returns nil, even when it lands mid-handle: the in-flight
+// message stays uncommitted and is redelivered on the next start.
 func (c *TaskCompletedConsumer) Run(ctx context.Context) error {
 	for {
 		msg, err := c.Reader.FetchMessage(ctx)
@@ -166,9 +168,18 @@ func (c *TaskCompletedConsumer) Run(ctx context.Context) error {
 			return err
 		}
 		if err := c.settle(ctx, msg); err != nil {
+			if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+				// Shutdown landed mid-handle: the offset was not committed,
+				// so the message is redelivered on the next start and the
+				// use case's processed-event claim absorbs the replay.
+				return nil
+			}
 			return err
 		}
 		if err := c.Reader.CommitMessages(ctx, msg); err != nil {
+			if ctx.Err() != nil {
+				return nil // shutdown: the uncommitted message is redelivered and deduped
+			}
 			return fmt.Errorf("commit task-completed message: %w", err)
 		}
 	}
@@ -196,6 +207,9 @@ func (c *TaskCompletedConsumer) settle(ctx context.Context, msg kafkago.Message)
 			c.Logger.ErrorContext(ctx, "task-completed message is malformed; dead-lettering",
 				"error", err, "partition", msg.Partition, "offset", msg.Offset)
 			return c.deadLetter(ctx, msg, err)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err() // shutting down: never dead-letter a message only cancellation interrupted
 		}
 		if attempt >= maxAttempts {
 			c.Logger.ErrorContext(ctx, "task-completed handling kept failing; dead-lettering after bounded retries",
