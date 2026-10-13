@@ -63,7 +63,7 @@ func run() error {
 	}
 	defer flushTelemetry()
 
-	adapters, err := buildAdapters(context.Background(), cfg.databaseURL, cfg.migrationsDatabaseURL, cfg.migrationsPath, cfg.eventPublisher, logger)
+	adapters, err := buildAdapters(context.Background(), cfg.databaseURL, cfg.migrationsDatabaseURL, cfg.migrationsPath, cfg.eventPublisher, cfg.publisherBrokers(), logger)
 	if err != nil {
 		return err
 	}

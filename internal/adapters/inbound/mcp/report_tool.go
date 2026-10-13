@@ -139,9 +139,9 @@ var _ ReportsClient = (*ReportsRESTClient)(nil)
 type FlowAccuracyToolInput struct {
 	From        string `json:"from" jsonschema:"start of the window, inclusive, RFC3339 (required)"`
 	To          string `json:"to" jsonschema:"end of the window, exclusive, RFC3339 (required)"`
-	SKU         string `json:"sku" jsonschema:"optional SKU filter (flow rows: received, stowed, picked, reserved, unlocated)"`
-	BinId       string `json:"binId" jsonschema:"optional bin filter (accuracy rows: cycle counts, discrepancies)"`
-	Granularity string `json:"granularity" jsonschema:"time bucket granularity; only 'hour' is supported"`
+	SKU         string `json:"sku,omitempty" jsonschema:"optional SKU filter (flow rows: received, stowed, picked, reserved, unlocated)"`
+	BinId       string `json:"binId,omitempty" jsonschema:"optional bin filter (accuracy rows: cycle counts, discrepancies)"`
+	Granularity string `json:"granularity,omitempty" jsonschema:"optional time bucket granularity; only 'hour' is supported (the default)"`
 }
 
 // getFlowAccuracyReport is the tool handler: it validates the required window,
