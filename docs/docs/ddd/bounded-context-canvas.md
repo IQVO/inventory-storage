@@ -12,6 +12,109 @@ Following the [ddd-crew Bounded Context Canvas](https://github.com/ddd-crew/boun
 and CloudEvents `type` in the code on `develop`; the relationship column uses
 the [Context Map](/docs/ecosystem/context-map) vocabulary.
 
+## Canvas at a glance
+
+One picture of the sections below, laid out like the ddd-crew canvas:
+inbound collaborators on the left, this context in the middle (purpose,
+domain roles and the business decisions it enforces), outbound
+collaborators on the right. Arrows follow the message type: **solid blue**
+commands (`cmd`), **dotted green** queries (`qry`), **thick orange** events
+(`evt`); each arrow names its channel and the messages it carries. Box shapes
+mark the collaborator kind: rounded = people, UI or any client; blue =
+sibling bounded context; double border = external system or platform;
+grey = this context's own projector, reports or dead-letter path; dashed =
+published today with no consumer. Channel names on the arrows are
+abbreviated (REST, MCP, Kafka, HTTP, port); the Inbound and Outbound
+Communication tables carry the exact route, tool, topic and CloudEvents
+type for every message.
+
+```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 36, "padding": 8}}}%%
+flowchart LR
+    classDef bc fill:#fff3bf,stroke:#e67700,stroke-width:1.5px,color:#000
+    classDef card fill:#fff9db,stroke:#f08c00,color:#000,text-align:left
+    classDef ctx fill:#e7f5ff,stroke:#1c7ed6,color:#000
+    classDef actor fill:#fff4e6,stroke:#e8590c,color:#000
+    classDef ext fill:#ffe3e3,stroke:#c92a2a,color:#000
+    classDef self fill:#f1f3f5,stroke:#868e96,color:#000
+    classDef none fill:#f8f9fa,stroke:#adb5bd,stroke-dasharray:5 5,color:#495057
+    subgraph IN["Inbound - who commands, queries or feeds it"]
+        direction TB
+        in0(["Inbound dock, inventory control, picking (operators, simulator, inventory-mfe)"]):::actor
+        in1["order-management"]:::ctx
+        in2["network-fulfillment"]:::ctx
+        in3["warehouse-ops-agent (agent and console BFF)"]:::ctx
+        in4(["Any MCP host"]):::actor
+        in5["facility-layout"]:::ctx
+        in6["product-master"]:::ctx
+        in7["inbound-receiving"]:::ctx
+        in8["fulfillment-execution"]:::ctx
+        in9["network-inventory-planning"]:::ctx
+    end
+    subgraph BC["inventory-storage - Core subdomain - WMS tier"]
+        direction TB
+        purpose["<b>Purpose</b><br/>The authoritative record of what is<br/>held where and how much of it is<br/>usable: bin-accurate location under<br/>chaotic stow, usable (not on-hand)<br/>quantity, and allocation as a<br/>revocable, expiring reservation."]:::card
+        roles["<b>Domain roles</b><br/>- System of record (StockUnit, Bin, Reservation)<br/>- Open Host Service (REST + events)<br/>- Enforcer of every invariant on every write<br/>- Analytics data-product owner"]:::card
+        rules["<b>Business decisions it enforces</b><br/>- Chaotic stow: a stow needs both item<br/>and location scans<br/>- Reserve against usable, SKU-scoped,<br/>first-fit across bins<br/>- Reservations are revocable and<br/>expire (default 30 min), lazily<br/>- A retry of the same demandRef, sku,<br/>quantity returns the existing<br/>reservation<br/>- Cycle-count shortfall marks units<br/>Unlocated; overage is reported,<br/>never auto-reconciled<br/>- product-master owns classification;<br/>this context keeps a version-guarded<br/>local copy"]:::card
+        purpose ~~~ roles ~~~ rules
+    end
+    subgraph OUT["Outbound - whom it calls or notifies"]
+        direction TB
+        out0["wes-work-planning"]:::ctx
+        out1["network-inventory-planning (transfer saga)"]:::ctx
+        out2["product-master (legacy importer, one-shot backfill)"]:::ctx
+        out3["facility-layout (wired, unused)"]:::ctx
+        out4["own cmd/inventory-projector"]:::self
+        out5["facility events DLQ"]:::self
+    end
+    in0 -->|"cmd - REST<br/>RegisterBin, ReceiveStock,<br/>StowStock, RunCycleCount,<br/>ConfirmPick"| BC
+    in0 -.->|"qry - REST<br/>GetBin, GetUsable"| BC
+    in1 -->|"cmd - REST<br/>ReserveStock, RevokeReservation"| BC
+    in2 -.->|"qry - REST<br/>GetUsable"| BC
+    in3 -.->|"qry - REST<br/>GetReservationsByDemandRef, Flow<br/>and Accuracy report"| BC
+    in3 -.->|"qry - MCP<br/>check_availability,<br/>get_bin_occupancy"| BC
+    in4 -->|"cmd - MCP<br/>revoke_reservation"| BC
+    in4 -.->|"qry - MCP<br/>get_inventory_flow_accuracy_report"| BC
+    in5 ==>|"evt - Kafka<br/>warehouse.facility.events<br/>ZoneRegistered,<br/>LocationSlotRegistered,<br/>LocationSlotDecommissioned"| BC
+    in6 ==>|"evt - Kafka<br/>warehouse.product-master.events<br/>ProductClassified (local copy)"| BC
+    in7 ==>|"evt - Kafka<br/>warehouse.inbound-receiving.events<br/>ReceiptLineReceived (Good lines)"| BC
+    in8 ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCompleted (PICK) confirms<br/>picks"| BC
+    in9 -->|"cmd - Kafka<br/>warehouse.network-inventory-planning.events<br/>TransferAllocationRequested"| BC
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>StockReserved,<br/>ReservationRevoked"| out0
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>TransferStockAllocated,<br/>TransferStockAllocationRejected,<br/>TransferReceiptStaged,<br/>TransferStockStowed"| out1
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>ProductClassified (legacy)"| out2
+    BC -.->|"qry - REST (http mode)<br/>location classification"| out3
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.analytics<br/>StockReceived, ItemStowed,<br/>ItemUnlocated, StockReserved,<br/>StockPicked, ReservationExpired,<br/>ReservationRevoked,<br/>CycleCountCompleted,<br/>DiscrepancyDetected"| out4
+    BC ==>|"evt - Kafka<br/>warehouse.facility.events.dlq<br/>invalid facility message"| out5
+    linkStyle 0 stroke:#1971c2,stroke-width:1.5px
+    linkStyle 1 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 2 stroke:#1971c2,stroke-width:1.5px
+    linkStyle 3 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 4 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 5 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 6 stroke:#1971c2,stroke-width:1.5px
+    linkStyle 7 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 8 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 9 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 10 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 11 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 12 stroke:#1971c2,stroke-width:1.5px
+    linkStyle 13 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 14 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 15 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 16 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 17 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 18 stroke:#e8590c,stroke-width:2.5px
+    class BC bc
+```
+
+Source: the Inbound Communication and Outbound Communication tables of this
+page, which map to `internal/adapters/inbound/{http,kafka,mcp}` and `internal/adapters/outbound/`. The diagram omits assumptions, verification metrics, open
+questions and the ubiquitous language (sections below), the relationship
+pattern per message (OHS, ACL, Conformist, Customer/Supplier - see the
+tables) and anything the tables mark as deprecated or platform-only
+(health probes).
+
 ## Name
 
 **Inventory & Storage** — repository `inventory-storage`, CloudEvents
@@ -73,6 +176,7 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | fulfillment-execution | TaskCompleted (PICK, `order_ref`, `line_no`) | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` → `ConfirmPicksForOrder` → with `line_no`, `ConfirmPick` for exactly that line's ACTIVE reservation; without it, counts the order's picks and confirms on the order's last pick (`TASK_COMPLETED_CONSUMER_MODE=kafka`, default off) | Conformist (fulfillment-execution's Published Language); per-line confirm, counting fallback, short picks not modelled ([ADR 0036](/docs/adr/0036), [ADR 0035](/docs/adr/0035)) |
 | Operator, `inventory-mfe` | GetBin, GetUsable | Query | REST `GET /bins/{binId}`, `GET /inventory/{sku}/usable` | OHS |
 | Kubernetes | liveness / readiness | Query | REST `GET /healthz`, `GET /readyz` | — |
+| network-inventory-planning | TransferAllocationRequested | Command | Kafka `warehouse.network-inventory-planning.events`, `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` → `transfer_consumer.go` (`TRANSFER_ALLOCATION_CONSUMER_MODE=kafka`, default off; [ADR 0030](/docs/adr/0030)) | Conformist to NIP's Published Language; reply by event |
 
 ## Outbound Communication
 
@@ -80,6 +184,7 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | --- | --- | --- | --- | --- |
 | `wes-work-planning` | StockReserved | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.reservation.StockReserved` (key = reservation id) | OHS/PL; downstream Conformist |
 | `wes-work-planning` | ReservationRevoked | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` (key = reservation id) | OHS/PL; downstream Conformist |
+| `network-inventory-planning` (transfer saga) | TransferStockAllocated, TransferStockAllocationRejected, TransferReceiptStaged, TransferStockStowed | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated` / `...reservation.TransferStockAllocationRejected` / `...stock.TransferReceiptStaged` / `...stock.TransferStockStowed` ([ADR 0030](/docs/adr/0030), [ADR 0033](/docs/adr/0033)) | OHS/PL; downstream Conformist |
 | product-master (legacy importer) | ProductClassified (legacy) | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.product.ProductClassified` (key = SKU; full-state replacement), emitted **only** by the one-shot `republish-product-classifications` backfill ([ADR 0034](/docs/adr/0034); run once, 2026-10-07) | PL; product-master translates it in its importer (ACL) |
 | own projector (`cmd/inventory-projector`) | StockReceived, ItemStowed, ItemUnlocated, StockReserved, StockPicked, ReservationExpired, ReservationRevoked, CycleCountCompleted, DiscrepancyDetected | Event | Kafka `warehouse.inventory.analytics`, `com.warehouse.wms.inventory-storage.<stock, reservation or bin>.<EventName>` (nothing emits `ProductClassified` there since ADR 0034) | internal |
 | `facility-layout` | location classification | Query | REST `GET /locations/{locationCode}/classification` — only with `LOCATION_LOOKUP_MODE=http`, behind a circuit breaker | ACL; wired but unused (rollback) |
