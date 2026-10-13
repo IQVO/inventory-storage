@@ -5,6 +5,10 @@ metadata:
   name: {{ include "inventory-storage.fullname" . }}
   labels:
     {{- include "inventory-storage.labels" . | nindent 4 }}
+  {{- with include "inventory-storage.kongPluginNames" . }}
+  annotations:
+    konghq.com/plugins: {{ . | quote }}
+  {{- end }}
 spec:
   parentRefs:
     {{- range .Values.gatewayApi.parentRefs }}
