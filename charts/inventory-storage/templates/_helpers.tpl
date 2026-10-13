@@ -113,3 +113,19 @@ select it.
 {{- define "inventory-storage.frontendFullname" -}}
 {{- include "inventory-storage.fullname" . }}-frontend
 {{- end }}
+
+{{/*
+Comma-joined names of this chart's enabled KongPlugins, for the
+konghq.com/plugins annotation on every HTTPRoute this chart renders.
+Empty string (annotation omitted) when none are enabled — standalone
+installs without Kong are unaffected.
+*/}}
+{{- define "inventory-storage.kongPluginNames" -}}
+{{- $names := list -}}
+{{- range $name, $cfg := .Values.kongPlugins -}}
+{{- if $cfg.enabled -}}
+{{- $names = append $names (printf "%s-%s" (include "inventory-storage.fullname" $) $name) -}}
+{{- end -}}
+{{- end -}}
+{{- join "," $names -}}
+{{- end }}
