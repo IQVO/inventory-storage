@@ -143,9 +143,47 @@ single relay goroutine in `cmd/inventory` drains them
   rows in id order with `FOR UPDATE SKIP LOCKED`, so several replicas can relay
   concurrently without double-sending a row;
 - a full batch is followed immediately by the next pass;
-- a send failure increments `attempts`, stores `last_error`, and **stops the
-  pass at that row** (no attempt cap, no DLQ): the next pass retries it, so a
-  broken broker holds back everything behind it rather than reordering.
+- a send failure increments `attempts`, stores `last_error`, logs a WARN and
+  **stops the pass at that row**: the next pass retries it, so a broken broker
+  holds back everything behind it rather than reordering;
+- **attempt cap** ([ADR 0038](../adr/0038-outbox-relay-attempt-cap.md)): once a
+  row has failed `OUTBOX_MAX_ATTEMPTS` sends (default 20, `0` = unlimited) the
+  relay logs it **at ERROR** and excludes it from future claims, so one poison
+  row cannot stop the relay forever. Later rows, **including rows with the
+  same key**, then overtake it. The row is not deleted or moved (there is no
+  DLQ topic): it stays in `outbox_events` with `published_at IS NULL`,
+  `attempts` and `last_error`, and the sweeper never removes it.
+
+### An outbox row hit the attempt cap
+
+Symptom: an ERROR log
+`outbox relay: row reached the attempt cap and is excluded from future claims; ...`
+carrying `outbox_id`, `topic`, `event_type`, `key`, `attempts`,
+`max_attempts` and `error`. Consumers never received that event; later events
+for the same key may already have been delivered.
+
+1. List the excluded rows (use the configured cap; 20 by default):
+
+   ```sql
+   SELECT id, topic, event_type, convert_from(key, 'UTF8') AS key, attempts, last_error, created_at
+   FROM outbox_events
+   WHERE published_at IS NULL AND attempts >= 20
+   ORDER BY id;
+   ```
+
+2. Fix the cause named in `last_error` (topic missing, message too large,
+   broker ACL, ...).
+3. Re-arm the row so the next relay pass claims it again:
+
+   ```sql
+   UPDATE outbox_events SET attempts = 0 WHERE id = <outbox_id>;
+   ```
+
+   It is delivered late, after later rows with the same key; consumers dedupe
+   on the CloudEvents `id`, so a re-armed row is never applied twice. If the
+   event must not be delivered at all any more, leave it excluded and record
+   why: deleting an unpublished outbox row is a manual data change and is not
+   part of this procedure.
 
 `cmd/mcp` writes outbox rows but runs no relay: MCP-initiated revocations reach
 Kafka only while a `cmd/inventory` pod with `EVENT_PUBLISHER=kafka` is running

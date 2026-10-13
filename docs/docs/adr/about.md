@@ -74,7 +74,7 @@ Typos, broken links and formatting are of course fair game.
 | [0014](./0014-rest-identity-adoption.md) | Adopt the fleet REST identity standard (static bearer keys, read/read-write scopes; `warehouse-ops-agent` ADR 0005) | Superseded by [0015](./0015-remove-rest-identity-layer.md) |
 | [0015](./0015-remove-rest-identity-layer.md) | Remove the fleet REST identity layer (static bearer keys, read/read-write scopes) | Accepted |
 | [0016](./0016-standard-metrics-convention.md) | Standard metrics convention across the fleet | Accepted |
-| [0017](./0017-transactional-outbox.md) | Transactional outbox + relay for Kafka publishing | Accepted |
+| [0017](./0017-transactional-outbox.md) | Transactional outbox + relay for Kafka publishing | Accepted — per-key ordering amended by [0038](./0038-outbox-relay-attempt-cap.md) |
 | [0018](./0018-idempotency-key-middleware.md) | Transactional Idempotency-Key middleware for POST /stock/receive and POST /reservations | Accepted |
 | [0019](./0019-optimistic-concurrency-version-column.md) | Optimistic concurrency (version column) for StockUnit, Bin, Reservation | Accepted |
 | [0020](./0020-resilience-circuit-breaker-retry-dlq-shutdown.md) | Circuit breaker, read-only retry, Kafka DLQ, and graceful shutdown hardening | Accepted |
@@ -95,6 +95,7 @@ Typos, broken links and formatting are of course fair game.
 | [0035](./0035-confirm-pick-from-task-completed.md) | Confirm an order's picks from fulfillment-execution's TaskCompleted, on the last pick | Accepted; per-line path added by [0036](./0036-per-line-confirm-pick.md) |
 | [0036](./0036-per-line-confirm-pick.md) | Reservations store the order line; picks are confirmed per line | Accepted |
 | [0037](./0037-stock-receipts-from-inbound-receiving.md) | Stock receipts from inbound-receiving: Good `ReceiptLineReceived` lines are booked as staged stock | Accepted |
+| [0038](./0038-outbox-relay-attempt-cap.md) | Outbox relay attempt cap: `OUTBOX_MAX_ATTEMPTS` (default 20) excludes a poison row and logs it at ERROR | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

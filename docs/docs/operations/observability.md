@@ -98,7 +98,9 @@ the record is written with a span on the context
 | `http request` (INFO; ERROR for 5xx) | `method`, `path`, `status`, `duration_ms`, `bytes`, `request_id` (chi `X-Request-Id`) | `internal/adapters/inbound/http/logging.go` (API and reports) |
 | `domain event published` | `event_name`, `payload` | `internal/adapters/outbound/events/log_publisher.go` (`EVENT_PUBLISHER=log`) |
 | `event publisher configured` | `publisher`, `integration_topic`, `analytics_topic`, `brokers` | startup |
-| `outbox relay: send failed, stopping this pass at the failed row` (WARN) | `outbox_id`, `topic`, `error` | relay |
+| `outbox relay: send failed, stopping this pass at the failed row` (WARN) | `outbox_id`, `topic`, `attempts`, `error` | relay |
+| `outbox relay: row reached the attempt cap and is excluded from future claims; ...` (ERROR) | `outbox_id`, `topic`, `event_type`, `key`, `attempts`, `max_attempts`, `error` | relay, once per row when it reaches `OUTBOX_MAX_ATTEMPTS` ([ADR 0038](../adr/0038-outbox-relay-attempt-cap.md)) |
+| `outbox relay started` | `interval`, `max_attempts` | `cmd/inventory/adapters.go` |
 | `retrying` (WARN) / `succeeded after retry` | `op`, `attempt`, `in`, `err` | `bootretry` |
 | `... consumer configured` / `... not started` | `topic`, `consumer_group`, `reason` | each consumer at startup |
 | `... retrying same message` (WARN), `... dead-lettering ...` (ERROR), `skipping ... not a valid CloudEvent` (WARN, sampled for TaskCompleted) | `error`, `attempt`, `partition`, `offset` | Kafka consumers |
@@ -125,6 +127,7 @@ empty; use the Kong 5xx panel or the `http request` log lines with
 | Alert | Signal | Why |
 | --- | --- | --- |
 | Outbox backlog | `SELECT count(*), min(created_at) FROM outbox_events WHERE published_at IS NULL` growing for > 5 min | Relay is stuck on a failing row (no metric exists for this; query the DB). |
+| Outbox row excluded | any ERROR `outbox relay: row reached the attempt cap ...` (log alert), or `SELECT count(*) FROM outbox_events WHERE published_at IS NULL AND attempts >= 20` > 0 | An event that consumers never received; re-arm it after fixing the cause ([Runbook](./runbook.md#an-outbox-row-hit-the-attempt-cap)). |
 | facility-layout breaker open | `circuit_breaker_state{dependency="facility-layout"} == 2` for > 1 min | Stows fall back to permissive (fail-open) classification. |
 | DLQ traffic | any new message on `warehouse.fulfillment.events.dlq` or `warehouse.facility.events.dlq` | Each one is a pick confirmation or a location fact that was not applied. |
 | Consumer lag | lag of groups `inventory-storage-confirm-pick`, `inventory-storage-transfer-allocation`, `inventory-analytics` and the configured product-master / inbound-receipt groups | Those consumers retry a failing message in place; lag is the only symptom. |

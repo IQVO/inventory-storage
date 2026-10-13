@@ -3,10 +3,12 @@ package main
 import (
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/telemetry"
 )
 
@@ -41,7 +43,7 @@ type config struct {
 
 	locationLookupMode    string
 	facilityLayoutBaseURL string
-	kafkaBrokers          []string // KAFKA_BROKERS split on ","; nil when unset
+	kafkaBrokers          []string // KAFKA_BROKERS split on ","; nil when unset (publishers: see publisherBrokers)
 
 	// transferConsumerMode is TRANSFER_ALLOCATION_CONSUMER_MODE: "off"
 	// (default) or "kafka" — see buildTransferAllocationConsumer.
@@ -99,17 +101,33 @@ func loadConfig() config {
 	return cfg
 }
 
+// defaultPublisherBroker is the one KAFKA_BROKERS fallback in this binary:
+// the Kafka publishers and the outbox relay dial it when KAFKA_BROKERS is
+// unset (local runs). The consumers have no fallback on purpose.
+const defaultPublisherBroker = "localhost:9092"
+
+// publisherBrokers is the broker list of the Kafka publishers and the outbox
+// relay (EVENT_PUBLISHER=kafka): KAFKA_BROKERS as read by loadConfig, or
+// defaultPublisherBroker when it is unset. Consumers use kafkaBrokers
+// directly, which stays nil when unset so their boot checks fail loudly.
+func (c config) publisherBrokers() []string {
+	if len(c.kafkaBrokers) == 0 {
+		return []string{defaultPublisherBroker}
+	}
+	return c.kafkaBrokers
+}
+
 // newLogger builds the process-wide structured logger. LOG_LEVEL maps
-// debug|info|warn|error (case-insensitive) to the matching slog.Level,
-// defaulting to Info for unset or unrecognized values. Logs are emitted as
-// JSON to stdout, wrapped so that any record written with a span-carrying
-// context also carries trace_id/span_id.
+// debug|info|warn|warning|error (case-insensitive) to the matching
+// slog.Level, defaulting to Info for unset or unrecognized values. Logs are
+// emitted as JSON to stdout, wrapped so that any record written with a
+// span-carrying context also carries trace_id/span_id.
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level
 	switch strings.ToLower(level) {
 	case "debug":
 		lvl = slog.LevelDebug
-	case "warn":
+	case "warn", "warning":
 		lvl = slog.LevelWarn
 	case "error":
 		lvl = slog.LevelError
@@ -130,6 +148,30 @@ func outboxRelayInterval(logger *slog.Logger) time.Duration {
 		return time.Second
 	}
 	return interval
+}
+
+// outboxMaxAttempts parses OUTBOX_MAX_ATTEMPTS (ADR 0038): how many failed
+// sends exclude an outbox row from the relay's claims. Unset means
+// postgres.DefaultOutboxMaxAttempts (20); 0 means unlimited (the pre-ADR
+// behaviour, where one poison row blocks the relay forever).
+func outboxMaxAttempts(logger *slog.Logger) int {
+	return envInt(logger, "OUTBOX_MAX_ATTEMPTS", postgres.DefaultOutboxMaxAttempts)
+}
+
+// envInt parses a non-negative integer env var. Unset yields def; an invalid
+// or negative value logs a warning and yields def. "0" is valid and its
+// meaning is the caller's.
+func envInt(logger *slog.Logger, key string, def int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		logger.Warn("invalid integer env var, using default", "key", key, "value", raw, "default", def, "error", err)
+		return def
+	}
+	return n
 }
 
 // envDuration parses a Go duration env var. Unset yields def; an invalid or

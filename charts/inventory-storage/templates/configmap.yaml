@@ -13,6 +13,7 @@ data:
   FACILITY_LAYOUT_BASE_URL: {{ .Values.config.facilityLayoutBaseUrl | quote }}
   {{- end }}
   OUTBOX_RELAY_INTERVAL: {{ .Values.config.outboxRelayInterval | quote }}
+  OUTBOX_MAX_ATTEMPTS: {{ .Values.config.outboxMaxAttempts | quote }}
   HOUSEKEEPING_INTERVAL: {{ .Values.config.housekeepingInterval | quote }}
   IDEMPOTENCY_KEY_TTL: {{ .Values.config.idempotencyKeyTtl | quote }}
   OUTBOX_RETENTION: {{ .Values.config.outboxRetention | quote }}

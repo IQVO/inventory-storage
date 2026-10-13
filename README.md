@@ -274,7 +274,9 @@ of the site-scoped transfer allocation exchange (ADR-0030).
   (ADR 0017): each use case's aggregate save(s) and its domain event(s)
   commit together in one Postgres transaction as `outbox_events` rows, and
   a background relay (`OUTBOX_RELAY_INTERVAL`, default `1s`) drains them
-  onto Kafka. Without `DATABASE_URL`, `EVENT_PUBLISHER=kafka` publishes
+  onto Kafka. A row that fails `OUTBOX_MAX_ATTEMPTS` sends (default `20`,
+  `0` = unlimited; ADR 0038) is logged at ERROR and excluded from the relay
+  until re-armed, so one poison row cannot block it forever. Without `DATABASE_URL`, `EVENT_PUBLISHER=kafka` publishes
   directly (no outbox, no transactional guarantee) — the in-memory repos
   have nothing to commit atomically with. `cmd/mcp` reads the same
   `EVENT_PUBLISHER`/`DATABASE_URL`, so an MCP `revoke_reservation` writes the

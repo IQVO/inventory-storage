@@ -7,17 +7,17 @@ description: The test pyramid as it exists in this repository — unit, BDD, MCP
 
 # Testing
 
-Counts below were taken from the tree on this branch: 140 `*_test.go` files, of
-which 39 carry the `integration` build tag; 9 Gherkin files with 31 scenarios
+Counts below were taken from the tree on this branch: 152 `*_test.go` files, of
+which 40 carry the `integration` build tag; 9 Gherkin files with 31 scenarios
 under `features/`, plus 1 MCP feature file with 9 scenarios.
 
 ```mermaid
 flowchart TB
   MUT["Mutation (gremlins)<br/>internal/domain — efficacy and mutant coverage gate 99"]
   CON["Contract (Schemathesis 4.28.0)<br/>apis/openapi.yaml vs in-memory cmd/inventory"]
-  INT["Integration (-tags=integration)<br/>39 files, Postgres + Kafka via testcontainers"]
+  INT["Integration (-tags=integration)<br/>40 files, Postgres + Kafka via testcontainers"]
   BDD["Acceptance (godog)<br/>features/ 9 files · 31 scenarios<br/>MCP E3 1 file · 9 scenarios"]
-  ARCH["Architecture fitness<br/>internal/architecture — 14 tests"]
+  ARCH["Architecture fitness<br/>internal/architecture — 18 tests"]
   UNIT["Unit + httptest<br/>domain, use cases, adapters, cmd wiring<br/>coverage gate 90 % on domain + application"]
   MUT --> CON --> INT --> BDD --> ARCH --> UNIT
 ```
@@ -116,6 +116,8 @@ They run in `make test` and again, by name, in the `evals-tests` CI job.
 | `TestCloudEventsOnly` | No `EVENT_ENVELOPE_MODE` toggle anywhere, and a module that talks to Kafka imports the CloudEvents SDK. |
 | `TestReplayConsumersSetCommitInterval` | A kafka-go reader on a process-unique group (the facility cache's full replay) sets `CommitInterval`. |
 | `TestDomainHasNoWireStructTags` (+ detector test) | No `json:` / `db:` tags on domain types. |
+| `TestOutboxRelaysPassAttemptCap` (+ `TestOutboxRelayCapSensorFailsOnBadFixtures`) | Every non-test `NewOutboxRelay` call under `cmd/` passes `WithMaxAttempts` ([ADR 0038](../adr/0038-outbox-relay-attempt-cap.md)), so one poison row cannot block the relay forever. |
+| `TestMCPOptionalToolInputsCarryOmitempty` (+ `TestMCPOptionalToolInputsSensorFailsOnBadFixtures`) | An MCP tool input field whose `jsonschema` description says "optional" carries `omitempty`, or the SDK advertises it as required and calls without it fail (gap fix D16). |
 
 ### Integration (testcontainers)
 
@@ -123,7 +125,9 @@ They run in `make test` and again, by name, in the `evals-tests` CI job.
 starts its own `postgres` and/or Kafka container
 (`internal/testsupport/kafkatc` waits for the group coordinator before tests
 run). Covered: every Postgres repository, migrations, optimistic concurrency,
-the idempotency middleware (including `lineNo`), the outbox publisher and relay,
+the idempotency middleware (including `lineNo`), the outbox publisher and relay
+(including the attempt cap: a poison row, then a good row that publishes, and
+the re-arm SQL, `outbox_relay_cap_integration_test.go`),
 the sweeper, pool limits, rehydration, the transfer, confirm-pick, inbound
 receipt and product-master hand-overs at the use-case level, the analytics
 store, the facility cache consumer, publisher partitioning, the MCP
@@ -153,9 +157,14 @@ subset `./internal/domain/stock` blocks every PR (`mutation-fast`); the whole
 ### Frontend and chart
 
 `web/` (the inventory micro-frontend) has its own Vitest suite (`npm test`),
-oxlint and `tsc -b`, run by the `web` job. `charts/inventory-storage/tests/test_service_selectors.py`
-checks Service selectors; it is run by hand
-(`python3 charts/inventory-storage/tests/test_service_selectors.py`), not by CI.
+oxlint and `tsc -b`, run by the `web` job. The chart has two tests, both run
+by the `chart-tests` CI job: `charts/inventory-storage/tests/render_test.sh`
+(the API Deployment mounts the env ConfigMap with `envFrom`, tuned `config.*`
+values reach it, the other workloads do not mount it) and
+`charts/inventory-storage/tests/test_service_selectors.py` (each Service
+selects exactly one Deployment). Run them locally with
+`bash charts/inventory-storage/tests/render_test.sh` and
+`python3 charts/inventory-storage/tests/test_service_selectors.py`.
 
 ## CI jobs
 
@@ -179,6 +188,7 @@ checks Service selectors; it is run by hand
 | `vuln` | govulncheck v1.1.4 | always |
 | `docs-api-drift` | `npm run clean-api-docs inventory && npm run gen-api-docs inventory`, then `git diff --exit-code -- docs/api-reference/rest` | always |
 | `helm-lint` | `ct lint --charts charts/inventory-storage` | pull requests |
+| `chart-tests` | `bash charts/inventory-storage/tests/render_test.sh` (ConfigMap `envFrom` mount, config values) and `python3 charts/inventory-storage/tests/test_service_selectors.py` (with PyYAML pinned) | always |
 | `arch-test` | `go test ./internal/architecture/... -v` | always |
 | `web` | builds warehouse-ui-kit `develop`, then lint, `tsc -b`, test, build of `web/` | always |
 | `trivy-scan` | image build + Trivy, blocking on fixable CRITICAL/HIGH | pull requests |

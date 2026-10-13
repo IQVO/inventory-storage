@@ -40,7 +40,7 @@ a single replica. Requests are traced by otelchi and timed by
 | `check_availability` | read-only | `sku` — the stock-keeping unit to check usable availability for | `{sku, usable}` | `GetUsable` |
 | `get_bin_occupancy` | read-only | `binId` — the coded bin/location slot to inspect | `{binId, unitCount, onHand, reserved, usable, lines[]}`; each line `{stockUnitId, sku, onHand, reserved, usable, state}` | `StockRepo.FindByBin` (read model) |
 | `revoke_reservation` | **write**, destructive, not idempotent | `reservationId` — the reservation to revoke; its quantity returns to usable | `{reservationId, revoked: true}` | `RevokeReservation` (emits `ReservationRevoked`, counts `inventory.reservations{outcome=revoked}`) |
-| `get_inventory_flow_accuracy_report` | read-only; registered **only** when `REPORTS_BASE_URL` is set | `from` (RFC 3339, inclusive), `to` (RFC 3339, exclusive), `sku` (optional filter), `binId` (optional filter), `granularity` (only `hour`) | `{rows[]}` — same row shape as `GET /reports/flow-accuracy` | HTTP call to `cmd/inventory-reports` (10 s timeout) |
+| `get_inventory_flow_accuracy_report` | read-only; registered **only** when `REPORTS_BASE_URL` is set | `from` (RFC 3339, inclusive), `to` (RFC 3339, exclusive), `sku` (optional filter), `binId` (optional filter), `granularity` (optional; only `hour`, the default) | `{rows[]}` — same row shape as `GET /reports/flow-accuracy` | HTTP call to `cmd/inventory-reports` (10 s timeout) |
 
 Errors come back as a tool result with `isError: true` and the use-case error
 text (for example `reservation not found`), not as a JSON-RPC error. An empty
@@ -76,7 +76,7 @@ Taken from a local run of this branch's binary (in-memory, `MCP_ADDR=:18190`,
 {"name": "get_inventory_flow_accuracy_report",
  "inputSchema": {"type": "object",
                  "properties": {"from": {}, "to": {}, "sku": {}, "binId": {}, "granularity": {}},
-                 "required": ["from", "to", "sku", "binId", "granularity"],
+                 "required": ["from", "to"],
                  "additionalProperties": false},
  "annotations": {"readOnlyHint": true, "idempotentHint": false}}
 {"name": "revoke_reservation",
@@ -87,8 +87,11 @@ Taken from a local run of this branch's binary (in-memory, `MCP_ADDR=:18190`,
 
 (Descriptions trimmed.) Note the report tool's schema: the SDK marks every
 struct field without `omitempty` as required, so `sku`, `binId` and
-`granularity` are advertised as **required** although the handler treats them as
-optional; strict clients must send them, empty strings are accepted.
+`granularity` carry `omitempty` and only `from` and `to` are required (gap fix
+D16; `TestReportTool_OptionalFiltersAreOptionalOnTheWire` pins it, and the
+fitness test `TestMCPOptionalToolInputsCarryOmitempty` fails on any input field
+described as optional without `omitempty`). An omitted `granularity` means
+`hour`.
 
 ## Calling it with curl
 

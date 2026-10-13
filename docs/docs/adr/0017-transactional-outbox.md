@@ -11,7 +11,7 @@ description: Aggregate saves and their domain event(s) now commit in one Postgre
 
 ## Status
 
-Accepted.
+Accepted. Per-key ordering consequence amended by [ADR 0038](./0038-outbox-relay-attempt-cap.md) (relay attempt cap).
 
 ## Context
 
