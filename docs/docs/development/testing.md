@@ -17,7 +17,7 @@ flowchart TB
   CON["Contract (Schemathesis 4.28.0)<br/>apis/openapi.yaml vs in-memory cmd/inventory"]
   INT["Integration (-tags=integration)<br/>40 files, Postgres + Kafka via testcontainers"]
   BDD["Acceptance (godog)<br/>features/ 9 files · 31 scenarios<br/>MCP E3 1 file · 9 scenarios"]
-  ARCH["Architecture fitness<br/>internal/architecture — 18 tests"]
+  ARCH["Architecture fitness<br/>internal/architecture — 20 tests"]
   UNIT["Unit + httptest<br/>domain, use cases, adapters, cmd wiring<br/>coverage gate 90 % on domain + application"]
   MUT --> CON --> INT --> BDD --> ARCH --> UNIT
 ```
@@ -118,6 +118,7 @@ They run in `make test` and again, by name, in the `evals-tests` CI job.
 | `TestDomainHasNoWireStructTags` (+ detector test) | No `json:` / `db:` tags on domain types. |
 | `TestOutboxRelaysPassAttemptCap` (+ `TestOutboxRelayCapSensorFailsOnBadFixtures`) | Every non-test `NewOutboxRelay` call under `cmd/` passes `WithMaxAttempts` ([ADR 0038](../adr/0038-outbox-relay-attempt-cap.md)), so one poison row cannot block the relay forever. |
 | `TestMCPOptionalToolInputsCarryOmitempty` (+ `TestMCPOptionalToolInputsSensorFailsOnBadFixtures`) | An MCP tool input field whose `jsonschema` description says "optional" carries `omitempty`, or the SDK advertises it as required and calls without it fail (gap fix D16). |
+| `TestKafkaWritersSetRequiredAcks` (+ `TestKafkaWriterAcksSensorBites`) | Every kafka-go `Writer` composite literal in a non-test file under `internal/` or `cmd/` sets `RequiredAcks` (the import alias is resolved per file). kafka-go defaults it to `RequireNone` (acks=0): the broker never confirms the write, so a broker blip silently drops the message while `WriteMessages` returns nil. The twin proves the sensor flags a bad fixture under any alias. |
 
 ### Integration (testcontainers)
 
