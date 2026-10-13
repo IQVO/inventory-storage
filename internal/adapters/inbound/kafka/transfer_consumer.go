@@ -115,8 +115,9 @@ func retryBackoff(attempt int) time.Duration {
 	return d
 }
 
-// Run consumes Topic until ctx is cancelled or the reader fails
-// fatally. A transient handler error retries the SAME message with
+// Run consumes Topic until ctx is cancelled (a clean stop: nil, even
+// mid-handle -- the in-flight command stays uncommitted and is redelivered)
+// or the reader fails fatally. A transient handler error retries the SAME message with
 // capped backoff (cancellable); a deterministic one (malformed,
 // unknown type, domain validation) is logged and the message committed
 // past — never retried, never blocking the partition.
@@ -130,36 +131,48 @@ func (c *Consumer) Run(ctx context.Context) error {
 			return err
 		}
 
-		attempt := 0
-		for {
-			err := c.Handle(ctx, msg)
-			if err == nil {
-				break
-			}
-			if isDeterministic(err) {
-				// Poison: log, commit past, never retry. The command was
-				// malformed or the envelope invalid — a retry cannot fix
-				// it, and blocking the partition would wedge every
-				// later transfer.
-				c.Logger.ErrorContext(ctx, "transfer allocation command permanently unhandleable; committing past it",
-					"error", err, "partition", msg.Partition, "offset", msg.Offset)
-				break
-			}
-			// Transient (DB/tx failure): retry the SAME message.
-			attempt++
-			c.Logger.WarnContext(ctx, "transfer allocation command handling failed; retrying same message",
-				"error", err, "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(retryBackoff(attempt)):
-			}
+		if !c.settle(ctx, msg) {
+			// Shutdown landed mid-handle: a clean stop. The offset was not
+			// committed, so the command is redelivered and replayed.
+			return nil
 		}
 
 		// Commit only after the handler settled (nil or deterministic
 		// poison) — a transient failure never reaches this line.
 		if err := c.Reader.CommitMessages(ctx, msg); err != nil {
+			if ctx.Err() != nil {
+				return nil // shutdown: the uncommitted command is redelivered and replayed
+			}
 			return fmt.Errorf("commit transfer allocation command: %w", err)
+		}
+	}
+}
+
+// settle handles msg until it is settled (handled, or deterministic poison
+// logged and skipped), retrying a transient failure on the SAME message with
+// capped backoff. It reports false only when ctx is done first.
+func (c *Consumer) settle(ctx context.Context, msg kafkago.Message) bool {
+	for attempt := 1; ; attempt++ {
+		err := c.Handle(ctx, msg)
+		if err == nil {
+			return true
+		}
+		if isDeterministic(err) {
+			// Poison: log, commit past, never retry. The command was
+			// malformed or the envelope invalid — a retry cannot fix
+			// it, and blocking the partition would wedge every
+			// later transfer.
+			c.Logger.ErrorContext(ctx, "transfer allocation command permanently unhandleable; committing past it",
+				"error", err, "partition", msg.Partition, "offset", msg.Offset)
+			return true
+		}
+		// Transient (DB/tx failure): retry the SAME message.
+		c.Logger.WarnContext(ctx, "transfer allocation command handling failed; retrying same message",
+			"error", err, "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(retryBackoff(attempt)):
 		}
 	}
 }

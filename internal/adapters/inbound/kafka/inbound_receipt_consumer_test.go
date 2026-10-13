@@ -291,8 +291,8 @@ func TestInboundReceiptConsumer_CancelDuringRetryDoesNotCommit(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("Run = %v, want context.Canceled", err)
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v, want nil (a shutdown mid-retry is a clean stop)", err)
 	}
 	if f.reader.commitsLen() != 0 {
 		t.Fatal("a message whose handler never succeeded was committed")

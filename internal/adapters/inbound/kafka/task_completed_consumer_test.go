@@ -352,8 +352,8 @@ func TestTaskCompletedConsumer_ShutdownMidRetryDoesNotCommit(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("Run returned %v, want context.Canceled", err)
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v, want nil (a shutdown mid-retry is a clean stop)", err)
 	}
 	if f.reader.commitsLen() != 0 {
 		t.Fatal("an unsettled message must not be committed on shutdown")
@@ -373,5 +373,36 @@ func TestTaskCompletedConsumer_RedeliveredEventReachesTheUseCaseEachTime(t *test
 	calls := f.confirm.calls()
 	if len(calls) != 2 || calls[0].EventID != calls[1].EventID {
 		t.Fatalf("calls = %+v, want two deliveries with the same CloudEvents id", calls)
+	}
+}
+
+// cancellingConfirmer simulates a shutdown landing inside the use case: it
+// cancels the consumer's context and reports the cancellation, as a
+// Postgres-backed use case does when its transaction is interrupted.
+type cancellingConfirmer struct{ cancel context.CancelFunc }
+
+func (c cancellingConfirmer) Execute(ctx context.Context, _ usecases.PickCompletion) (usecases.ConfirmPicksResult, error) {
+	c.cancel()
+	return usecases.ConfirmPicksResult{}, ctx.Err()
+}
+
+// A cancellation that lands on the LAST attempt is a shutdown, not an
+// exhausted poison message: nothing is dead-lettered, nothing is committed,
+// and Run stops cleanly.
+func TestTaskCompletedConsumer_ShutdownOnLastAttemptDeadLettersNothing(t *testing.T) {
+	f := newTaskCompletedFixture(&fakeConfirmer{}, fcMsg(0, taskCompletedCE(t, "ce-1", pickData("order-7"))))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.consumer.Confirm = cancellingConfirmer{cancel: cancel}
+	f.consumer.MaxAttempts = 1
+
+	if err := f.consumer.Run(ctx); err != nil {
+		t.Fatalf("Run returned %v, want nil (a shutdown mid-handle is a clean stop)", err)
+	}
+	if f.reader.commitsLen() != 0 {
+		t.Fatal("a message only interrupted by shutdown must not be committed")
+	}
+	if f.dlq.attempts != 0 {
+		t.Fatalf("DLQ write attempts = %d, want 0 (never dead-letter a cancelled message)", f.dlq.attempts)
 	}
 }
