@@ -14,10 +14,10 @@ the [Context Map](/docs/ecosystem/context-map) vocabulary.
 
 ## Canvas at a glance
 
-One picture of the sections below, laid out like the ddd-crew canvas:
-inbound collaborators on the left, this context in the middle (purpose,
-domain roles and the business decisions it enforces), outbound
-collaborators on the right. Arrows follow the message type: **solid blue**
+Two pictures of the sections below, laid out like the ddd-crew canvas:
+first the inbound collaborators feeding this context (purpose, domain roles
+and the business decisions it enforces), then the outbound collaborators it
+calls or notifies. Arrows follow the message type: **solid blue**
 commands (`cmd`), **dotted green** queries (`qry`), **thick orange** events
 (`evt`); each arrow names its channel and the messages it carries. Box shapes
 mark the collaborator kind: rounded = people, UI or any client; blue =
@@ -28,8 +28,10 @@ abbreviated (REST, MCP, Kafka, HTTP, port); the Inbound and Outbound
 Communication tables carry the exact route, tool, topic and CloudEvents
 type for every message.
 
+### Inbound
+
 ```mermaid
-%%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 36, "padding": 8}}}%%
+%%{init: {"flowchart": {"nodeSpacing": 14, "rankSpacing": 40, "padding": 6}}}%%
 flowchart LR
     classDef bc fill:#fff3bf,stroke:#e67700,stroke-width:1.5px,color:#000
     classDef card fill:#fff9db,stroke:#f08c00,color:#000,text-align:left
@@ -40,10 +42,10 @@ flowchart LR
     classDef none fill:#f8f9fa,stroke:#adb5bd,stroke-dasharray:5 5,color:#495057
     subgraph IN["Inbound - who commands, queries or feeds it"]
         direction TB
-        in0(["Inbound dock, inventory control, picking (operators, simulator, inventory-mfe)"]):::actor
+        in0(["Inbound dock, inventory<br/>control, picking<br/>(operators, simulator,<br/>inventory-mfe)"]):::actor
         in1["order-management"]:::ctx
         in2["network-fulfillment"]:::ctx
-        in3["warehouse-ops-agent (agent and console BFF)"]:::ctx
+        in3["warehouse-ops-agent (agent<br/>and console BFF)"]:::ctx
         in4(["Any MCP host"]):::actor
         in5["facility-layout"]:::ctx
         in6["product-master"]:::ctx
@@ -53,39 +55,24 @@ flowchart LR
     end
     subgraph BC["inventory-storage - Core subdomain - WMS tier"]
         direction TB
-        purpose["<b>Purpose</b><br/>The authoritative record of what is<br/>held where and how much of it is<br/>usable: bin-accurate location under<br/>chaotic stow, usable (not on-hand)<br/>quantity, and allocation as a<br/>revocable, expiring reservation."]:::card
+        purpose["<b>Purpose</b><br/>The authoritative record of what is held where and how<br/>much of it is usable: bin-accurate location under chaotic<br/>stow, usable (not on-hand) quantity, and allocation as a<br/>revocable, expiring reservation."]:::card
         roles["<b>Domain roles</b><br/>- System of record (StockUnit, Bin, Reservation)<br/>- Open Host Service (REST + events)<br/>- Enforcer of every invariant on every write<br/>- Analytics data-product owner"]:::card
-        rules["<b>Business decisions it enforces</b><br/>- Chaotic stow: a stow needs both item<br/>and location scans<br/>- Reserve against usable, SKU-scoped,<br/>first-fit across bins<br/>- Reservations are revocable and<br/>expire (default 30 min), lazily<br/>- A retry of the same demandRef, sku,<br/>quantity returns the existing<br/>reservation<br/>- Cycle-count shortfall marks units<br/>Unlocated; overage is reported,<br/>never auto-reconciled<br/>- product-master owns classification;<br/>this context keeps a version-guarded<br/>local copy"]:::card
+        rules["<b>Business decisions it enforces</b><br/>- Chaotic stow: a stow needs both item and location scans<br/>- Reserve against usable, SKU-scoped, first-fit across bins<br/>- Reservations are revocable and expire (default 30 min),<br/>lazily<br/>- A retry of the same demandRef, sku, quantity returns the<br/>existing reservation<br/>- Cycle-count shortfall marks units Unlocated; overage is<br/>reported, never auto-reconciled<br/>- product-master owns classification; this context keeps a<br/>version-guarded local copy"]:::card
         purpose ~~~ roles ~~~ rules
-    end
-    subgraph OUT["Outbound - whom it calls or notifies"]
-        direction TB
-        out0["wes-work-planning"]:::ctx
-        out1["network-inventory-planning (transfer saga)"]:::ctx
-        out2["product-master (legacy importer, one-shot backfill)"]:::ctx
-        out3["facility-layout (wired, unused)"]:::ctx
-        out4["own cmd/inventory-projector"]:::self
-        out5["facility events DLQ"]:::self
     end
     in0 -->|"cmd - REST<br/>RegisterBin, ReceiveStock,<br/>StowStock, RunCycleCount,<br/>ConfirmPick"| BC
     in0 -.->|"qry - REST<br/>GetBin, GetUsable"| BC
-    in1 -->|"cmd - REST<br/>ReserveStock, RevokeReservation"| BC
+    in1 -->|"cmd - REST<br/>ReserveStock,<br/>RevokeReservation"| BC
     in2 -.->|"qry - REST<br/>GetUsable"| BC
-    in3 -.->|"qry - REST<br/>GetReservationsByDemandRef, Flow<br/>and Accuracy report"| BC
+    in3 -.->|"qry - REST<br/>GetReservationsByDemandRef,<br/>Flow and Accuracy report"| BC
     in3 -.->|"qry - MCP<br/>check_availability,<br/>get_bin_occupancy"| BC
     in4 -->|"cmd - MCP<br/>revoke_reservation"| BC
     in4 -.->|"qry - MCP<br/>get_inventory_flow_accuracy_report"| BC
     in5 ==>|"evt - Kafka<br/>warehouse.facility.events<br/>ZoneRegistered,<br/>LocationSlotRegistered,<br/>LocationSlotDecommissioned"| BC
     in6 ==>|"evt - Kafka<br/>warehouse.product-master.events<br/>ProductClassified (local copy)"| BC
-    in7 ==>|"evt - Kafka<br/>warehouse.inbound-receiving.events<br/>ReceiptLineReceived (Good lines)"| BC
+    in7 ==>|"evt - Kafka<br/>warehouse.inbound-receiving.events<br/>ReceiptLineReceived (Good<br/>lines)"| BC
     in8 ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCompleted (PICK) confirms<br/>picks"| BC
     in9 -->|"cmd - Kafka<br/>warehouse.network-inventory-planning.events<br/>TransferAllocationRequested"| BC
-    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>StockReserved,<br/>ReservationRevoked"| out0
-    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>TransferStockAllocated,<br/>TransferStockAllocationRejected,<br/>TransferReceiptStaged,<br/>TransferStockStowed"| out1
-    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>ProductClassified (legacy)"| out2
-    BC -.->|"qry - REST (http mode)<br/>location classification"| out3
-    BC ==>|"evt - Kafka<br/>warehouse.inventory.analytics<br/>StockReceived, ItemStowed,<br/>ItemUnlocated, StockReserved,<br/>StockPicked, ReservationExpired,<br/>ReservationRevoked,<br/>CycleCountCompleted,<br/>DiscrepancyDetected"| out4
-    BC ==>|"evt - Kafka<br/>warehouse.facility.events.dlq<br/>invalid facility message"| out5
     linkStyle 0 stroke:#1971c2,stroke-width:1.5px
     linkStyle 1 stroke:#2f9e44,stroke-width:1.5px
     linkStyle 2 stroke:#1971c2,stroke-width:1.5px
@@ -99,13 +86,43 @@ flowchart LR
     linkStyle 10 stroke:#e8590c,stroke-width:2.5px
     linkStyle 11 stroke:#e8590c,stroke-width:2.5px
     linkStyle 12 stroke:#1971c2,stroke-width:1.5px
-    linkStyle 13 stroke:#e8590c,stroke-width:2.5px
-    linkStyle 14 stroke:#e8590c,stroke-width:2.5px
-    linkStyle 15 stroke:#e8590c,stroke-width:2.5px
-    linkStyle 16 stroke:#2f9e44,stroke-width:1.5px
-    linkStyle 17 stroke:#e8590c,stroke-width:2.5px
-    linkStyle 18 stroke:#e8590c,stroke-width:2.5px
     class BC bc
+```
+
+### Outbound
+
+```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 14, "rankSpacing": 40, "padding": 6}}}%%
+flowchart LR
+    classDef bc fill:#fff3bf,stroke:#e67700,stroke-width:1.5px,color:#000
+    classDef card fill:#fff9db,stroke:#f08c00,color:#000,text-align:left
+    classDef ctx fill:#e7f5ff,stroke:#1c7ed6,color:#000
+    classDef actor fill:#fff4e6,stroke:#e8590c,color:#000
+    classDef ext fill:#ffe3e3,stroke:#c92a2a,color:#000
+    classDef self fill:#f1f3f5,stroke:#868e96,color:#000
+    classDef none fill:#f8f9fa,stroke:#adb5bd,stroke-dasharray:5 5,color:#495057
+    BC["<b>inventory-storage - Core subdomain - WMS tier</b>"]:::bc
+    subgraph OUT["Outbound - whom it calls or notifies"]
+        direction TB
+        out0["wes-work-planning"]:::ctx
+        out1["network-inventory-planning<br/>(transfer saga)"]:::ctx
+        out2["product-master (legacy<br/>importer, one-shot<br/>backfill)"]:::ctx
+        out3["facility-layout (wired,<br/>unused)"]:::ctx
+        out4["own<br/>cmd/inventory-projector"]:::self
+        out5["facility events DLQ"]:::self
+    end
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>StockReserved,<br/>ReservationRevoked"| out0
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>TransferStockAllocated,<br/>TransferStockAllocationRejected,<br/>TransferReceiptStaged,<br/>TransferStockStowed"| out1
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>ProductClassified (legacy)"| out2
+    BC -.->|"qry - REST (http mode)<br/>location classification"| out3
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.analytics<br/>StockReceived, ItemStowed,<br/>ItemUnlocated, StockReserved,<br/>StockPicked,<br/>ReservationExpired,<br/>ReservationRevoked,<br/>CycleCountCompleted,<br/>DiscrepancyDetected"| out4
+    BC ==>|"evt - Kafka<br/>warehouse.facility.events.dlq<br/>invalid facility message"| out5
+    linkStyle 0 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 1 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 2 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 3 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 4 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 5 stroke:#e8590c,stroke-width:2.5px
 ```
 
 Source: the Inbound Communication and Outbound Communication tables of this
