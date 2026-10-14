@@ -48,6 +48,8 @@ func buildServer(
 			Clock:      clock,
 			UnitOfWork: uow,
 		},
+		RelocateStock:   newRelocateStock(a, clock),
+		GetRelocation:   &usecases.GetRelocation{Relocations: a.relocations},
 		Classifications: classificationRepo,
 		// IdempotencyPool wires RequireIdempotencyKey onto POST
 		// /stock/receive and POST /reservations (see
@@ -59,5 +61,14 @@ func buildServer(
 		// flipped to not-ready as the FIRST step of shutdown (see
 		// shutdown.go), before anything else stops.
 		Readiness: readiness,
+	}
+}
+
+// newRelocateStock wires the intra-site relocation use case (ADR 0039),
+// shared by POST /relocations and the TaskCompleted RELOCATE branch.
+func newRelocateStock(a adapterSet, clock ports.Clock) *usecases.RelocateStock {
+	return &usecases.RelocateStock{
+		Stock: a.stock, Locations: a.locations, Relocations: a.relocations,
+		Events: a.publisher, Clock: clock, UnitOfWork: a.uow,
 	}
 }

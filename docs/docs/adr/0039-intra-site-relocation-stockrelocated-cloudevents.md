@@ -47,7 +47,7 @@ Two facts of the existing model shape the design:
 1. **Relocation aggregate** (`internal/domain/relocation`). A relocation moves a
    quantity of one SKU from `from_bin` to `to_bin` **of one site**. It validates: non-empty
    site, SKU and bins; `from_bin != to_bin` (same-bin rejected); quantity > 0; reason in the
-   closed set `SLOTTING` | `CONSOLIDATION` | `MANUAL`; `source_ref` at most 200 bytes.
+   closed set `SLOTTING` | `CONSOLIDATION` | `MANUAL`; `source_ref` at most 200 characters.
    `Apply` draws the quantity from the **usable** (unreserved) quantity of the SKU's units in
    the source bin, ascending unit id; reserved quantity never moves
    (`StockUnit.RelocateOut`). It releases the source bin's occupancy, occupies the

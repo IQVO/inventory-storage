@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -31,7 +32,7 @@ const (
 	ReasonManual Reason = "MANUAL"
 )
 
-// MaxSourceRefLength bounds the caller's correlation reference.
+// MaxSourceRefLength bounds the caller's correlation reference, in characters.
 const MaxSourceRefLength = 200
 
 var (
@@ -43,7 +44,7 @@ var (
 	// ErrUnknownReason: the reason is not one of SLOTTING, CONSOLIDATION, MANUAL.
 	ErrUnknownReason = errors.New("unknown relocation reason (want SLOTTING, CONSOLIDATION or MANUAL)")
 	// ErrSourceRefTooLong: the source reference exceeds MaxSourceRefLength.
-	ErrSourceRefTooLong = errors.New("relocation source reference must be at most 200 bytes")
+	ErrSourceRefTooLong = errors.New("relocation source reference must be at most 200 characters")
 	// ErrBinNotAtSite: a bin is not in the relocation's site (its recorded
 	// custody, or the site segment of its location code, differs or is
 	// unknown). A relocation never crosses sites.
@@ -118,7 +119,7 @@ func validate(spec Spec) error {
 	if _, err := ParseReason(string(spec.Reason)); err != nil {
 		return err
 	}
-	if len(spec.SourceRef) > MaxSourceRefLength {
+	if utf8.RuneCountInString(spec.SourceRef) > MaxSourceRefLength {
 		return ErrSourceRefTooLong
 	}
 	return nil

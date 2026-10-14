@@ -54,6 +54,9 @@ type adapterSet struct {
 	transferReceipts ports.TransferReceiptRepo
 	// inventoryExceptions is the quarantine repo (ADR 0031).
 	inventoryExceptions ports.InventoryExceptionRepo
+	// relocations is the intra-site relocation record repo (ADR 0039),
+	// same Postgres/in-memory selection as the other repos.
+	relocations ports.RelocationRepo
 }
 
 // buildAdapters wires the Postgres adapters when DATABASE_URL is set, or
@@ -96,6 +99,7 @@ func buildRepos(ctx context.Context, databaseURL, migrationsDatabaseURL, migrati
 		transfers:           postgres.NewTransferAllocationRepo(pool),
 		transferReceipts:    postgres.NewTransferReceiptRepo(pool),
 		inventoryExceptions: postgres.NewInventoryExceptionRepo(pool),
+		relocations:         postgres.NewRelocationRepo(pool),
 		// UnitOfWork brackets every use case's Save(s) + Publish(es) in
 		// one Postgres transaction (ADR 0017). It is safe to hand out
 		// even when eventPublisher="log": OutboxPublisher is only ever
@@ -121,6 +125,7 @@ func memoryAdapters(logger *slog.Logger) adapterSet {
 		transfers:           memory.NewTransferAllocationRepo(),
 		transferReceipts:    memory.NewTransferReceiptRepo(),
 		inventoryExceptions: memory.NewInventoryExceptionRepo(),
+		relocations:         memory.NewRelocationRepo(),
 		close:               func() {},
 	}
 }

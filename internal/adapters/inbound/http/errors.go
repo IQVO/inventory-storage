@@ -7,6 +7,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
+	"github.com/claudioed/inventory-storage/internal/domain/relocation"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
@@ -18,6 +19,7 @@ func statusFor(err error) int {
 	case errors.Is(err, usecases.ErrStockUnitNotFound),
 		errors.Is(err, usecases.ErrBinNotFound),
 		errors.Is(err, usecases.ErrReservationNotFound),
+		errors.Is(err, usecases.ErrRelocationNotFound),
 		errors.Is(err, usecases.ErrProductClassificationNotFound):
 		return http.StatusNotFound
 
@@ -38,6 +40,9 @@ func statusFor(err error) int {
 
 	case errors.Is(err, shared.ErrNegativeQuantity),
 		errors.Is(err, shared.ErrZeroQuantity),
+		errors.Is(err, relocation.ErrSameBin),
+		errors.Is(err, relocation.ErrUnknownReason),
+		errors.Is(err, relocation.ErrSourceRefTooLong),
 		errors.Is(err, location.ErrInvalidCapacity):
 		return http.StatusUnprocessableEntity
 
@@ -59,6 +64,7 @@ func statusFor(err error) int {
 		errors.Is(err, usecases.ErrTransferReceiptConflict),
 		errors.Is(err, usecases.ErrReceiptNotStaged),
 		errors.Is(err, usecases.ErrBinWrongSite),
+		errors.Is(err, relocation.ErrBinNotAtSite),
 		errors.Is(err, usecases.ErrStowQuantityMismatch):
 		return http.StatusConflict
 
@@ -96,6 +102,7 @@ func problemCatalog() []struct {
 		{usecases.ErrStockUnitNotFound, problemInfo{"stock-unit-not-found", "Stock unit not found"}},
 		{usecases.ErrBinNotFound, problemInfo{"bin-not-found", "Bin not found"}},
 		{usecases.ErrReservationNotFound, problemInfo{"reservation-not-found", "Reservation not found"}},
+		{usecases.ErrRelocationNotFound, problemInfo{"relocation-not-found", "Relocation not found"}},
 		{usecases.ErrProductClassificationNotFound, problemInfo{"product-classification-not-found", "Product classification not found"}},
 
 		{shared.ErrEmptySKU, problemInfo{"empty-sku", "SKU must not be empty"}},
@@ -115,6 +122,9 @@ func problemCatalog() []struct {
 		{shared.ErrNegativeQuantity, problemInfo{"negative-quantity", "Quantity must not be negative"}},
 		{shared.ErrZeroQuantity, problemInfo{"zero-quantity", "Quantity must be greater than zero"}},
 		{location.ErrInvalidCapacity, problemInfo{"invalid-bin-capacity", "Bin capacity must be greater than zero"}},
+		{relocation.ErrSameBin, problemInfo{"same-bin", "Relocation source and destination bin must differ"}},
+		{relocation.ErrUnknownReason, problemInfo{"invalid-relocation-reason", "Relocation reason must be SLOTTING, CONSOLIDATION or MANUAL"}},
+		{relocation.ErrSourceRefTooLong, problemInfo{"source-ref-too-long", "Relocation source reference must be at most 200 characters"}},
 
 		{location.ErrBinFull, problemInfo{"bin-full", "Bin is full: capacity exceeded"}},
 		{location.ErrCapacityBelowOccupancy, problemInfo{"capacity-below-occupancy", "Bin capacity cannot be set below current occupancy"}},
@@ -134,6 +144,7 @@ func problemCatalog() []struct {
 		{usecases.ErrTransferReceiptConflict, problemInfo{"transfer-receipt-conflict", "This transfer line already has a receipt for a different scan"}},
 		{usecases.ErrReceiptNotStaged, problemInfo{"receipt-not-staged", "Transfer receipt is not in STAGED state; stage the receipt before stowing"}},
 		{usecases.ErrBinWrongSite, problemInfo{"bin-wrong-site", "Bin does not belong to the transfer's destination site"}},
+		{relocation.ErrBinNotAtSite, problemInfo{"bin-not-at-site", "Bin is not in the relocation's site"}},
 		{usecases.ErrStowQuantityMismatch, problemInfo{"stow-quantity-mismatch", "Stow quantities must sum exactly to the receipt's received quantity"}},
 	}
 }

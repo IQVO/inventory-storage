@@ -2,6 +2,7 @@ package relocation
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,7 +71,12 @@ func TestNew_SourceRefAtTheLimitIsAccepted(t *testing.T) {
 	spec := validSpec()
 	spec.SourceRef = string(make([]byte, MaxSourceRefLength))
 	if _, err := New(spec); err != nil {
-		t.Fatalf("a source ref of exactly %d bytes must be accepted: %v", MaxSourceRefLength, err)
+		t.Fatalf("a source ref of exactly %d characters must be accepted: %v", MaxSourceRefLength, err)
+	}
+	// The limit counts characters, not bytes: 200 two-byte runes fit.
+	spec.SourceRef = strings.Repeat("é", MaxSourceRefLength)
+	if _, err := New(spec); err != nil {
+		t.Fatalf("200 multi-byte characters must be accepted: %v", err)
 	}
 }
 

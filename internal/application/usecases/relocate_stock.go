@@ -63,6 +63,16 @@ func (uc *RelocateStock) relocate(ctx context.Context, cmd RelocateStockCommand)
 	if err != nil {
 		return nil, err
 	}
+	// Bins first: an unknown bin is a 404 whatever else is wrong with the
+	// command (the same-bin and quantity rules are checked by New below).
+	from, err := uc.bin(ctx, cmd.FromBin)
+	if err != nil {
+		return nil, err
+	}
+	to, err := uc.bin(ctx, cmd.ToBin)
+	if err != nil {
+		return nil, err
+	}
 	id, err := uc.Relocations.NextID(ctx)
 	if err != nil {
 		return nil, err
@@ -71,14 +81,6 @@ func (uc *RelocateStock) relocate(ctx context.Context, cmd RelocateStockCommand)
 		ID: id, SiteID: site, SKU: cmd.SKU, FromBin: cmd.FromBin, ToBin: cmd.ToBin,
 		Quantity: cmd.Quantity, Reason: cmd.Reason, SourceRef: cmd.SourceRef,
 	})
-	if err != nil {
-		return nil, err
-	}
-	from, err := uc.bin(ctx, cmd.FromBin)
-	if err != nil {
-		return nil, err
-	}
-	to, err := uc.bin(ctx, cmd.ToBin)
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,70 @@
+---
+id: get-relocation
+title: "Read one relocation"
+description: "The applied relocation record (ADR 0039), with its source legs and destination StockUnit."
+sidebar_label: "Read one relocation"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Read one relocation"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/relocations/{id}"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The applied relocation record (ADR 0039), with its source legs and destination StockUnit.
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-relocation.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-relocation.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-relocation.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      
