@@ -75,7 +75,10 @@ Two facts of the existing model shape the design:
    replays the stored response, same key + different body is `422 idempotency-key-reused`.
    Errors: `400` malformed/empty fields, `404 bin-not-found`, `409 bin-not-at-site`,
    `409 insufficient-usable`, `409 bin-full`, `409 concurrent-modification`,
-   `422 same-bin` / `invalid-relocation-reason` / `zero-quantity`. `GET /relocations/{id}`
+   `422 same-bin` / `invalid-relocation-reason` / `zero-quantity` / `source-ref-too-long`.
+   The use case loads both bins **before** it validates the rest of the request, so an
+   unknown bin is always `404 bin-not-found`, whatever else is wrong with the body.
+   `GET /relocations/{id}`
    returns the record (with its source legs and destination stock unit) or
    `404 relocation-not-found`. Migration `0036_relocations` (additive) adds the table.
 

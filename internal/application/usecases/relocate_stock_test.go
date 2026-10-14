@@ -3,6 +3,7 @@ package usecases_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
@@ -158,6 +159,35 @@ func TestRelocateStock_Rejections(t *testing.T) {
 		_, err := e.uc.Execute(context.Background(), cmd)
 		if !errors.Is(err, tc.want) {
 			t.Fatalf("%s: err = %v, want %v", tc.name, err, tc.want)
+		}
+		assertNothingMoved(t, e, tc.name)
+	}
+}
+
+// The bins are loaded BEFORE the request is validated, so an unknown bin is
+// always ErrBinNotFound (404) whatever else is wrong with the command. With
+// relocation.New first, each case below would surface the spec error instead.
+func TestRelocateStock_UnknownBinWinsOverSpecErrors(t *testing.T) {
+	const unknown = shared.BinId("WH1-STOR-AMB-Z99-01-01-A")
+	cases := []struct {
+		name string
+		mut  func(*usecases.RelocateStockCommand)
+	}{
+		{"unknown source bin and zero quantity", func(c *usecases.RelocateStockCommand) { c.FromBin = unknown; c.Quantity = 0 }},
+		{"unknown destination bin and unknown reason", func(c *usecases.RelocateStockCommand) { c.ToBin = unknown; c.Reason = "WHIM" }},
+		{"unknown bin as both source and destination", func(c *usecases.RelocateStockCommand) { c.FromBin = unknown; c.ToBin = unknown }},
+		{"unknown destination bin and too long source ref", func(c *usecases.RelocateStockCommand) {
+			c.ToBin = unknown
+			c.SourceRef = strings.Repeat("x", relocation.MaxSourceRefLength+1)
+		}},
+	}
+	for _, tc := range cases {
+		e := newRelocationEnv(t)
+		cmd := relocateCmd()
+		tc.mut(&cmd)
+
+		if _, err := e.uc.Execute(context.Background(), cmd); !errors.Is(err, usecases.ErrBinNotFound) {
+			t.Fatalf("%s: err = %v, want ErrBinNotFound (bins are checked before the spec)", tc.name, err)
 		}
 		assertNothingMoved(t, e, tc.name)
 	}
