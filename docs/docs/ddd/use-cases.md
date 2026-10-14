@@ -6,11 +6,11 @@ description: The application-layer use cases, their collaborators, and their fai
 
 # Use Cases
 
-Sixteen use cases, one struct each, in `internal/application/usecases`. Each
+Nineteen use cases, one struct each, in `internal/application/usecases`. Each
 depends only on the domain and on `application/ports` — never on an adapter.
 Dependencies are plain struct fields, wired once per binary in
 `cmd/inventory/main.go` (REST) and `cmd/mcp/main.go` (MCP, which wires
-`GetUsable` and `RevokeReservation` only).
+`GetUsable`, `RevokeReservation` and `GetRelocation` only).
 
 | # | Use case | HTTP | MCP tool | Emits |
 | --- | --- | --- | --- | --- |
@@ -30,6 +30,9 @@ Dependencies are plain struct fields, wired once per binary in
 | 14 | `AllocateTransferStock` | — (Kafka: `warehouse.network-inventory-planning.events` `TransferAllocationRequested`, ADR 0030) | — | `TransferStockAllocated` or `TransferStockAllocationRejected` (integration topic, through the outbox) |
 | 15 | `StageTransferReceipt` | `POST /transfers/{transferLineId}/receipt` | — | `TransferReceiptStaged` for a recognized `ALLOCATED` line (ADR 0033); a quarantine publishes nothing |
 | 16 | `StowTransferStock` | `POST /transfers/{transferLineId}/stow` | — | `TransferStockStowed` — the only event that raises destination usable (ADR 0033) |
+| 17 | `RelocateStock` | `POST /relocations` (Idempotency-Key) | — | `StockRelocated` (integration topic, through the outbox, ADR 0039) |
+| 18 | `ApplyRelocationTask` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted` with `task_type=RELOCATE`, ADR 0039) | — | `StockRelocated` through `RelocateStock` |
+| 19 | `GetRelocation` | `GET /relocations/{id}` | `get_relocation` | — (read) |
 
 (`RepublishProductClassifications`, the one-shot `republish-product-classifications`
 backfill subcommand, is covered under #8 rather than tabulated: it is a maintenance
@@ -563,6 +566,80 @@ race and is routed to the replay path.
 
 **Fails when:** malformed command (`ErrMalformedStowCommand`), receipt not
 staged (409), wrong-site bin (409), quantity mismatch (409).
+
+## 17. RelocateStock(siteCode?, sku, fromBin, toBin, qty, reason, sourceRef) (ADR 0039)
+
+Moves a quantity of one SKU from one bin to another bin **of the same site**:
+the physical step of a slot-plan move (slotting-optimization ADR 0010), a
+consolidation or a manual move. Site-level on-hand and usable do not change;
+the stock's location does.
+
+**Collaborators:** `StockRepo`, `LocationRepo`, `RelocationRepo` (table
+`relocations`), `EventPublisher`, `Clock`, `UnitOfWork`.
+
+**Rules, in order.** Both bins are loaded **first**, so an unknown bin is
+always `ErrBinNotFound` (404) whatever else is wrong. The site is the command's
+`siteCode`, or (the RELOCATE-task path) the source bin's `EffectiveSite`: its
+recorded custody, else the first segment of a seven-segment `LocationCode`; a bin
+with neither has no site and is rejected. Then the `Relocation` aggregate
+checks: both bins in the site (`ErrBinNotAtSite`), `from_bin != to_bin`
+(`ErrSameBin`), quantity > 0, reason in `SLOTTING | CONSOLIDATION | MANUAL`,
+`source_ref` ≤ 200 characters. `Apply` draws the quantity from the **usable**
+(unreserved) quantity of the SKU's units in the source bin, ascending unit id —
+reserved stock never moves, because a reservation's allocation names its bin as
+the pick location (`stock.ErrInsufficientUsable` otherwise) — releases the source
+bin's occupancy, occupies the destination bin (`location.ErrBinFull` over
+capacity) and creates **one new StockUnit** at the destination. A source unit
+that reaches zero becomes `REMOVED`.
+
+**Atomic and concurrent-safe:** both bins, every touched source unit, the new
+destination unit, the `relocations` row and the `StockRelocated` outbox row are
+saved in ONE unit of work; every save is version-guarded (ADR 0019), so a
+concurrent writer on either bin or a touched unit fails the whole move with
+`ErrConcurrentModification` (409) and nothing moved.
+
+**Idempotency:** `POST /relocations` is behind the Idempotency-Key middleware
+(ADR 0018); the RELOCATE-task path dedupes on the CloudEvents id (#18).
+
+## 18. ApplyRelocationTask(eventId, taskId, taskType, sku, fromBin, toBin, qty, relocationRef) (ADR 0039)
+
+Applies a completed `RELOCATE` task from fulfillment-execution's
+`TaskCompleted` to the ledger. It is the RELOCATE branch of the same consumer
+(group, DLQ, shutdown semantics) that drives #12; PICK completions are never
+sent here and behave exactly as before. The additive TaskCompleted fields
+`sku`, `from_bin`, `to_bin`, `quantity` and `relocation_ref` (decision E1,
+emitted for RELOCATE tasks only) become a `RelocateStock` command with reason
+`SLOTTING`, no `siteCode` (TaskCompleted carries none, so the source bin's site
+applies) and `source_ref` = `relocation_ref`, or the task id when absent.
+
+**Collaborators:** `RelocateStock` (#17, rules not duplicated),
+`ProcessedEventRepo`, `UnitOfWork`.
+
+**Atomic and idempotent:** the CloudEvents `id` claim in `processed_events`
+(consumer `task-completed-relocate`) and the whole move commit in ONE unit of
+work. A redelivered id is skipped by the claim (outcome `DUPLICATE`); a failure
+un-claims the id and the redelivery is applied in full.
+
+**Fails when (deterministic, `ErrMalformedRelocationTask`, dead-lettered at
+once):** no event id; empty or invalid `sku`, `from_bin` or `to_bin`; missing or
+non-positive `quantity`; and every ledger rejection of #17 — unknown bin, bin not
+in the site, same bin, insufficient usable at the source, destination full,
+`relocation_ref` too long. **Transient** (retried, 5 attempts, then DLQ): a
+database error or `ErrConcurrentModification`. A shutdown mid-move commits
+nothing and dead-letters nothing. A task type other than `RELOCATE` is a no-op
+(`IGNORED`).
+
+**Limitation:** dedupe is per CloudEvents id. Two different completions for the
+same `relocation_ref` would move twice; fulfillment-execution publishes one
+completion per task, and the ref is stored on the relocation for audit.
+
+## 19. GetRelocation(id) (ADR 0039)
+
+Reads one applied relocation (`RelocationRepo.FindByID`): site, SKU, bins,
+quantity, reason, source ref, the source legs drawn and the destination
+StockUnit. Unknown id → `ErrRelocationNotFound` (`404 relocation-not-found`, or
+the MCP tool error). Backs `GET /relocations/{id}` and the read-only MCP tool
+`get_relocation`.
 
 ## Cross-cutting patterns
 
