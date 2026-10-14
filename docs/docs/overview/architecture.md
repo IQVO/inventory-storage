@@ -67,7 +67,7 @@ the default entrypoint is `./inventory`). Each is its own composition root.
 | Binary | Role | Listens on (default) | Data store | Kafka |
 | --- | --- | --- | --- | --- |
 | `cmd/inventory` | OLTP REST API: every route in `apis/openapi.yaml` except `/reports/*`, plus `/healthz` and `/readyz`; runs the outbox relay, the housekeeping sweeper and every inbound consumer; `republish-product-classifications` subcommand | `HTTP_ADDR` `:8080` | OLTP Postgres (`DATABASE_URL`), or in-memory when unset | produces `warehouse.inventory.events` + `warehouse.inventory.analytics`; consumes facility, transfer, product-master, inbound-receiving and fulfillment topics (each behind a switch) |
-| `cmd/mcp` | MCP server (Streamable HTTP): 3–4 tools, 1 resource template, 1 prompt over the same use cases | `MCP_ADDR` `:8090` | same OLTP Postgres (writes outbox rows, runs no relay) | direct publish only when it has no database |
+| `cmd/mcp` | MCP server (Streamable HTTP): 4–5 tools, 1 resource template, 1 prompt over the same use cases | `MCP_ADDR` `:8090` | same OLTP Postgres (writes outbox rows, runs no relay) | direct publish only when it has no database |
 | `cmd/inventory-projector` | Analytics writer: projects `warehouse.inventory.analytics` into the rollup | `ADMIN_ADDR` `:8091` (`/healthz` only) | analytical Postgres (`ANALYTICS_DATABASE_URL`, read-write; applies `migrations/analytics`) | consumes `warehouse.inventory.analytics` (group `inventory-analytics`) |
 | `cmd/inventory-reports` | Analytics reader: `GET /reports/flow-accuracy`, `GET /reports/flow-accuracy/freshness`, `/healthz` | `HTTP_ADDR` `:8092` | analytical Postgres, read-only pool | — |
 

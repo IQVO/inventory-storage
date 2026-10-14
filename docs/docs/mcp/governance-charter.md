@@ -181,8 +181,8 @@ Jaeger and Grafana alongside HTTP.
 
 ### Status in this repository
 
-`inventory-storage-mcp` exposes 3 tools (`check_availability`,
-`get_bin_occupancy`, `revoke_reservation`) plus
+`inventory-storage-mcp` exposes 4 tools (`check_availability`,
+`get_bin_occupancy`, `get_relocation` (ADR 0039), `revoke_reservation`) plus
 `get_inventory_flow_accuracy_report` when `REPORTS_BASE_URL` is set, one
 resource template (`inventory://{sku}/usable`) and one prompt
 (`triage_low_stock`). Each tool call gets an OTel span (`mcp.tool <name>`).

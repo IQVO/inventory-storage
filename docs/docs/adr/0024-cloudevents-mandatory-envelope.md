@@ -12,7 +12,8 @@ description: "ADR 0024 — every Kafka message inventory-storage produces or con
 ## Status
 
 **Accepted.** Fleet-wide standard (2026-09-30), applied to this service in
-the same change that introduces this record. Supersedes
+the same change that introduces this record. Type catalogue extended by
+[ADR 0039](./0039-intra-site-relocation-stockrelocated-cloudevents.md) (`StockRelocated`). Supersedes
 [ADR 0004](./0004-kafka-integration-events.md)'s flat envelope and the
 "Envelope v1" (`schema_version`) of
 [ADR 0011](./0011-analytical-data-product.md). Every other decision in those

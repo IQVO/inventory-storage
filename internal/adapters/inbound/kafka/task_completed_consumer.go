@@ -56,18 +56,31 @@ var errPoison = errors.New("poison message")
 // were made against); absent on events from a producer that predates it.
 // line_no is the additive field of ADR 0036: the order line the task was for;
 // absent (nil) when the producer does not know it, in which case the ADR 0035
-// last-pick counting applies.
+// last-pick counting applies. sku, from_bin, to_bin, quantity and
+// relocation_ref are the additive fields of ADR 0039 that fulfillment-execution
+// emits for RELOCATE tasks only (absent on every other task type).
 type taskCompletedData struct {
-	TaskID   string `json:"task_id"`
-	TaskType string `json:"task_type"`
-	OrderRef string `json:"order_ref"`
-	LineNo   *int   `json:"line_no"`
+	TaskID        string `json:"task_id"`
+	TaskType      string `json:"task_type"`
+	OrderRef      string `json:"order_ref"`
+	LineNo        *int   `json:"line_no"`
+	SKU           string `json:"sku"`
+	FromBin       string `json:"from_bin"`
+	ToBin         string `json:"to_bin"`
+	Quantity      *int   `json:"quantity"`
+	RelocationRef string `json:"relocation_ref"`
 }
 
 // PickCompletionHandler is the use-case port the consumer drives, satisfied
 // by *usecases.ConfirmPicksForOrder.
 type PickCompletionHandler interface {
 	Execute(ctx context.Context, in usecases.PickCompletion) (usecases.ConfirmPicksResult, error)
+}
+
+// RelocationTaskHandler is the use-case port for RELOCATE completions
+// (ADR 0039), satisfied by *usecases.ApplyRelocationTask.
+type RelocationTaskHandler interface {
+	Execute(ctx context.Context, in usecases.RelocationTaskCompletion) (usecases.RelocationTaskResult, error)
 }
 
 // DeadLetterWriter stores a dead-lettered message; satisfied by *kafkago.Writer.
@@ -90,6 +103,10 @@ type DeadLetterWriter interface {
 type TaskCompletedConsumer struct {
 	Reader  Reader
 	Confirm PickCompletionHandler
+	// Relocate applies RELOCATE completions (ADR 0039). Optional: nil keeps
+	// the pre-ADR 0039 behaviour (every completion goes to Confirm, which
+	// ignores non-PICK tasks).
+	Relocate RelocationTaskHandler
 	// DeadLetter receives poison and exhausted messages. Required.
 	DeadLetter DeadLetterWriter
 	Logger     *slog.Logger
@@ -277,6 +294,9 @@ func (c *TaskCompletedConsumer) Handle(ctx context.Context, msg kafkago.Message)
 	if err := e.DataAs(&data); err != nil {
 		return fmt.Errorf("%w: undecodable TaskCompleted payload (id %s): %v", errPoison, e.ID(), err)
 	}
+	if data.TaskType == usecases.RelocateTaskType && c.Relocate != nil {
+		return c.handleRelocation(ctx, e.ID(), data)
+	}
 
 	result, err := c.Confirm.Execute(ctx, usecases.PickCompletion{
 		EventID:  e.ID(),
@@ -294,6 +314,48 @@ func (c *TaskCompletedConsumer) Handle(ctx context.Context, msg kafkago.Message)
 
 	c.logOutcome(ctx, e.ID(), data, result)
 	return nil
+}
+
+// handleRelocation applies one RELOCATE completion (ADR 0039). A
+// deterministic rejection (ErrMalformedRelocationTask) is poison and goes to
+// the DLQ at once; anything else (database, concurrent modification,
+// cancellation) is returned unchanged, so settle retries it or, on shutdown,
+// leaves the offset uncommitted.
+func (c *TaskCompletedConsumer) handleRelocation(ctx context.Context, id string, data taskCompletedData) error {
+	result, err := c.Relocate.Execute(ctx, usecases.RelocationTaskCompletion{
+		EventID:       id,
+		TaskID:        data.TaskID,
+		TaskType:      data.TaskType,
+		SKU:           data.SKU,
+		FromBin:       data.FromBin,
+		ToBin:         data.ToBin,
+		Quantity:      data.Quantity,
+		RelocationRef: data.RelocationRef,
+	})
+	if err != nil {
+		if errors.Is(err, usecases.ErrMalformedRelocationTask) {
+			return fmt.Errorf("%w: %v", errPoison, err)
+		}
+		return err
+	}
+	c.logRelocation(ctx, id, data, result)
+	return nil
+}
+
+// logRelocation logs what ApplyRelocationTask did with one settled message.
+func (c *TaskCompletedConsumer) logRelocation(ctx context.Context, id string, data taskCompletedData, result usecases.RelocationTaskResult) {
+	if result.Outcome == usecases.RelocationDuplicate {
+		c.Logger.InfoContext(ctx, "task-completed RELOCATE already applied; redelivery ignored",
+			"id", id, "task_id", data.TaskID, "relocation_ref", data.RelocationRef)
+		return
+	}
+	relocationID := ""
+	if result.Relocation != nil {
+		relocationID = result.Relocation.ID()
+	}
+	c.Logger.InfoContext(ctx, "task-completed RELOCATE applied to the ledger",
+		"id", id, "task_id", data.TaskID, "relocation_id", relocationID, "sku", data.SKU,
+		"from_bin", data.FromBin, "to_bin", data.ToBin, "relocation_ref", data.RelocationRef)
 }
 
 // logOutcome logs what the use case did with one settled message.

@@ -14,6 +14,7 @@ fulfillment-execution	get_queue_status
 inventory-storage	check_availability
 inventory-storage	get_bin_occupancy
 inventory-storage	get_inventory_flow_accuracy_report
+inventory-storage	get_relocation
 inventory-storage	revoke_reservation
 labor-performance	get_associate_scorecard
 labor-performance	get_labor_standard

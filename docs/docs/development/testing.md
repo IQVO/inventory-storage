@@ -177,7 +177,7 @@ selects exactly one Deployment). Run them locally with
 | `lint` | golangci-lint v2.13.1 | always |
 | `guide-lint` | `guide_lint.py`, `repo_lint.py`, `test_hook.py`, `test_repo_lint.py` | always |
 | `complexity` | golangci-lint with `gocyclo,gocognit,cyclop,funlen,nestif`; informational gocyclo > 10 report | always |
-| `test` | build, vet, `go test ./... -race` with coverage, 90 % gate | always |
+| `test` | build, vet, then `make coverage` (`go test ./... -race` with the Makefile's coverage scope and 90 % gate) | always |
 | `bdd` | `go test ./... -run TestFeatures -v` | always |
 | `contract` | `scripts/contract-test.sh` | always |
 | `evals-tests` | `go test ./internal/adapters/inbound/mcp/... -race -run '^TestEval\|^TestMCPEvalSuite' -v` | always |

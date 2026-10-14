@@ -110,7 +110,7 @@ topics and route by key hash ([ADR 0021](../adr/0021-kafka-producer-partition-ke
 
 | Topic | Producer | Event `type`s (`com.warehouse.wms.inventory-storage.` …) | Key |
 | --- | --- | --- | --- |
-| `warehouse.inventory.events` | `cmd/inventory` (relay or direct), `cmd/mcp` (outbox or direct) | `reservation.StockReserved`, `reservation.ReservationRevoked`, `reservation.TransferStockAllocated`, `reservation.TransferStockAllocationRejected`, `stock.TransferReceiptStaged`, `stock.TransferStockStowed`, `product.ProductClassified` (only from the re-publish command since ADR 0034) | reservation id, transfer line id, or SKU |
+| `warehouse.inventory.events` | `cmd/inventory` (relay or direct), `cmd/mcp` (outbox or direct) | `reservation.StockReserved`, `reservation.ReservationRevoked`, `reservation.TransferStockAllocated`, `reservation.TransferStockAllocationRejected`, `stock.TransferReceiptStaged`, `stock.TransferStockStowed`, `stock.StockRelocated` (ADR 0039), `product.ProductClassified` (only from the re-publish command since ADR 0034) | reservation id, transfer line id, relocation id, or SKU |
 | `warehouse.inventory.analytics` | same | `stock.StockReceived`, `stock.ItemStowed`, `stock.ItemUnlocated`, `reservation.StockReserved`, `reservation.StockPicked`, `reservation.ReservationExpired`, `reservation.ReservationRevoked`, `bin.CycleCountCompleted`, `bin.DiscrepancyDetected`, `product.ProductClassified` | reservation id, SKU or bin id |
 | `warehouse.fulfillment.events.dlq` | `cmd/inventory` TaskCompleted consumer | the original message, raw, plus `x-dlq-source-topic`, `x-dlq-error`, `x-dlq-failed-at` headers | original key |
 | `warehouse.facility.events.dlq` | `cmd/inventory` facility cache consumer | the original message, raw, plus `x-dlq-*` headers | original key |
@@ -125,7 +125,7 @@ Payloads are on [Integration events](../api-reference/events.md).
 | `warehouse.network-inventory-planning.events` | `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` | `cmd/inventory`, `TRANSFER_ALLOCATION_CONSUMER_MODE=kafka` | `inventory-storage-transfer-allocation` (override `TRANSFER_ALLOCATION_CONSUMER_GROUP`) | transient errors retry the same message forever (200 ms → 5 s); poison is logged and committed past; no DLQ |
 | `warehouse.product-master.events` | `com.warehouse.wms.product-master.product.ProductClassified` | `cmd/inventory`, `PRODUCT_MASTER_CONSUMER_GROUP` set | the configured value (no default) | same as transfer; dedupe through `processed_events` |
 | `warehouse.inbound-receiving.events` | `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` | `cmd/inventory`, `INBOUND_RECEIPT_CONSUMER_GROUP` set | the configured value (no default) | same as transfer; dedupe through `processed_events` |
-| `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `cmd/inventory`, `TASK_COMPLETED_CONSUMER_MODE=kafka` | `inventory-storage-confirm-pick` (override `TASK_COMPLETED_CONSUMER_GROUP`) | 5 attempts then DLQ; poison straight to `warehouse.fulfillment.events.dlq`; offset committed only after the DLQ write |
+| `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` (`task_type` `PICK` → confirm-pick, `RELOCATE` → relocation, ADR 0039) | `cmd/inventory`, `TASK_COMPLETED_CONSUMER_MODE=kafka` | `inventory-storage-confirm-pick` (override `TASK_COMPLETED_CONSUMER_GROUP`) | 5 attempts then DLQ; poison (incl. a RELOCATE the ledger can never apply) straight to `warehouse.fulfillment.events.dlq`; offset committed only after the DLQ write; dedupe through `processed_events` (`task-completed-confirm-pick` / `task-completed-relocate`) |
 | `warehouse.inventory.analytics` | the analytics types above | `cmd/inventory-projector` | `inventory-analytics` | invalid CloudEvents are logged at WARN and skipped (no DLQ); dedupe through `analytics_consumed_events` |
 
 Every group-based consumer starts a **new** group at the earliest offset
@@ -268,6 +268,27 @@ kafka-console-consumer.sh --bootstrap-server localhost:9092 \
 after fixing the cause, re-produce the original value (unchanged, it is still a
 valid CloudEvent) onto the source topic. TaskCompleted handling is idempotent
 per event id through `processed_events`.
+
+**A dead-lettered RELOCATE completion** (ADR 0039) was rejected by the ledger
+or carried a bad field; `x-dlq-error` contains `malformed relocation task`
+followed by the rule (for example `from_bin: ...`, `bin not found`,
+`reserve quantity exceeds usable quantity`, `bin is full: capacity exceeded`). The floor already moved the
+stock, so the ledger is now out of step with the bins:
+
+1. Read the value's `data` (`sku`, `from_bin`, `to_bin`, `quantity`,
+   `relocation_ref`) and check the bins with `GET /bins/{binId}` and
+   `get_bin_occupancy`.
+2. If the move is still valid after a fix (bin registered, reservation
+   revoked, capacity raised), re-produce the original value: it was never
+   claimed, so it applies once. Or apply it by hand with `POST /relocations`
+   (`reason` `SLOTTING`, `sourceRef` = the `relocation_ref`) under a fresh
+   `Idempotency-Key`; do not do both.
+3. If the stock really is somewhere else, cycle-count both bins
+   (`POST /bins/{binId}/cycle-count`) instead.
+
+Until fulfillment-execution sends the additive fields, every RELOCATE
+completion lands here with `malformed relocation task: sku: ...`; that is
+expected and needs no action.
 
 ### Inspect stuck outbox rows
 

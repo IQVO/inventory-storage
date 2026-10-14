@@ -76,6 +76,7 @@ func buildTaskCompletedConsumer(
 	}
 
 	clock := memory.SystemClock{}
+	processed := postgres.NewProcessedEventRepo(set.pool)
 	confirm := &usecases.ConfirmPicksForOrder{
 		Stock:        set.stock,
 		Reservations: set.reservations,
@@ -85,18 +86,20 @@ func buildTaskCompletedConsumer(
 			Stock: set.stock, Locations: set.locations, Reservations: set.reservations,
 			Events: set.publisher, Clock: clock, UnitOfWork: set.uow,
 		},
-		ProcessedEvents: postgres.NewProcessedEventRepo(set.pool),
+		ProcessedEvents: processed,
 		PickProgress:    postgres.NewOrderPickProgressRepo(set.pool),
 		UnitOfWork:      set.uow,
 		Metrics:         metrics,
 	}
 	consumer := inboundkafka.NewTaskCompletedConsumer(cfg.kafkaBrokers, cfg.taskCompletedConsumerGroup, confirm, logger)
+	// RELOCATE completions (ADR 0039) ride the same consumer, group and DLQ.
+	consumer.Relocate = newApplyRelocationTask(set, clock, processed)
 	group := cfg.taskCompletedConsumerGroup
 	if group == "" {
 		group = inboundkafka.DefaultTaskCompletedConsumerGroup
 	}
 	logger.Info("task-completed confirm-pick consumer configured",
-		"mode", "kafka", "topic", inboundkafka.FulfillmentTopic, "dlq_topic", inboundkafka.FulfillmentTopic+".dlq",
+		"mode", "kafka", "task_types", "PICK,RELOCATE", "topic", inboundkafka.FulfillmentTopic, "dlq_topic", inboundkafka.FulfillmentTopic+".dlq",
 		"consumer_group", group, "overridden", cfg.taskCompletedConsumerGroup != "")
 
 	runDone := make(chan struct{})
@@ -116,4 +119,15 @@ func buildTaskCompletedConsumer(
 			}
 		},
 	}, nil
+}
+
+// newApplyRelocationTask wires the RELOCATE branch of the TaskCompleted
+// consumer (ADR 0039): the same RelocateStock as POST /relocations, with the
+// CloudEvents id claimed in processed_events in the move's UnitOfWork.
+func newApplyRelocationTask(set adapterSet, clock ports.Clock, processed ports.ProcessedEventRepo) *usecases.ApplyRelocationTask {
+	return &usecases.ApplyRelocationTask{
+		Relocate:        newRelocateStock(set, clock),
+		ProcessedEvents: processed,
+		UnitOfWork:      set.uow,
+	}
 }

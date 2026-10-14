@@ -26,6 +26,18 @@ const sidebar: SidebarsConfig = {
           label: "Stow received stock into a bin",
           className: "api-method post",
         },
+        {
+          type: "doc",
+          id: "api-reference/rest/relocate-stock",
+          label: "Move stock of one SKU between two bins of the same site",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/get-relocation",
+          label: "Read one relocation",
+          className: "api-method get",
+        },
       ],
     },
     {

@@ -119,6 +119,7 @@ This service also **consumes** product-master's
 | StockReceived | `com.warehouse.wms.inventory-storage.stock.StockReceived` | — | `sku`, `quantity` |
 | ItemStowed | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | — | `sku`, `bin_id`, `quantity` |
 | ItemUnlocated | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | — | `sku`, `bin_id`, `stock_unit_id`, `quantity` |
+| **StockRelocated** | `com.warehouse.wms.inventory-storage.stock.StockRelocated` | `relocation_id`, `site_code`, `sku`, `from_bin`, `to_bin`, `quantity`, `reason` (`SLOTTING`/`CONSOLIDATION`/`MANUAL`), `source_ref` (always present, `""` when none), `occurred_at` (ADR-0039; key = relocation id; one per applied relocation, from `POST /relocations` or a completed RELOCATE task) | — (integration only) |
 | LocationRecorded | `com.warehouse.wms.inventory-storage.stock.LocationRecorded` | — (in-process only) | — |
 
 ### Bin entity

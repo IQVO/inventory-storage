@@ -73,6 +73,7 @@ type AnalyticsPublisher struct {
 // Hash is what actually makes same-key messages land on the same partition.
 func NewAnalyticsPublisher(brokers []string, reservations ports.ReservationRepo, newId func() string) *AnalyticsPublisher {
 	return &AnalyticsPublisher{
+		//kafka:fixed-topic-writer AnalyticsPublisher.Publish is the only writer of p.Writer and builds Message{Key, Value, Headers} with no Topic; the package's Topic-setting Message (RelaySink.Send) goes through RelaySink.writer, which NewRelaySink builds with no Topic
 		Writer: &kafkago.Writer{
 			BatchTimeout:           syncWriterBatchTimeout,
 			RequiredAcks:           syncWriterRequiredAcks,
