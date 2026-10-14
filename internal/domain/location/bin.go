@@ -5,6 +5,7 @@ package location
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
@@ -82,6 +83,42 @@ func (b *Bin) IsAtSite(site shared.SiteID) bool {
 		return false
 	}
 	return b.siteID == site
+}
+
+// locationCodeSegments is the number of hyphen-joined segments of a
+// facility-layout LocationCode (site-area-zone-aisle-bay-level-position).
+const locationCodeSegments = 7
+
+// EffectiveSite is the site this bin is in for an intra-site relocation
+// (ADR 0039): the recorded custody when there is one, otherwise the site
+// segment of the bin id when the id is a well-formed facility-layout
+// LocationCode (exactly seven non-empty hyphen-joined segments; BinId values
+// are LocationCodes, ADR 0009). Anything else is an unknown site ("") and
+// fails closed. IsAtSite (recorded custody only) stays the rule for
+// transfers (ADR 0031).
+func (b *Bin) EffectiveSite() shared.SiteID {
+	if b.siteID != "" {
+		return b.siteID
+	}
+	parts := strings.Split(b.id.String(), "-")
+	if len(parts) != locationCodeSegments {
+		return ""
+	}
+	for _, part := range parts {
+		if part == "" {
+			return ""
+		}
+	}
+	return shared.SiteID(parts[0])
+}
+
+// BelongsToSite reports whether this bin's EffectiveSite is site. An empty
+// site, or a bin whose site is unknown, never matches.
+func (b *Bin) BelongsToSite(site shared.SiteID) bool {
+	if site == "" {
+		return false
+	}
+	return b.EffectiveSite() == site
 }
 
 // Version reports the optimistic-concurrency version this aggregate was

@@ -140,6 +140,36 @@ func NewDiscrepancyDetected(occurredAt time.Time, binID BinId, counted, system Q
 	return DiscrepancyDetected{base: newBase("DiscrepancyDetected", occurredAt), BinID: binID, CountedQty: counted, SystemQty: system}
 }
 
+// StockRelocated: a quantity of one SKU was moved from one bin to another
+// bin of the same site (ADR 0039). Reason is the closed relocation reason
+// (SLOTTING, CONSOLIDATION, MANUAL); SourceRef is the caller's correlation
+// (a slot-plan move, a fulfillment-execution relocation_ref), possibly empty.
+type StockRelocated struct {
+	base
+	RelocationID string
+	SiteID       SiteID
+	SKU          SKU
+	FromBin      BinId
+	ToBin        BinId
+	Quantity     Quantity
+	Reason       string
+	SourceRef    string
+}
+
+func NewStockRelocated(occurredAt time.Time, relocationID string, siteID SiteID, sku SKU, fromBin, toBin BinId, qty Quantity, reason, sourceRef string) StockRelocated {
+	return StockRelocated{
+		base:         newBase("StockRelocated", occurredAt),
+		RelocationID: relocationID,
+		SiteID:       siteID,
+		SKU:          sku,
+		FromBin:      fromBin,
+		ToBin:        toBin,
+		Quantity:     qty,
+		Reason:       reason,
+		SourceRef:    sourceRef,
+	}
+}
+
 // TransferStockAllocated: origin-site stock was reserved for a network
 // transfer line (command/reply leg of the transfer saga — the Reservation
 // aggregate holds the stock; this event carries the transfer correlation).

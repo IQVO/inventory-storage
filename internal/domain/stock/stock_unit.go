@@ -189,6 +189,30 @@ func (u *StockUnit) Pick(qty shared.Quantity) error {
 	return nil
 }
 
+// RelocateOut takes qty of this unit's USABLE quantity out of its bin for
+// an intra-site relocation (ADR 0039). Reserved quantity never moves: a
+// reservation's allocation names this unit and its bin as the pick
+// location, so moving it would send the picker to the wrong slot. The
+// unit transitions to Removed once its quantity reaches zero (only
+// possible when nothing is reserved); otherwise its state is unchanged.
+func (u *StockUnit) RelocateOut(qty shared.Quantity) error {
+	if qty.Int() <= 0 {
+		return shared.ErrZeroQuantity
+	}
+	if u.state == StateUnlocated || u.state == StateRemoved {
+		return ErrUnitUnlocated
+	}
+	if qty.GreaterThan(u.Usable()) {
+		return ErrInsufficientUsable
+	}
+	// qty <= Usable() <= quantity, so this can never go negative.
+	u.quantity -= qty
+	if u.quantity.Int() == 0 {
+		u.state = StateRemoved
+	}
+	return nil
+}
+
 // MarkUnlocated flags this unit as lost: the physical item exists but the
 // system no longer knows where.
 func (u *StockUnit) MarkUnlocated() {

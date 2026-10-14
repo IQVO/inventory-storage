@@ -81,7 +81,7 @@ Typos, broken links and formatting are of course fair game.
 | [0021](./0021-kafka-producer-partition-key.md) | Key every integration/analytics Kafka message by its aggregate id, and route by Hash not LeastBytes | Accepted |
 | [0022](./0022-horizontal-autoscaling-and-pgxpool-tuning.md) | Per-workload HorizontalPodAutoscaler and pgxpool MaxConns/statement_timeout tuning | Accepted |
 | [0023](./0023-migrations-direct-postgres-connection.md) | Run golang-migrate against a direct Postgres connection, not PgBouncer | Accepted |
-| [0024](./0024-cloudevents-mandatory-envelope.md) | CloudEvents 1.0 as the mandatory event envelope | Accepted |
+| [0024](./0024-cloudevents-mandatory-envelope.md) | CloudEvents 1.0 as the mandatory event envelope | Accepted — type catalogue extended by [0039](./0039-intra-site-relocation-stockrelocated-cloudevents.md) |
 | [0025](./0025-bin-registration-endpoint-and-pick-location.md) | Declarative bin registration over REST (`PUT /bins/{binId}`), and the pick location (`binId`) on every reservation allocation | Accepted |
 | [0026](./0026-housekeeping-sweeper-idempotency-keys-and-outbox.md) | Housekeeping sweeper for idempotency keys and published outbox rows | Accepted |
 | [0027](./0027-mcp-eval-and-governance-suite.md) | MCP governance gate and eval suite (E1–E3) | Accepted |
@@ -96,6 +96,7 @@ Typos, broken links and formatting are of course fair game.
 | [0036](./0036-per-line-confirm-pick.md) | Reservations store the order line; picks are confirmed per line | Accepted |
 | [0037](./0037-stock-receipts-from-inbound-receiving.md) | Stock receipts from inbound-receiving: Good `ReceiptLineReceived` lines are booked as staged stock | Accepted |
 | [0038](./0038-outbox-relay-attempt-cap.md) | Outbox relay attempt cap: `OUTBOX_MAX_ATTEMPTS` (default 20) excludes a poison row and logs it at ERROR | Accepted |
+| [0039](./0039-intra-site-relocation-stockrelocated-cloudevents.md) | Intra-site stock relocation: `POST /relocations`, `StockRelocated`, RELOCATE tasks from TaskCompleted (slotting-optimization ADR 0010) | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic
