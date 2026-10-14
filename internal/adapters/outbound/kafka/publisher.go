@@ -217,6 +217,7 @@ func NewPublisher(writer Writer, reservations ports.ReservationRepo) *Publisher 
 // what actually makes the per-reservation ordering guarantee in Encode's
 // doc comment true (ADR-0021).
 func NewWriter(brokers ...string) *kafkago.Writer {
+	//kafka:fixed-topic-writer cmd wires it only into NewPublisher (the direct integration Publisher), whose Publish writes Message{Key, Value, Headers} with no Topic; the package's Topic-setting Message (RelaySink.Send) goes through RelaySink.writer, which NewRelaySink builds with no Topic
 	return &kafkago.Writer{
 		BatchTimeout:           syncWriterBatchTimeout,
 		RequiredAcks:           syncWriterRequiredAcks,
