@@ -159,6 +159,34 @@ type stockStowedData struct {
 	Allocations       []transferAllocationLegOut `json:"allocations"`
 }
 
+// stockRelocatedData is the `data` payload for StockRelocated (v1, frozen —
+// ADR 0039). source_ref is always present ("" when none).
+type stockRelocatedData struct {
+	RelocationID string    `json:"relocation_id"`
+	SiteCode     string    `json:"site_code"`
+	SKU          string    `json:"sku"`
+	FromBin      string    `json:"from_bin"`
+	ToBin        string    `json:"to_bin"`
+	Quantity     int       `json:"quantity"`
+	Reason       string    `json:"reason"`
+	SourceRef    string    `json:"source_ref"`
+	OccurredAt   time.Time `json:"occurred_at"`
+}
+
+func newStockRelocatedData(e shared.StockRelocated) stockRelocatedData {
+	return stockRelocatedData{
+		RelocationID: e.RelocationID,
+		SiteCode:     e.SiteID.String(),
+		SKU:          e.SKU.String(),
+		FromBin:      e.FromBin.String(),
+		ToBin:        e.ToBin.String(),
+		Quantity:     e.Quantity.Int(),
+		Reason:       e.Reason,
+		SourceRef:    e.SourceRef,
+		OccurredAt:   e.OccurredAt().UTC(),
+	}
+}
+
 // Publisher publishes StockReserved and ReservationRevoked domain events as
 // integration events on Topic. It satisfies both ports.EventPublisher
 // (direct publish) and kafka.Encoder (used by postgres.OutboxPublisher to
@@ -207,6 +235,7 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 	case shared.StockReserved, shared.ReservationRevoked,
 		shared.TransferStockAllocated, shared.TransferStockAllocationRejected,
 		shared.TransferReceiptStaged, shared.TransferStockStowed,
+		shared.StockRelocated,
 		product.ProductClassified:
 		return true
 	default:
@@ -353,6 +382,12 @@ func encodeEvent(ctx context.Context, p *Publisher, event shared.DomainEvent) (d
 		// Key = subject = transfer_line_id, same as the staged receipt:
 		// stage-then-stow for one line lands in order on one partition.
 		key = e.TransferLineID
+		entity = stockEntity
+	case shared.StockRelocated:
+		data = newStockRelocatedData(e)
+		// Key = subject = relocation_id: the Relocation is the aggregate
+		// the fact is about (ADR 0021, ADR 0039).
+		key = e.RelocationID
 		entity = stockEntity
 	default:
 		return nil, "", "", nil

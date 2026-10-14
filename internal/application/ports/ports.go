@@ -9,6 +9,7 @@ import (
 
 	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
+	"github.com/claudioed/inventory-storage/internal/domain/relocation"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
@@ -33,6 +34,14 @@ type StockRepo interface {
 type LocationRepo interface {
 	Save(ctx context.Context, bin *location.Bin) error
 	FindByID(ctx context.Context, id shared.BinId) (*location.Bin, error)
+}
+
+// RelocationRepo persists and retrieves Relocation records (ADR 0039).
+// FindByID returns nil, nil for an unknown id.
+type RelocationRepo interface {
+	Save(ctx context.Context, r *relocation.Relocation) error
+	FindByID(ctx context.Context, id string) (*relocation.Relocation, error)
+	NextID(ctx context.Context) (string, error)
 }
 
 // ReservationRepo persists and retrieves Reservation aggregates.
