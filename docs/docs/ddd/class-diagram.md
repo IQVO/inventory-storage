@@ -366,7 +366,7 @@ shape (see [Use Cases](./use-cases.md)); `ctx` is `context.Context`.
 flowchart LR
     subgraph IN["Inbound adapters"]
         HTTP["inbound/http<br/>chi router, DTOs, RFC 7807,<br/>RequireIdempotencyKey, /readyz"]
-        MCP["inbound/mcp<br/>check_availability, get_bin_occupancy,<br/>revoke_reservation, report tool"]
+        MCP["inbound/mcp<br/>check_availability, get_bin_occupancy,<br/>get_relocation, revoke_reservation, report tool"]
         AKC["inbound/kafka<br/>AnalyticsConsumer"]
         RPT["inbound/http<br/>ReportsHandlers"]
     end
