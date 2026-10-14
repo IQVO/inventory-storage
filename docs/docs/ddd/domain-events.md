@@ -37,6 +37,7 @@ table, Kafka) is a composition-root decision.
 | `ItemUnlocated` | StockUnit | A cycle-count shortfall cannot account for stock | `stockUnitId`, `sku`, `binId`, `quantity` |
 | `CycleCountCompleted` | Bin | Any cycle count finishes, clean or not | `binId`, `countedQty`, `systemQty`, `discrepancy` |
 | `DiscrepancyDetected` | Bin | A cycle count finds counted ≠ system | `binId`, `countedQty`, `systemQty` |
+| `StockRelocated` | Relocation | `RelocateStock` moves a quantity of one SKU between two bins of one site — from `POST /relocations` or, for a completed `RELOCATE` task, from `ApplyRelocationTask` ([ADR 0039](/docs/adr/0039)) | `relocationId`, `siteId`, `sku`, `fromBin`, `toBin`, `quantity`, `reason`, `sourceRef` |
 | `ProductClassified` | ProductClassification | Legacy since [ADR 0034](/docs/adr/0034): raised by no write path; re-emitted only by the one-shot `republish-product-classifications` backfill | `sku`, `handlingTags`, `temperatureClass`, `dotHazardClass`; wire fields below |
 
 ## Which events flow where
@@ -55,25 +56,29 @@ flowchart LR
   CC --> E9["ItemUnlocated"]
   EXP["lazy read"] --> E10["ReservationExpired"]
   BF["republish-product-classifications<br/>(backfill, ADR 0034)"] --> E11["ProductClassified"]
+  TCR["TaskCompleted (consumed)<br/>RELOCATE (ADR 0039)"] --> ART["ApplyRelocationTask"] --> RLS["RelocateStock"]
+  RLS --> E12["StockRelocated"]
 
-  E4 & E5 & E11 --> KAF["warehouse.inventory.events<br/>integration topic"]
+  E4 & E5 & E11 & E12 --> KAF["warehouse.inventory.events<br/>integration topic"]
   E1 & E2 & E4 & E5 & E6 & E7 & E8 & E9 & E10 --> ANA["warehouse.inventory.analytics<br/>internal analytics topic"]
   E3 --> LOG["in-process only<br/>never leaves the service<br/>no consumer, decided 2026-10-06"]
 
   classDef wired fill:#0f766e,stroke:#134e4a,color:#fff;
   classDef local fill:#94a3b8,stroke:#475569,color:#0f172a;
-  class E4,E5,E11,KAF wired;
+  class E4,E5,E11,E12,KAF wired;
   class LOG local;
 ```
 
 **`StockReserved`, `ReservationRevoked` and the legacy `ProductClassified`
 are the integration events on the reservation and master-data paths** (plus
-the two transfer replies, [ADR 0030](/docs/adr/0030)); since
+the two transfer replies, [ADR 0030](/docs/adr/0030), and `StockRelocated` on
+the relocation path, [ADR 0039](/docs/adr/0039)); since
 [ADR 0034](/docs/adr/0034) `ProductClassified` comes only from the one-shot
 backfill command, for product-master's legacy importer. The integration
 publisher's `Encode` returns nothing for every other event — deliberate, not
 an oversight: those are the published integration contract. Nine of the
-eleven events go to the internal analytics topic; `LocationRecorded` goes
+twelve events go to the internal analytics topic (`StockRelocated` does not:
+it is integration-only); `LocationRecorded` goes
 nowhere (no outbox row, no Kafka message — it has no consumer, so it stays
 in-process by decision). `apis/asyncapi.yaml` documents both channels, so a
 downstream team cannot mistake a documented analytics event for a wired
@@ -104,6 +109,7 @@ relayed by `cmd/inventory`.
 | DiscrepancyDetected | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system` | `RunCycleCount` | `cmd/inventory-projector` |
 | TransferReceiptStaged | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | `warehouse.inventory.events` | transfer line id / transfer line id | `transfer_id`, `transfer_line_id`, `destination_site_id`, `sku`, `expected_quantity`, `received_quantity`, `variance` (signed, ADR 0033) | `StageTransferReceipt` | planning reconciliation (over/short is explicit, never absorbed) |
 | TransferStockStowed | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | `warehouse.inventory.events` | transfer line id / transfer line id | `transfer_id`, `transfer_line_id`, `destination_site_id`, `sku`, `received_quantity`, `stowed_quantity`, `allocations[]` (ADR 0033) | `StowTransferStock` | the only event that raises destination usable; `wes-work-planning` may project it |
+| StockRelocated | `com.warehouse.wms.inventory-storage.stock.StockRelocated` | `warehouse.inventory.events` | relocation id / relocation id | `relocation_id`, `site_code`, `sku`, `from_bin`, `to_bin`, `quantity`, `reason`, `source_ref` (always present, `""` when none), `occurred_at` ([ADR 0039](/docs/adr/0039)) | `RelocateStock` (`POST /relocations`, and `ApplyRelocationTask` on a RELOCATE `TaskCompleted`) | slotting-optimization (slot-plan execution progress, its ADR 0010) |
 | LocationRecorded | — (not published; **decided 2026-10-06: stays in-process**, no consumer) | — | — | — | `StowStock` | none |
 | ProductClassified | `com.warehouse.wms.inventory-storage.product.ProductClassified` | `warehouse.inventory.events` | SKU / SKU | `sku`, `handling_tags`, `temperature_class?`, `dot_hazard_class?` (full-state replacement) | `RepublishProductClassifications` (one-shot backfill via the outbox, [ADR 0034](/docs/adr/0034)) | product-master's legacy importer |
 
@@ -114,7 +120,9 @@ on `warehouse.product-master.events` feeds the local classification copy via
 `warehouse.fulfillment.events` confirms the order's picked reservations via
 `ConfirmPicksForOrder`: exactly the picked line's reservation when the event
 carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick
-otherwise ([ADR 0035](/docs/adr/0035)), and
+otherwise ([ADR 0035](/docs/adr/0035)) — and, for `task_type=RELOCATE`,
+applies the move via `ApplyRelocationTask` → `RelocateStock`
+([ADR 0039](/docs/adr/0039)) — and
 `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` on
 `warehouse.inbound-receiving.events` books a received `Good` line as staged
 stock via `BookInboundReceiptLine` → `ReceiveStock` (the same `StockReceived`
@@ -132,7 +140,7 @@ on the analytics topic.
 | ZoneRegistered | `com.warehouse.wms.facility-layout.zone.ZoneRegistered` | `warehouse.facility.events` | `facilitycache.Consumer` (per-process group `inventory-storage-facility-location-cache-<host>-<pid>-<ns>`, FirstOffset replay) | caches zone `hazmat` + `temperatureClass` by `zoneId` |
 | LocationSlotRegistered | `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | `warehouse.facility.events` | same | maps `locationCode` → `zoneId` (derived from the code when absent) |
 | LocationSlotDecommissioned | `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `warehouse.facility.events` | same | drops the slot, so it answers `Known=false` |
-| TaskCompleted | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `warehouse.fulfillment.events` | `TaskCompletedConsumer` (fixed group `inventory-storage-confirm-pick`, FirstOffset, `TASK_COMPLETED_CONSUMER_MODE=kafka`, default off) | for `task_type=PICK` with `order_ref`: with the additive optional `line_no` ([ADR 0036](/docs/adr/0036)) confirms exactly the ACTIVE reservation of (`order_ref`, `line_no`) (`StockPicked`), skipping CONFIRMED/REVOKED/EXPIRED (expired counted) and leaving the order's other lines ACTIVE; nothing is counted. Without `line_no`, or for reservations with no `line_no`, the ADR 0035 fallback counts the pick for the order (`order_pick_progress`, one PICK task per order line) and, only on the LAST pick (count reaches the ACTIVE + CONFIRMED reservations), confirms every ACTIVE one. Claim, counter (fallback only) and confirmations in one transaction; no `order_ref` or no reservations is a no-op; a `line_no` outside 1..2147483647 is dead-lettered ([ADR 0036](/docs/adr/0036)) |
+| TaskCompleted | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `warehouse.fulfillment.events` | `TaskCompletedConsumer` (fixed group `inventory-storage-confirm-pick`, FirstOffset, `TASK_COMPLETED_CONSUMER_MODE=kafka`, default off) | for `task_type=PICK` with `order_ref`: with the additive optional `line_no` ([ADR 0036](/docs/adr/0036)) confirms exactly the ACTIVE reservation of (`order_ref`, `line_no`) (`StockPicked`), skipping CONFIRMED/REVOKED/EXPIRED (expired counted) and leaving the order's other lines ACTIVE; nothing is counted. Without `line_no`, or for reservations with no `line_no`, the ADR 0035 fallback counts the pick for the order (`order_pick_progress`, one PICK task per order line) and, only on the LAST pick (count reaches the ACTIVE + CONFIRMED reservations), confirms every ACTIVE one. Claim, counter (fallback only) and confirmations in one transaction; no `order_ref` or no reservations is a no-op; a `line_no` outside 1..2147483647 is dead-lettered ([ADR 0036](/docs/adr/0036)). For `task_type=RELOCATE` ([ADR 0039](/docs/adr/0039)): `ApplyRelocationTask` reads the additive `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref`, claims the CloudEvents `id` (consumer `task-completed-relocate`) and runs `RelocateStock` in one transaction (`StockRelocated`); a completion that can never apply (missing field, unknown bin, other site, same bin, insufficient usable, destination full) is dead-lettered at once |
 | ReceiptLineReceived | `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` | `warehouse.inbound-receiving.events` | `InboundReceiptConsumer` (stable group from `INBOUND_RECEIPT_CONSUMER_GROUP`, unset = consumer off, FirstOffset) | for `condition=Good`: `BookInboundReceiptLine` claims the CloudEvents `id` (`processed_events`) and runs `ReceiveStock` in one transaction, so one `StockReceived` (analytics topic) per id, staged and not yet usable ([ADR 0037](/docs/adr/0037)); `Damaged` is claimed, logged and counted, not booked; an empty `sku`, a non-positive `quantity` or an unknown `condition` is logged and committed past |
 | all nine analytics types above | `com.warehouse.wms.inventory-storage.*` | `warehouse.inventory.analytics` | `cmd/inventory-projector` (group `inventory-analytics`, FirstOffset) | upserts `flow_accuracy_rollup`, dedupes on the CloudEvents `id`; a `ProductClassified` on the same topic would be acknowledged and ignored (none is published there since ADR 0034) |
 
