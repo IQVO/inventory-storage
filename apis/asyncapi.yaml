@@ -153,7 +153,8 @@ channels:
       The outbound integration topic for this bounded context (the `Topic`
       constant in `internal/adapters/outbound/kafka/publisher.go`). Reaching
       it: `StockReserved` and `ReservationRevoked` (keyed by reservation
-      id), the transfer replies and receipt/stow events (keyed by transfer line id), and the legacy `ProductClassified`
+      id), the transfer replies and receipt/stow events (keyed by transfer line id),
+      `StockRelocated` (keyed by relocation id, ADR 0039), and the legacy `ProductClassified`
       (keyed by SKU), which since ADR 0034 only the one-shot
       `republish-product-classifications` backfill emits (product-master's
       legacy importer consumes it). The primary downstream consumer is
@@ -180,6 +181,7 @@ channels:
           - $ref: "#/components/messages/TransferStockAllocationRejected"
           - $ref: "#/components/messages/TransferReceiptStaged"
           - $ref: "#/components/messages/TransferStockStowed"
+          - $ref: "#/components/messages/StockRelocated"
           - $ref: "#/components/messages/ProductClassified"
 
   warehouse.inventory.analytics:
@@ -259,7 +261,8 @@ channels:
       `internal/adapters/inbound/kafka/task_completed_consumer.go`). CONSUMED
       by this service (ADR 0035), not published: key = `subject` = task id,
       `source=/warehouse/fulfillment-execution`. Only
-      `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` is acted on;
+      `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` is acted on
+      (task_type `PICK`, ADR 0035/0036, and `RELOCATE`, ADR 0039);
       `TaskCPTMissed`, `PackageManifested` and the `Transfer*` facts share the
       topic and are committed past untouched. The consumer runs only when
       `TASK_COMPLETED_CONSUMER_MODE=kafka` (default `off`; also requires
@@ -269,7 +272,7 @@ channels:
       `warehouse.fulfillment.events.dlq`.
     publish:
       operationId: confirmPicksFromTaskCompleted
-      summary: Confirm the picked line's reservation (line_no), or fall back to confirming the order on its last TaskCompleted.
+      summary: Confirm the picked line's reservation (line_no), or fall back to confirming the order on its last TaskCompleted; apply a completed RELOCATE task as an intra-site stock move.
       description: >
         At-least-once, fixed group: FetchMessage, then CommitMessages only after
         the message settles. For `task_type = PICK` with a non-empty `order_ref`
@@ -314,6 +317,22 @@ channels:
         successful no-ops. A Task carries no SKU or quantity, so SHORT PICKS ARE
         NOT MODELLED. A `line_no` that is not an integer between 1 and 2147483647 is a malformed
         payload: dead-lettered at once.
+
+
+        RELOCATE (ADR 0039, decision E1): a `task_type = RELOCATE` completion
+        carries the additive `sku`, `from_bin`, `to_bin`, `quantity` and
+        `relocation_ref` and is applied by ApplyRelocationTask, never by
+        confirm-pick: the same RelocateStock as POST /relocations (reason
+        SLOTTING, site = the source bin's site, source_ref = `relocation_ref`
+        or the task id) moves the stock and enqueues `StockRelocated`, with
+        the CloudEvents `id` claimed in `processed_events` under consumer
+        `task-completed-relocate` in the SAME transaction, so a redelivery is
+        a no-op and a failure un-claims the id. A completion that can never
+        apply (a missing or invalid field, an unknown bin, bins of different
+        sites, the same bin, too little usable stock, a full destination) is
+        dead-lettered at once; a transient failure (database, concurrent
+        modification) is retried; a shutdown mid-move commits nothing and
+        dead-letters nothing.
 
 
         A transient failure retries the same message with capped backoff (5
@@ -585,15 +604,19 @@ components:
         `apis/asyncapi.yaml`: type
         `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`,
         `source=/warehouse/fulfillment-execution`, subject and Kafka key = task
-        id. This service reads only `task_id`, `task_type`, `order_ref` and
-        `line_no`; every other field (`station_id`, `work_unit_id`,
+        id. This service reads only `task_id`, `task_type`, `order_ref`,
+        `line_no` and, on RELOCATE tasks, `sku`, `from_bin`, `to_bin`,
+        `quantity` and `relocation_ref`; every other field (`station_id`, `work_unit_id`,
         `associate_id`, `duration_seconds`) is ignored. `order_ref` is the
         additive optional field of ADR 0035 (v1, omitted when empty): the task's
         order reference, i.e. the OrderId order-management used as `demand_ref`.
         `line_no` is the additive optional field of ADR 0036 (v1, omitted when
         unknown): the order line the task was for. A message without
-        `order_ref`, or with any `task_type` other than `PICK`, is a successful
-        no-op; one without `line_no` takes the ADR 0035 counting path.
+        `order_ref`, or with any `task_type` other than `PICK` or `RELOCATE`, is a successful
+        no-op; one without `line_no` takes the ADR 0035 counting path. The
+        RELOCATE fields are the additive fields of ADR 0039 (decision E1, v1):
+        fulfillment-execution sends them on RELOCATE tasks only, and a
+        RELOCATE completion is applied as an intra-site move (`StockRelocated`).
       contentType: application/cloudevents+json
       tags:
         - name: fulfillment-execution
@@ -640,6 +663,29 @@ components:
               duration_seconds: 245
               task_type: PICK
               order_ref: ORD-1001
+        - name: relocateTaskCompleted
+          summary: A slot-plan RELOCATE task completed (ADR 0039); seven units of SKU-R1 move between two WH1 bins.
+          payload:
+            specversion: "1.0"
+            id: 8b3e4c5d-6f70-4182-9c9d-1e2f3a4b5c6d
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted
+            subject: task-9r01
+            time: "2026-10-13T12:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:fulfillment-execution:events:TaskCompleted:v1
+            data:
+              task_id: task-9r01
+              station_id: station-03
+              work_unit_id: wu-9r01
+              associate_id: worker-42
+              duration_seconds: 61
+              task_type: RELOCATE
+              sku: SKU-R1
+              from_bin: WH1-STOR-AMB-A01-01-01-A
+              to_bin: WH1-STOR-AMB-A02-01-01-A
+              quantity: 7
+              relocation_ref: plan-9#3
 
     InboundReceivingReceiptLineReceived:
       name: InboundReceivingReceiptLineReceived
@@ -953,6 +999,60 @@ components:
                 - stock_unit_id: su-dest-2
                   bin_id: BIN-DEST-2
                   quantity: 2
+
+    StockRelocated:
+      name: StockRelocated
+      title: Stock Relocated
+      summary: A quantity of one SKU moved from one bin to another bin of the same site — on hand unchanged, location changed, exactly once.
+      description: >-
+        Raised by the RelocateStock use case (ADR 0039), reached two ways:
+        POST /relocations (Idempotency-Key) and the RELOCATE branch of the
+        TaskCompleted consumer (a completed slot-plan RELOCATE task from
+        fulfillment-execution). In ONE transaction the source bin's
+        occupancy fell and the destination bin's rose by `quantity`, the
+        touched source StockUnits were decremented, ONE new StockUnit was
+        created at `to_bin`, the immutable `relocations` row was written and
+        this outbox row enqueued. Site-level on-hand is unchanged.
+
+
+        Exactly once per relocation: a replayed POST returns the stored
+        response and a redelivered TaskCompleted (same CloudEvents id) is a
+        no-op, so neither publishes again. `source_ref` is always present
+        (`""` when none); on the task path it is the task's
+        `relocation_ref`, or its task id when the producer sent none.
+
+
+        **Integration topic only** (no analytics variant). Kafka key and
+        CloudEvents `subject` are the relocation id (ADR 0021).
+        slotting-optimization consumes it to close a slot plan's move.
+      contentType: application/cloudevents+json
+      tags:
+        - name: stock
+          description: Raised on the intra-site relocation path (ADR 0039).
+      payload:
+        $ref: "#/components/schemas/StockRelocatedEvent"
+      examples:
+        - name: slottingMoveFromATask
+          summary: Seven units of SKU-R1 moved between two WH1 bins by a completed RELOCATE task.
+          payload:
+            specversion: "1.0"
+            id: 3c9e1a52-7b4d-4e18-a6f2-5d0b8c7e9f21
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.StockRelocated
+            subject: rel-42
+            time: "2026-10-13T12:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:StockRelocated:v1
+            data:
+              relocation_id: rel-42
+              site_code: WH1
+              sku: SKU-R1
+              from_bin: WH1-STOR-AMB-A01-01-01-A
+              to_bin: WH1-STOR-AMB-A02-01-01-A
+              quantity: 7
+              reason: SLOTTING
+              source_ref: plan-9#3
+              occurred_at: "2026-10-13T12:00:00Z"
 
     ReservationExpired:
       name: ReservationExpired
@@ -1505,7 +1605,7 @@ components:
           enum: ["1.0"]
         id:
           type: string
-          description: CloudEvents id; the dedupe key (claimed in processed_events under consumer `task-completed-confirm-pick`).
+          description: CloudEvents id; the dedupe key (claimed in processed_events under consumer `task-completed-confirm-pick`, or `task-completed-relocate` for RELOCATE tasks).
         source:
           type: string
           enum: ["/warehouse/fulfillment-execution"]
@@ -1533,8 +1633,8 @@ components:
               type: string
             task_type:
               type: string
-              enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL]
-              description: Only PICK is acted on; omitted by the producer when the task could not be found.
+              enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE]
+              description: PICK and RELOCATE are acted on; omitted by the producer when the task could not be found.
             order_ref:
               type: string
               description: >
@@ -1555,6 +1655,35 @@ components:
                 absent the ADR 0035 last-pick counting applies. A value outside
                 1..2147483647 (the 32-bit line_no column) or a non-integer is a
                 malformed payload (dead-lettered).
+            sku:
+              type: string
+              description: >
+                RELOCATE only (additive, ADR 0039): the SKU moved. Required on a
+                RELOCATE completion (missing or invalid = dead-lettered); absent on
+                every other task type.
+            from_bin:
+              type: string
+              description: >
+                RELOCATE only (additive, ADR 0039): the source bin's location code;
+                its site is the move's site.
+            to_bin:
+              type: string
+              description: >
+                RELOCATE only (additive, ADR 0039): the destination bin's location
+                code; must be a different bin of the same site.
+            quantity:
+              type: integer
+              minimum: 1
+              description: >
+                RELOCATE only (additive, ADR 0039): the units moved. Missing, zero
+                or negative on a RELOCATE completion = dead-lettered.
+            relocation_ref:
+              type: string
+              maxLength: 200
+              description: >
+                RELOCATE only (additive, ADR 0039, optional): the slot-plan move the
+                task executes; stored as the relocation's source_ref (the task id
+                is used when absent).
 
     InboundReceivingReceiptLineReceivedEvent:
       type: object
@@ -2203,3 +2332,68 @@ components:
                       quantity:
                         type: integer
                         minimum: 1
+
+    StockRelocatedEvent:
+      description: CloudEvents envelope for a StockRelocated domain event (ADR 0039).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for StockRelocated.
+              const: "com.warehouse.wms.inventory-storage.stock.StockRelocated"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:StockRelocated:v1
+              pattern: "^urn:warehouse:inventory-storage:events:StockRelocated:v1$"
+            data:
+              type: object
+              description: >-
+                Business payload for StockRelocated (v1, frozen). `quantity`
+                units of `sku` left `from_bin` and are now in `to_bin`, both
+                bins of `site_code`.
+              required:
+                - relocation_id
+                - site_code
+                - sku
+                - from_bin
+                - to_bin
+                - quantity
+                - reason
+                - source_ref
+                - occurred_at
+              properties:
+                relocation_id:
+                  type: string
+                  description: The Relocation's id (GET /relocations/{id}); also the Kafka key and `subject`.
+                site_code:
+                  type: string
+                  description: The site both bins belong to.
+                sku:
+                  type: string
+                from_bin:
+                  type: string
+                  description: The source bin's location code.
+                to_bin:
+                  type: string
+                  description: The destination bin's location code (never equal to from_bin).
+                quantity:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+                  enum: [SLOTTING, CONSOLIDATION, MANUAL]
+                  description: Why the stock moved. A RELOCATE task is always SLOTTING (it executes a slot plan).
+                source_ref:
+                  type: string
+                  maxLength: 200
+                  description: >-
+                    The caller's reference (a slot-plan move, the task's
+                    relocation_ref, or the task id); always present, "" when none.
+                occurred_at:
+                  type: string
+                  format: date-time
