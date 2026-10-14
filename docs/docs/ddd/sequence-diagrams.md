@@ -652,3 +652,64 @@ quantity). Source:
 `internal/adapters/outbound/postgres/order_pick_progress_repo.go`, `sweeper.go`,
 `cmd/inventory/confirmpick.go`. Omitted: the `bootretry` around the first
 broker dial and tracing spans.
+
+
+## 14. ApplyRelocationTask — a completed `RELOCATE` task moves stock between two bins (ADR 0039)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K as warehouse.fulfillment.events
+    participant CON as TaskCompletedConsumer
+    participant AR as ApplyRelocationTask
+    participant RS as RelocateStock
+    participant DB as Postgres (one transaction)
+    participant DLQ as fulfillment.events.dlq
+    K->>CON: FetchMessage (TaskCompleted)
+    alt task_type is RELOCATE
+        CON->>AR: Execute(completion)
+        alt a field is missing or invalid
+            AR-->>CON: ErrMalformedRelocationTask
+        else well-formed
+            AR->>DB: BEGIN, claim eventId
+            alt already claimed
+                AR-->>CON: DUPLICATE, nothing moves
+            else first delivery
+                AR->>RS: Execute(SLOTTING, site of fromBin, ref)
+                RS->>DB: load both bins, then the source bin's units
+                Note over RS: same site, two bins, usable, room
+                RS->>DB: save bins, units, new unit (versioned)
+                RS->>DB: relocations row + StockRelocated outbox
+                AR->>DB: COMMIT
+                AR-->>CON: APPLIED
+            end
+        end
+    else any other task_type
+        CON->>CON: confirm-pick (section 13)
+    end
+    alt ErrMalformedRelocationTask (fields or ledger rule)
+        CON->>DLQ: raw message plus x-dlq headers, at once
+        CON->>K: CommitMessages
+    else transient, rolled back with the claim
+        CON->>CON: backoff, retry 5 times, then DLQ
+    else shutdown mid-move
+        CON->>CON: no commit, no DLQ
+    else settled
+        CON->>K: CommitMessages
+    end
+```
+
+`POST /relocations` (Idempotency-Key, ADR 0018) runs the same `RelocateStock`
+with the request's `siteCode` and `reason` (default `MANUAL`), without the claim.
+On the task path the CloudEvents id is claimed in `processed_events` under
+consumer `task-completed-relocate`, in the same transaction as the move.
+The bins are loaded **before** anything else is validated, so an unknown bin is
+always `404 bin-not-found`. Only usable (unreserved) stock moves: a reservation's
+allocation names its bin as the pick location. The move creates one new
+StockUnit at the destination; a source unit that reaches zero becomes
+`REMOVED`. The additive TaskCompleted fields (`sku`, `from_bin`, `to_bin`,
+`quantity`, `relocation_ref`) are fulfillment-execution's; until it sends them, a
+RELOCATE completion is dead-lettered as malformed. Source:
+`internal/adapters/inbound/kafka/task_completed_consumer.go`,
+`internal/application/usecases/apply_relocation_task.go`, `relocate_stock.go`,
+`internal/domain/relocation/relocation.go`, `cmd/inventory/confirmpick.go`.

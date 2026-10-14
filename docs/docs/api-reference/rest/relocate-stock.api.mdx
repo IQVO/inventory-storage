@@ -1,0 +1,72 @@
+---
+id: relocate-stock
+title: "Move stock of one SKU between two bins of the same site"
+description: "Records an intra-site relocation (ADR 0039; slotting-optimization ADR 0010): quantity units of sku leave fromBin and arrive in toBin, both bins of siteCode. Only the usable (unreserved) quantity of the SKU in fromBin can move. Both bins' occupancy, every touched StockUnit, a new StockUnit in toBin, the relocation record and the `StockRelocated` event (transactional outbox) commit in one transaction; a concurrent change to either bin or a touched unit is a 409 concurrent-modification and nothing moves."
+sidebar_label: "Move stock of one SKU between two bins of the same site"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Move stock of one SKU between two bins of the same site"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/relocations"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Records an intra-site relocation (ADR 0039; slotting-optimization ADR 0010): quantity units of sku leave fromBin and arrive in toBin, both bins of siteCode. Only the usable (unreserved) quantity of the SKU in fromBin can move. Both bins' occupancy, every touched StockUnit, a new StockUnit in toBin, the relocation record and the `StockRelocated` event (transactional outbox) commit in one transaction; a concurrent change to either bin or a touched unit is a 409 concurrent-modification and nothing moves.
+
+Behind the Idempotency-Key middleware like the other creating POSTs (ADR 0018): a replay with the same key and body returns the original 201 without moving stock again; the same key with a different body is 422 idempotency-key-reused.
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./relocate-stock.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./relocate-stock.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./relocate-stock.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

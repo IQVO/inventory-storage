@@ -37,6 +37,10 @@ type Deps struct {
 	// narrow port so the analytical read model is reached only through the
 	// reports REST surface, never the analytical database directly (ADR-0011).
 	Reports ReportsClient
+	// GetRelocation backs the read-only get_relocation tool (ADR 0039): the
+	// same use case as GET /relocations/{id}. The tool is always advertised;
+	// nil makes it answer a clean "not configured" tool error.
+	GetRelocation *usecases.GetRelocation
 }
 
 // --- check_availability -------------------------------------------------------
@@ -125,6 +129,9 @@ func (d Deps) registerTools(server *mcp.Server) {
 		Description: "Return what a single bin holds: its total on-hand, reserved, and usable quantities, plus a per-StockUnit breakdown (SKU, quantities, state).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.getBinOccupancy)
+
+	// Read-only relocation lookup (ADR 0039).
+	d.registerRelocationTool(server)
 
 	// Write tool: revokes a reservation, returning its quantity to usable.
 	// Annotated destructive (non-read-only) so a host can see it changes

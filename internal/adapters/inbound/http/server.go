@@ -47,6 +47,11 @@ type Server struct {
 	// (ADR 0031): STAGED receipt -> destination StockUnits (the only
 	// path that raises destination usable).
 	StowTransferStock *usecases.StowTransferStock
+	// RelocateStock backs POST /relocations (ADR 0039): intra-site move of
+	// one SKU between two bins, behind RequireIdempotencyKey.
+	RelocateStock *usecases.RelocateStock
+	// GetRelocation backs GET /relocations/{id}.
+	GetRelocation *usecases.GetRelocation
 	// Classifications backs the deprecated read-only GET endpoint: the
 	// local copy of product-master's classifications (ADR 0034). There is
 	// no dedicated use case because the read is a direct, no-invariant
@@ -173,6 +178,16 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 		r.Post("/transfers/{transferLineId}/receipt", s.handleStageTransferReceipt)
 		r.Post("/transfers/{transferLineId}/stow", s.handleStowTransferStock)
 	}
+
+	// Intra-site relocation (ADR 0039): POST creates a relocation with a
+	// server-generated id and moves stock, so it sits behind
+	// RequireIdempotencyKey exactly like the other creating POSTs.
+	if s.IdempotencyPool != nil {
+		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/relocations", s.handleRelocateStock)
+	} else {
+		r.Post("/relocations", s.handleRelocateStock)
+	}
+	r.Get("/relocations/{id}", s.handleGetRelocation)
 
 	return r
 }

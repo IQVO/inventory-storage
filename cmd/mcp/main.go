@@ -174,7 +174,9 @@ func newRouter(mcpHandler http.Handler, serviceName string) http.Handler {
 type adapters struct {
 	stock        ports.StockRepo
 	reservations ports.ReservationRepo
-	publisher    ports.EventPublisher
+	// relocations backs the read-only get_relocation tool (ADR 0039).
+	relocations ports.RelocationRepo
+	publisher   ports.EventPublisher
 	// uow is nil in the in-memory (no DATABASE_URL) configuration, which
 	// the use cases' atomically() helper treats as "run fn directly".
 	uow   ports.UnitOfWork
@@ -192,7 +194,8 @@ func buildDeps(ad adapters, clock ports.Clock, metrics ports.ReservationMetrics)
 			Stock: ad.stock, Reservations: ad.reservations, Events: ad.publisher,
 			Clock: clock, Metrics: metrics, UnitOfWork: ad.uow,
 		},
-		Stock: ad.stock,
+		Stock:         ad.stock,
+		GetRelocation: &usecases.GetRelocation{Relocations: ad.relocations},
 	}
 }
 
@@ -225,7 +228,10 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migr
 	if databaseURL == "" {
 		logger.Info("database url not configured; using in-memory adapters")
 		reservationRepo := memory.NewReservationRepo()
-		ad := adapters{stock: memory.NewStockRepo(), reservations: reservationRepo, publisher: events.NewLogPublisher(logger), close: noop}
+		ad := adapters{
+			stock: memory.NewStockRepo(), reservations: reservationRepo, relocations: memory.NewRelocationRepo(),
+			publisher: events.NewLogPublisher(logger), close: noop,
+		}
 		if !kafkaMode {
 			return ad, nil
 		}
@@ -268,9 +274,10 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migr
 	reservationRepo := postgres.NewReservationRepo(pool)
 	ad := adapters{
 		stock: stockRepo, reservations: reservationRepo,
-		publisher: events.NewLogPublisher(logger),
-		uow:       postgres.NewUnitOfWork(pool),
-		close:     pool.Close,
+		relocations: postgres.NewRelocationRepo(pool),
+		publisher:   events.NewLogPublisher(logger),
+		uow:         postgres.NewUnitOfWork(pool),
+		close:       pool.Close,
 	}
 	if kafkaMode {
 		// The outbox only ENCODES: both encoders are built without a Kafka

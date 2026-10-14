@@ -1,0 +1,1 @@
+{"parameters":[{"name":"id","in":"path","required":true,"description":"Relocation id (`rel-<uuid>`).","schema":{"type":"string","example":"rel-0b7e2a54-3c1d-4f0e-9a8b-7c6d5e4f3a21"}}]}

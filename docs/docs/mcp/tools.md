@@ -39,6 +39,7 @@ a single replica. Requests are traced by otelchi and timed by
 | --- | --- | --- | --- | --- |
 | `check_availability` | read-only | `sku` — the stock-keeping unit to check usable availability for | `{sku, usable}` | `GetUsable` |
 | `get_bin_occupancy` | read-only | `binId` — the coded bin/location slot to inspect | `{binId, unitCount, onHand, reserved, usable, lines[]}`; each line `{stockUnitId, sku, onHand, reserved, usable, state}` | `StockRepo.FindByBin` (read model) |
+| `get_relocation` | read-only | `relocationId` — the id of an applied intra-site relocation | `{relocationId, siteCode, sku, fromBin, toBin, quantity, reason, sourceRef, destinationStockUnitId, legs[], occurredAt}`; each leg `{stockUnitId, quantity}` | `GetRelocation` ([ADR 0039](../adr/0039-intra-site-relocation-stockrelocated-cloudevents.md)) |
 | `revoke_reservation` | **write**, destructive, not idempotent | `reservationId` — the reservation to revoke; its quantity returns to usable | `{reservationId, revoked: true}` | `RevokeReservation` (emits `ReservationRevoked`, counts `inventory.reservations{outcome=revoked}`) |
 | `get_inventory_flow_accuracy_report` | read-only; registered **only** when `REPORTS_BASE_URL` is set | `from` (RFC 3339, inclusive), `to` (RFC 3339, exclusive), `sku` (optional filter), `binId` (optional filter), `granularity` (optional; only `hour`, the default) | `{rows[]}` — same row shape as `GET /reports/flow-accuracy` | HTTP call to `cmd/inventory-reports` (10 s timeout) |
 
@@ -78,6 +79,10 @@ Taken from a local run of this branch's binary (in-memory, `MCP_ADDR=:18190`,
                  "properties": {"from": {}, "to": {}, "sku": {}, "binId": {}, "granularity": {}},
                  "required": ["from", "to"],
                  "additionalProperties": false},
+ "annotations": {"readOnlyHint": true, "idempotentHint": false}}
+{"name": "get_relocation",
+ "inputSchema": {"type": "object", "properties": {"relocationId": {"type": "string"}},
+                 "required": ["relocationId"], "additionalProperties": false},
  "annotations": {"readOnlyHint": true, "idempotentHint": false}}
 {"name": "revoke_reservation",
  "inputSchema": {"type": "object", "properties": {"reservationId": {"type": "string"}},

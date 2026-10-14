@@ -92,6 +92,11 @@ func newIdempotencyFixture(t *testing.T, pool *pgxpool.Pool) idempotencyFixture 
 		ReserveStock: &usecases.ReserveStock{
 			Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow,
 		},
+		RelocateStock: &usecases.RelocateStock{
+			Stock: stockRepo, Locations: postgres.NewLocationRepo(pool), Relocations: postgres.NewRelocationRepo(pool),
+			Events: publisher, Clock: clock, UnitOfWork: uow,
+		},
+		GetRelocation:   &usecases.GetRelocation{Relocations: postgres.NewRelocationRepo(pool)},
 		IdempotencyPool: pool,
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
