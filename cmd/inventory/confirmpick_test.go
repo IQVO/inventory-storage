@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
+	"github.com/claudioed/inventory-storage/internal/application/usecases"
 )
 
 func TestBuildTaskCompletedConsumer_OffByDefaultDoesNotStart(t *testing.T) {
@@ -106,4 +109,23 @@ func TestLoadConfig_ReadsTaskCompletedConsumerSettings(t *testing.T) {
 			t.Fatalf("mode=%q group=%q", cfg.taskCompletedConsumerMode, cfg.taskCompletedConsumerGroup)
 		}
 	})
+}
+
+// The RELOCATE branch (ADR 0039) shares the relocation use case and the
+// processed-events claim repo with the rest of the consumer wiring.
+func TestNewApplyRelocationTask_WiresTheSharedRelocateStock(t *testing.T) {
+	set := memoryAdapters(quietLogger())
+	processed := memory.NewProcessedEventRepo()
+	uc := newApplyRelocationTask(set, memory.SystemClock{}, processed)
+
+	if uc.ProcessedEvents != processed {
+		t.Fatal("ApplyRelocationTask must claim through the consumer's processed-events repo")
+	}
+	rs, ok := uc.Relocate.(*usecases.RelocateStock)
+	if !ok {
+		t.Fatalf("Relocate is %T, want *usecases.RelocateStock", uc.Relocate)
+	}
+	if rs.Relocations != set.relocations || rs.Stock != set.stock || rs.Locations != set.locations {
+		t.Fatal("RelocateStock must use the adapter set's repos")
+	}
 }
