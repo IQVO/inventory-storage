@@ -129,3 +129,22 @@ func TestNewApplyRelocationTask_WiresTheSharedRelocateStock(t *testing.T) {
 		t.Fatal("RelocateStock must use the adapter set's repos")
 	}
 }
+
+// The REPLENISH branch (ADR 0041) shares RelocateStock and the processed-events
+// repo too, but claims ids under its own consumer name inside the use case.
+func TestNewApplyReplenishTask_WiresTheSharedRelocateStock(t *testing.T) {
+	set := memoryAdapters(quietLogger())
+	processed := memory.NewProcessedEventRepo()
+	uc := newApplyReplenishTask(set, memory.SystemClock{}, processed)
+
+	if uc.ProcessedEvents != processed || uc.UnitOfWork != set.uow {
+		t.Fatal("ApplyReplenishTask must claim through the consumer's processed-events repo, in the adapter set's unit of work")
+	}
+	rs, ok := uc.Relocate.(*usecases.RelocateStock)
+	if !ok {
+		t.Fatalf("Relocate is %T, want *usecases.RelocateStock", uc.Relocate)
+	}
+	if rs.Relocations != set.relocations || rs.Stock != set.stock || rs.Locations != set.locations {
+		t.Fatal("RelocateStock must use the adapter set's repos")
+	}
+}

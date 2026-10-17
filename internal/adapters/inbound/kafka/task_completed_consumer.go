@@ -58,7 +58,9 @@ var errPoison = errors.New("poison message")
 // absent (nil) when the producer does not know it, in which case the ADR 0035
 // last-pick counting applies. sku, from_bin, to_bin, quantity and
 // relocation_ref are the additive fields of ADR 0039 that fulfillment-execution
-// emits for RELOCATE tasks only (absent on every other task type).
+// emits for RELOCATE tasks only (absent on every other task type). request_ref
+// is the additive field of ADR 0041: the replenishment REQUEST id, on REPLENISH
+// tasks only; it mirrors relocation_ref of RELOCATE tasks.
 type taskCompletedData struct {
 	TaskID        string `json:"task_id"`
 	TaskType      string `json:"task_type"`
@@ -69,6 +71,7 @@ type taskCompletedData struct {
 	ToBin         string `json:"to_bin"`
 	Quantity      *int   `json:"quantity"`
 	RelocationRef string `json:"relocation_ref"`
+	RequestRef    string `json:"request_ref"`
 }
 
 // PickCompletionHandler is the use-case port the consumer drives, satisfied
@@ -81,6 +84,12 @@ type PickCompletionHandler interface {
 // (ADR 0039), satisfied by *usecases.ApplyRelocationTask.
 type RelocationTaskHandler interface {
 	Execute(ctx context.Context, in usecases.RelocationTaskCompletion) (usecases.RelocationTaskResult, error)
+}
+
+// ReplenishTaskHandler is the use-case port for REPLENISH completions
+// (ADR 0041), satisfied by *usecases.ApplyReplenishTask.
+type ReplenishTaskHandler interface {
+	Execute(ctx context.Context, in usecases.ReplenishTaskCompletion) (usecases.ReplenishTaskResult, error)
 }
 
 // DeadLetterWriter stores a dead-lettered message; satisfied by *kafkago.Writer.
@@ -107,6 +116,10 @@ type TaskCompletedConsumer struct {
 	// the pre-ADR 0039 behaviour (every completion goes to Confirm, which
 	// ignores non-PICK tasks).
 	Relocate RelocationTaskHandler
+	// Replenish applies REPLENISH completions (ADR 0041). Optional: nil
+	// keeps the pre-ADR 0041 behaviour (a REPLENISH completion goes to
+	// Confirm, which ignores non-PICK tasks).
+	Replenish ReplenishTaskHandler
 	// DeadLetter receives poison and exhausted messages. Required.
 	DeadLetter DeadLetterWriter
 	Logger     *slog.Logger
@@ -297,6 +310,9 @@ func (c *TaskCompletedConsumer) Handle(ctx context.Context, msg kafkago.Message)
 	if data.TaskType == usecases.RelocateTaskType && c.Relocate != nil {
 		return c.handleRelocation(ctx, e.ID(), data)
 	}
+	if data.TaskType == usecases.ReplenishTaskType && c.Replenish != nil {
+		return c.handleReplenish(ctx, e.ID(), data)
+	}
 
 	result, err := c.Confirm.Execute(ctx, usecases.PickCompletion{
 		EventID:  e.ID(),
@@ -340,6 +356,46 @@ func (c *TaskCompletedConsumer) handleRelocation(ctx context.Context, id string,
 	}
 	c.logRelocation(ctx, id, data, result)
 	return nil
+}
+
+// handleReplenish applies one REPLENISH completion (ADR 0041). Error
+// classification is that of handleRelocation: a deterministic rejection is
+// poison and goes to the DLQ at once, anything else is retried.
+func (c *TaskCompletedConsumer) handleReplenish(ctx context.Context, id string, data taskCompletedData) error {
+	result, err := c.Replenish.Execute(ctx, usecases.ReplenishTaskCompletion{
+		EventID:    id,
+		TaskID:     data.TaskID,
+		TaskType:   data.TaskType,
+		SKU:        data.SKU,
+		FromBin:    data.FromBin,
+		ToBin:      data.ToBin,
+		Quantity:   data.Quantity,
+		RequestRef: data.RequestRef,
+	})
+	if err != nil {
+		if errors.Is(err, usecases.ErrMalformedRelocationTask) {
+			return fmt.Errorf("%w: %v", errPoison, err)
+		}
+		return err
+	}
+	c.logReplenish(ctx, id, data, result)
+	return nil
+}
+
+// logReplenish logs what ApplyReplenishTask did with one settled message.
+func (c *TaskCompletedConsumer) logReplenish(ctx context.Context, id string, data taskCompletedData, result usecases.ReplenishTaskResult) {
+	if result.Outcome == usecases.ReplenishDuplicate {
+		c.Logger.InfoContext(ctx, "task-completed REPLENISH already applied; redelivery ignored",
+			"id", id, "task_id", data.TaskID, "request_ref", data.RequestRef)
+		return
+	}
+	relocationID := ""
+	if result.Relocation != nil {
+		relocationID = result.Relocation.ID()
+	}
+	c.Logger.InfoContext(ctx, "task-completed REPLENISH applied to the ledger",
+		"id", id, "task_id", data.TaskID, "relocation_id", relocationID, "sku", data.SKU,
+		"from_bin", data.FromBin, "to_bin", data.ToBin, "request_ref", data.RequestRef)
 }
 
 // logRelocation logs what ApplyRelocationTask did with one settled message.
