@@ -98,6 +98,7 @@ Typos, broken links and formatting are of course fair game.
 | [0038](./0038-outbox-relay-attempt-cap.md) | Outbox relay attempt cap: `OUTBOX_MAX_ATTEMPTS` (default 20) excludes a poison row and logs it at ERROR | Accepted |
 | [0039](./0039-intra-site-relocation-stockrelocated-cloudevents.md) | Intra-site stock relocation: `POST /relocations`, `StockRelocated`, RELOCATE tasks from TaskCompleted (slotting-optimization ADR 0010) | Accepted |
 | [0040](./0040-bin-stock-level-changed-cloudevents.md) | `BinStockLevelChanged`: absolute per-(bin, sku) levels with a persisted version, raised from the ledger's own transaction (pick-face-replenishment) | Accepted |
+| [0041](./0041-apply-replenish-task-as-replenishment-relocation.md) | A completed REPLENISH task (`TaskCompleted` with `request_ref`) is applied as a `REPLENISHMENT` relocation: `StockRelocated` + `BinStockLevelChanged` (pick-face-replenishment) | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

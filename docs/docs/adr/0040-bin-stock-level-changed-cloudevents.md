@@ -94,11 +94,10 @@ delta feed breaks on the first lost or duplicated message. The contract therefor
 
 8. **Reasons** (`reason`): `STOW`, `PICK`, `RELOCATE`, `REPLENISHMENT`, `COUNT`, `RESERVE`,
    `REVOKE`, `UNLOCATED`. Consumers ignore values they do not know.
-   - `REPLENISHMENT` is **reserved for the later pick-face replenishment change (P4)**. A
-     relocation maps to it only when its own reason is already `REPLENISHMENT`
-     (`relocationLevelReason`); today the relocation aggregate accepts only `SLOTTING`,
-     `CONSOLIDATION` and `MANUAL`, so it is never emitted yet. The code path and its test exist so
-     P4 is a one-line change in the relocation aggregate, with no producer rework.
+   - `REPLENISHMENT` is the reason of a relocation made by a completed REPLENISH task
+     ([ADR 0041](./0041-apply-replenish-task-as-replenishment-relocation.md)): a relocation maps
+     to it when its own reason is `REPLENISHMENT` (`relocationLevelReason`). Originally reserved
+     for that change, it is emitted since ADR 0041, source bin first, then destination.
    - `UNLOCATED` is in the closed set for an unlocated receive that names a bin. This service
      has no such path (`ReceiveStock` and the inbound-receiving booking name no bin), so it is
      never emitted; the cycle-count shortfall is `COUNT`.
@@ -114,7 +113,7 @@ delta feed breaks on the first lost or duplicated message. The contract therefor
 | `RevokeReservation` | `DELETE /reservations/{id}`, MCP revoke | `REVOKE` | every allocation's bin |
 | lazy reservation expiry | any read that resolves a timed-out reservation (`ReserveStock`'s replay lookup, `GetReservationsByDemandRef`, `ConfirmPick`, `RevokeReservation`, `ConfirmPicksForOrder`) | `REVOKE` | every allocation's bin |
 | `ConfirmPick` / `ConfirmPicksForOrder` | `POST /reservations/{id}/confirm-pick`, `TaskCompleted` PICK | `PICK` | every allocation's bin |
-| `RelocateStock` / `ApplyRelocationTask` | `POST /relocations`, `TaskCompleted` RELOCATE | `RELOCATE` (`REPLENISHMENT` when the relocation's reason is) | source bin, then destination bin |
+| `RelocateStock` / `ApplyRelocationTask` / `ApplyReplenishTask` | `POST /relocations`, `TaskCompleted` RELOCATE, `TaskCompleted` REPLENISH | `RELOCATE` (`REPLENISHMENT` for a REPLENISH task) | source bin, then destination bin |
 | `RunCycleCount` | `POST /bins/{binId}/cycle-count`, shortfall only | `COUNT` | the counted bin, one event per SKU whose units were marked unlocated |
 | `ReceiveStock`, `BookInboundReceiptLine` | receive | none | staged stock has no bin |
 | `StageTransferReceipt` | destination scan | none | no ledger change (the stow raises it) |
