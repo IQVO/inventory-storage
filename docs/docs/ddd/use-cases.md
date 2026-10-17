@@ -33,6 +33,7 @@ Dependencies are plain struct fields, wired once per binary in
 | 17 | `RelocateStock` | `POST /relocations` (Idempotency-Key) | — | `StockRelocated` (integration topic, through the outbox, ADR 0039) |
 | 18 | `ApplyRelocationTask` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted` with `task_type=RELOCATE`, ADR 0039) | — | `StockRelocated` through `RelocateStock` |
 | 19 | `GetRelocation` | `GET /relocations/{id}` | `get_relocation` | — (read) |
+| 20 | `ApplyReplenishTask` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted` with `task_type=REPLENISH`, ADR 0041) | — | `StockRelocated` (reason `REPLENISHMENT`, `source_ref` = `request_ref`) and two `BinStockLevelChanged` through `RelocateStock` |
 
 (`RepublishProductClassifications`, the one-shot `republish-product-classifications`
 backfill subcommand, is covered under #8 rather than tabulated: it is a maintenance
@@ -640,6 +641,28 @@ quantity, reason, source ref, the source legs drawn and the destination
 StockUnit. Unknown id → `ErrRelocationNotFound` (`404 relocation-not-found`, or
 the MCP tool error). Backs `GET /relocations/{id}` and the read-only MCP tool
 `get_relocation`.
+
+## 20. ApplyReplenishTask(eventId, taskId, taskType, sku, fromBin, toBin, qty, requestRef) (ADR 0041)
+
+Applies a completed `REPLENISH` task (pick-face replenishment) from
+fulfillment-execution's `TaskCompleted` to the ledger. It is the REPLENISH
+branch of the same consumer (group, DLQ, shutdown semantics) as #12 and #18,
+and a sibling of #18: the same `RelocateStock` (#17, rules not duplicated), with
+three differences. The reason is `REPLENISHMENT` (system-set: `POST /relocations`
+rejects it); `source_ref` is the additive `request_ref` (the replenishment
+request id), **required** with no task-id fallback (blank = malformed); and the
+CloudEvents `id` is claimed under consumer `task-completed-replenish`.
+
+**Collaborators:** `RelocateStock` (#17), `ProcessedEventRepo`, `UnitOfWork`.
+
+**Atomic and idempotent:** the claim, both bins, the stock units, the
+`relocations` row and the `StockRelocated` plus two `BinStockLevelChanged`
+(`REPLENISHMENT`, source bin then destination) outbox rows commit in ONE unit of
+work; a redelivered id is `DUPLICATE`, a failure un-claims the id.
+
+**Fails when (deterministic, `ErrMalformedRelocationTask`, dead-lettered at
+once):** the failures of #18, plus a missing or blank `request_ref`.
+**Transient:** as #18. A task type other than `REPLENISH` is a no-op (`IGNORED`).
 
 ## Cross-cutting patterns
 
