@@ -30,6 +30,11 @@ const (
 	ReasonConsolidation Reason = "CONSOLIDATION"
 	// ReasonManual: any other operator-initiated move.
 	ReasonManual Reason = "MANUAL"
+	// ReasonReplenishment: refilling a pick face from reserve storage,
+	// executed by a REPLENISH task (ADR 0041). It is set by the system only:
+	// ParseReason, the operator-facing parser behind POST /relocations,
+	// rejects it, so the REST contract is unchanged.
+	ReasonReplenishment Reason = "REPLENISHMENT"
 )
 
 // MaxSourceRefLength bounds the caller's correlation reference, in characters.
@@ -41,7 +46,8 @@ var (
 	// ErrSameBin: moving stock into the bin it already sits in is not a
 	// relocation.
 	ErrSameBin = errors.New("relocation source and destination bin must differ")
-	// ErrUnknownReason: the reason is not one of SLOTTING, CONSOLIDATION, MANUAL.
+	// ErrUnknownReason: the reason is not one an operator may request
+	// (SLOTTING, CONSOLIDATION, MANUAL), or, for New, not a known reason.
 	ErrUnknownReason = errors.New("unknown relocation reason (want SLOTTING, CONSOLIDATION or MANUAL)")
 	// ErrSourceRefTooLong: the source reference exceeds MaxSourceRefLength.
 	ErrSourceRefTooLong = errors.New("relocation source reference must be at most 200 characters")
@@ -56,13 +62,25 @@ var (
 	ErrAlreadyApplied = errors.New("relocation was already applied")
 )
 
-// ParseReason validates a wire reason. Reasons are case-sensitive.
+// ParseReason validates a reason an OPERATOR may request (POST /relocations):
+// SLOTTING, CONSOLIDATION or MANUAL. Reasons are case-sensitive.
+// ReasonReplenishment is deliberately not accepted here (see New).
 func ParseReason(value string) (Reason, error) {
 	switch r := Reason(value); r {
 	case ReasonSlotting, ReasonConsolidation, ReasonManual:
 		return r, nil
 	}
 	return "", ErrUnknownReason
+}
+
+// known reports whether r is any persisted reason: the operator-facing ones
+// plus the system-set ReasonReplenishment.
+func known(r Reason) bool {
+	if r == ReasonReplenishment {
+		return true
+	}
+	_, err := ParseReason(string(r))
+	return err == nil
 }
 
 // Spec is the requested relocation.
@@ -116,8 +134,8 @@ func validate(spec Spec) error {
 	if spec.Quantity.Int() <= 0 {
 		return shared.ErrZeroQuantity
 	}
-	if _, err := ParseReason(string(spec.Reason)); err != nil {
-		return err
+	if !known(spec.Reason) {
+		return ErrUnknownReason
 	}
 	if utf8.RuneCountInString(spec.SourceRef) > MaxSourceRefLength {
 		return ErrSourceRefTooLong

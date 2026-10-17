@@ -6,8 +6,8 @@ import (
 )
 
 // RelocationLevelReason exposes relocationLevelReason to the external test
-// package: REPLENISHMENT cannot be built through the relocation aggregate yet
-// (ParseReason rejects it), so the mapping is exercised directly.
+// package, so the whole reason mapping (including an unknown reason) is
+// exercised directly, besides the end-to-end REPLENISH test.
 func RelocationLevelReason(reason string) shared.BinLevelReason {
 	return relocationLevelReason(relocation.Reason(reason))
 }

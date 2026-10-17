@@ -133,6 +133,7 @@ const sidebars: SidebarsConfig = {
         'adr/0038-outbox-relay-attempt-cap',
         'adr/0039-intra-site-relocation-stockrelocated-cloudevents',
         'adr/0040-bin-stock-level-changed-cloudevents',
+        'adr/0041-apply-replenish-task-as-replenishment-relocation',
       ],
     },
   ],
