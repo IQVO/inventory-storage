@@ -338,6 +338,21 @@ channels:
         dead-letters nothing.
 
 
+        REPLENISH (ADR 0041): a `task_type = REPLENISH` completion carries the
+        same additive `sku`, `from_bin`, `to_bin`, `quantity` plus the REQUIRED
+        `request_ref` (the pick-face-replenishment request id, mirroring
+        `relocation_ref`) and is applied by ApplyReplenishTask: the same
+        RelocateStock with reason `REPLENISHMENT`, site = the source bin's
+        site and source_ref = `request_ref` (no task-id fallback: the
+        replenishment context closes a request by `source_ref == request_id`).
+        It enqueues `StockRelocated` plus the two `BinStockLevelChanged`
+        events (reason `REPLENISHMENT`, source bin then destination bin). The
+        CloudEvents `id` is claimed in `processed_events` under consumer
+        `task-completed-replenish` in the SAME transaction; classification of
+        deterministic versus transient failures is that of RELOCATE, and a
+        REPLENISH completion without `request_ref` is dead-lettered at once.
+
+
         A transient failure retries the same message with capped backoff (5
         attempts), then dead-letters it; an undecodable payload is dead-lettered
         at once; a message that is not a CloudEvent is skipped with a sampled
@@ -608,18 +623,22 @@ components:
         `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`,
         `source=/warehouse/fulfillment-execution`, subject and Kafka key = task
         id. This service reads only `task_id`, `task_type`, `order_ref`,
-        `line_no` and, on RELOCATE tasks, `sku`, `from_bin`, `to_bin`,
-        `quantity` and `relocation_ref`; every other field (`station_id`, `work_unit_id`,
+        `line_no` and, on RELOCATE and REPLENISH tasks, `sku`, `from_bin`, `to_bin`,
+        `quantity` and `relocation_ref` (RELOCATE) or `request_ref` (REPLENISH); every other field (`station_id`, `work_unit_id`,
         `associate_id`, `duration_seconds`) is ignored. `order_ref` is the
         additive optional field of ADR 0035 (v1, omitted when empty): the task's
         order reference, i.e. the OrderId order-management used as `demand_ref`.
         `line_no` is the additive optional field of ADR 0036 (v1, omitted when
         unknown): the order line the task was for. A message without
-        `order_ref`, or with any `task_type` other than `PICK` or `RELOCATE`, is a successful
+        `order_ref`, or with any `task_type` other than `PICK`, `RELOCATE` or `REPLENISH`, is a successful
         no-op; one without `line_no` takes the ADR 0035 counting path. The
         RELOCATE fields are the additive fields of ADR 0039 (decision E1, v1):
         fulfillment-execution sends them on RELOCATE tasks only, and a
         RELOCATE completion is applied as an intra-site move (`StockRelocated`).
+        `request_ref` is the additive field of ADR 0041 (v1): REPLENISH tasks
+        only, the replenishment request id, required on a REPLENISH completion;
+        such a completion is applied as an intra-site move with reason
+        `REPLENISHMENT`.
       contentType: application/cloudevents+json
       tags:
         - name: fulfillment-execution
@@ -689,6 +708,29 @@ components:
               to_bin: WH1-STOR-AMB-A02-01-01-A
               quantity: 7
               relocation_ref: plan-9#3
+        - name: replenishTaskCompleted
+          summary: A pick-face REPLENISH task completed (ADR 0041); twelve units of SKU-R1 move from a reserve bin to the pick face, closing replenishment request repl-3b0e8d2a-….
+          payload:
+            specversion: "1.0"
+            id: 9c4f5d6e-7081-4293-8dae-2f3a4b5c6d7e
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted
+            subject: task-9p01
+            time: "2026-10-17T12:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:fulfillment-execution:events:TaskCompleted:v1
+            data:
+              task_id: task-9p01
+              station_id: station-03
+              work_unit_id: wu-9p01
+              associate_id: worker-42
+              duration_seconds: 74
+              task_type: REPLENISH
+              sku: SKU-R1
+              from_bin: WH1-STOR-AMB-A01-01-01-A
+              to_bin: WH1-PICK-AMB-A02-01-01-A
+              quantity: 12
+              request_ref: repl-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07
 
     InboundReceivingReceiptLineReceived:
       name: InboundReceivingReceiptLineReceived
@@ -1022,12 +1064,17 @@ components:
         response and a redelivered TaskCompleted (same CloudEvents id) is a
         no-op, so neither publishes again. `source_ref` is always present
         (`""` when none); on the task path it is the task's
-        `relocation_ref`, or its task id when the producer sent none.
+        `relocation_ref`, or its task id when the producer sent none. A
+        completed REPLENISH task (ADR 0041) reaches the same use case with
+        reason `REPLENISHMENT` and `source_ref` = the task's `request_ref`
+        (the replenishment request id; required, no task-id fallback), which
+        pick-face-replenishment matches to complete its request.
 
 
         **Integration topic only** (no analytics variant). Kafka key and
         CloudEvents `subject` are the relocation id (ADR 0021).
-        slotting-optimization consumes it to close a slot plan's move.
+        slotting-optimization consumes it to close a slot plan's move; it must
+        act only on `reason = SLOTTING`.
       contentType: application/cloudevents+json
       tags:
         - name: stock
@@ -1035,6 +1082,27 @@ components:
       payload:
         $ref: "#/components/schemas/StockRelocatedEvent"
       examples:
+        - name: replenishmentFromATask
+          summary: Twelve units of SKU-R1 moved from a reserve bin to the pick face by a completed REPLENISH task (ADR 0041).
+          payload:
+            specversion: "1.0"
+            id: 4d0f2b63-8c5e-4f29-b7a3-6e1c9d8f0a32
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.StockRelocated
+            subject: rel-45
+            time: "2026-10-17T12:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:StockRelocated:v1
+            data:
+              relocation_id: rel-45
+              site_code: WH1
+              sku: SKU-R1
+              from_bin: WH1-STOR-AMB-A01-01-01-A
+              to_bin: WH1-PICK-AMB-A02-01-01-A
+              quantity: 12
+              reason: REPLENISHMENT
+              source_ref: repl-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07
+              occurred_at: "2026-10-17T12:00:00Z"
         - name: slottingMoveFromATask
           summary: Seven units of SKU-R1 moved between two WH1 bins by a completed RELOCATE task.
           payload:
@@ -1089,9 +1157,11 @@ components:
 
         `reason` is `STOW`, `PICK`, `RELOCATE`, `REPLENISHMENT`, `COUNT`,
         `RESERVE`, `REVOKE` or `UNLOCATED`; consumers ignore values they do not
-        know. `REPLENISHMENT` is reserved for the relocation reason the later
-        pick-face replenishment change adds, and `UNLOCATED` for an unlocated
-        receive with a bin: neither is emitted today (a receive names no bin).
+        know. `REPLENISHMENT` is the reason of a relocation made by a completed
+        REPLENISH task (ADR 0041: two events, the source bin then the
+        destination bin, like RELOCATE), and `UNLOCATED` is reserved for an
+        unlocated receive with a bin: it is not emitted today (a receive names
+        no bin).
         A bin whose site cannot be determined (not registered, or neither a
         recorded site custody nor a facility-layout location code) raises no
         event.
@@ -1681,7 +1751,7 @@ components:
           enum: ["1.0"]
         id:
           type: string
-          description: CloudEvents id; the dedupe key (claimed in processed_events under consumer `task-completed-confirm-pick`, or `task-completed-relocate` for RELOCATE tasks).
+          description: CloudEvents id; the dedupe key (claimed in processed_events under consumer `task-completed-confirm-pick`, `task-completed-relocate` for RELOCATE tasks, or `task-completed-replenish` for REPLENISH tasks).
         source:
           type: string
           enum: ["/warehouse/fulfillment-execution"]
@@ -1709,8 +1779,8 @@ components:
               type: string
             task_type:
               type: string
-              enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE]
-              description: PICK and RELOCATE are acted on; omitted by the producer when the task could not be found.
+              enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH]
+              description: PICK, RELOCATE and REPLENISH are acted on; omitted by the producer when the task could not be found.
             order_ref:
               type: string
               description: >
@@ -1734,25 +1804,25 @@ components:
             sku:
               type: string
               description: >
-                RELOCATE only (additive, ADR 0039): the SKU moved. Required on a
-                RELOCATE completion (missing or invalid = dead-lettered); absent on
+                RELOCATE and REPLENISH only (additive, ADR 0039, ADR 0041): the SKU moved. Required on a
+                RELOCATE or REPLENISH completion (missing or invalid = dead-lettered); absent on
                 every other task type.
             from_bin:
               type: string
               description: >
-                RELOCATE only (additive, ADR 0039): the source bin's location code;
+                RELOCATE and REPLENISH only (additive): the source bin's location code;
                 its site is the move's site.
             to_bin:
               type: string
               description: >
-                RELOCATE only (additive, ADR 0039): the destination bin's location
+                RELOCATE and REPLENISH only (additive): the destination bin's location
                 code; must be a different bin of the same site.
             quantity:
               type: integer
               minimum: 1
               description: >
-                RELOCATE only (additive, ADR 0039): the units moved. Missing, zero
-                or negative on a RELOCATE completion = dead-lettered.
+                RELOCATE and REPLENISH only (additive): the units moved. Missing, zero
+                or negative on a RELOCATE or REPLENISH completion = dead-lettered.
             relocation_ref:
               type: string
               maxLength: 200
@@ -1760,6 +1830,14 @@ components:
                 RELOCATE only (additive, ADR 0039, optional): the slot-plan move the
                 task executes; stored as the relocation's source_ref (the task id
                 is used when absent).
+            request_ref:
+              type: string
+              maxLength: 200
+              description: >
+                REPLENISH only (additive, ADR 0041, REQUIRED): the pick-face
+                replenishment request id; stored as the relocation's source_ref
+                (reason REPLENISHMENT) and echoed in StockRelocated. Missing or
+                blank = dead-lettered; there is no task-id fallback.
 
     InboundReceivingReceiptLineReceivedEvent:
       type: object
@@ -2462,14 +2540,22 @@ components:
                   minimum: 1
                 reason:
                   type: string
-                  enum: [SLOTTING, CONSOLIDATION, MANUAL]
-                  description: Why the stock moved. A RELOCATE task is always SLOTTING (it executes a slot plan).
+                  enum: [SLOTTING, CONSOLIDATION, MANUAL, REPLENISHMENT]
+                  description: >-
+                    Why the stock moved. A RELOCATE task is always SLOTTING (it
+                    executes a slot plan). REPLENISHMENT (additive, ADR 0041) is
+                    set only by a completed REPLENISH task (pick-face
+                    replenishment) and never accepted from POST /relocations; its
+                    source_ref is the replenishment request id. Consumers that
+                    act only on SLOTTING must ignore other values.
                 source_ref:
                   type: string
                   maxLength: 200
                   description: >-
                     The caller's reference (a slot-plan move, the task's
-                    relocation_ref, or the task id); always present, "" when none.
+                    relocation_ref, or the task id; for REPLENISHMENT the
+                    replenishment request id, the REPLENISH task's request_ref);
+                    always present, "" when none.
                 occurred_at:
                   type: string
                   format: date-time
@@ -2536,7 +2622,8 @@ components:
                   enum: [STOW, PICK, RELOCATE, REPLENISHMENT, COUNT, RESERVE, REVOKE, UNLOCATED]
                   description: >-
                     What moved the level. Consumers ignore values they do not
-                    know. REPLENISHMENT and UNLOCATED are not emitted yet.
+                    know. UNLOCATED is not emitted yet; REPLENISHMENT is emitted by
+                    a completed REPLENISH task (ADR 0041).
                 occurred_at:
                   type: string
                   format: date-time
