@@ -49,6 +49,9 @@ type StowTransferStock struct {
 	Events     ports.EventPublisher
 	Clock      ports.Clock
 	UnitOfWork ports.UnitOfWork
+	// Levels raises BinStockLevelChanged (STOW) for every bin a leg fills,
+	// in the stow's transaction (ADR 0040). Optional: nil means "not emitted".
+	Levels *BinLevelEmitter
 }
 
 // StowBin is one requested destination placement: bin_id plus the
@@ -110,7 +113,7 @@ func (uc *StowTransferStock) Execute(ctx context.Context, lineID string, bins []
 	}
 
 	var decided *StowResult
-	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+	err = uc.Levels.Atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		return uc.decide(ctx, lineID, bins, &decided)
 	})
 	if err != nil {
@@ -255,6 +258,9 @@ func (uc *StowTransferStock) placeLeg(ctx context.Context, receipt *transfer.Rec
 		return transfer.StowLeg{}, err
 	}
 	if err := uc.Stock.Save(ctx, unit); err != nil {
+		return transfer.StowLeg{}, err
+	}
+	if err := uc.Levels.Track(ctx, shared.BinLevelStow, leg.bin.ID(), receipt.SKU()); err != nil {
 		return transfer.StowLeg{}, err
 	}
 	return transfer.StowLeg{StockUnitID: unit.ID(), BinID: leg.bin.ID(), Quantity: leg.qty}, nil

@@ -52,6 +52,33 @@ func TestItemStowed_CarriesFields(t *testing.T) {
 	}
 }
 
+func TestBinStockLevelChanged_CarriesAbsoluteLevelsAndVersion(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	sku, _ := NewSKU("SKU-1")
+	binID, _ := NewBinId("WH1-STOR-AMB-A01-01-01-A")
+
+	ev := NewBinStockLevelChanged(now, "WH1", binID, sku, 9, 4, 7, BinLevelPick)
+
+	if ev.EventName() != "BinStockLevelChanged" || !ev.OccurredAt().Equal(now) {
+		t.Fatalf("name/time wrong: %q %v", ev.EventName(), ev.OccurredAt())
+	}
+	if ev.SiteID != "WH1" || ev.BinID != binID || ev.SKU != sku || ev.OnHand != 9 || ev.Reserved != 4 || ev.Version != 7 || ev.Reason != BinLevelPick {
+		t.Fatalf("fields did not round-trip: %+v", ev)
+	}
+}
+
+func TestBinLevelReasons_AreTheWireValues(t *testing.T) {
+	want := map[BinLevelReason]string{
+		BinLevelStow: "STOW", BinLevelPick: "PICK", BinLevelRelocate: "RELOCATE", BinLevelReplenishment: "REPLENISHMENT",
+		BinLevelCount: "COUNT", BinLevelReserve: "RESERVE", BinLevelRevoke: "REVOKE", BinLevelUnlocated: "UNLOCATED",
+	}
+	for reason, wire := range want {
+		if string(reason) != wire {
+			t.Errorf("reason %q, want wire value %q", reason, wire)
+		}
+	}
+}
+
 func TestDiscrepancyDetected_CarriesFields(t *testing.T) {
 	now := time.Now()
 	binID, _ := NewBinId("A-1-1")

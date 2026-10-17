@@ -18,6 +18,9 @@ type RevokeReservation struct {
 	// UnitOfWork brackets every Save/Publish this use case makes
 	// atomically (ADR 0017). Optional: nil means "no transactional backing".
 	UnitOfWork ports.UnitOfWork
+	// Levels raises BinStockLevelChanged (REVOKE) for the released bins in
+	// the same transaction (ADR 0040). Optional: nil means "not emitted".
+	Levels *BinLevelEmitter
 }
 
 func (uc *RevokeReservation) Execute(ctx context.Context, reservationID string) error {
@@ -36,7 +39,7 @@ func (uc *RevokeReservation) Execute(ctx context.Context, reservationID string) 
 	// (expireIfDue already returned it to usable and raised
 	// ReservationExpired). An already-resolved reservation (Confirmed,
 	// Revoked, or Expired) passes through unchanged.
-	res, err = expireIfDue(ctx, uc.UnitOfWork, uc.Stock, uc.Reservations, uc.Events, uc.Clock, res)
+	res, err = expireIfDue(ctx, uc.UnitOfWork, uc.Levels, uc.Stock, uc.Reservations, uc.Events, uc.Clock, res)
 	if err != nil {
 		return err
 	}
@@ -45,8 +48,8 @@ func (uc *RevokeReservation) Execute(ctx context.Context, reservationID string) 
 		return err
 	}
 
-	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
-		if err := releaseAllocations(ctx, uc.Stock, res); err != nil {
+	err = uc.Levels.Atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		if err := releaseAllocations(ctx, uc.Stock, uc.Levels, res); err != nil {
 			return err
 		}
 

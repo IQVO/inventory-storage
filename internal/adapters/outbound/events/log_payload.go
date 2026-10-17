@@ -80,6 +80,18 @@ type discrepancyDetectedDTO struct {
 	SystemQty  int
 }
 
+// binStockLevelChangedDTO is the log shape of BinStockLevelChanged (ADR 0040).
+type binStockLevelChangedDTO struct {
+	eventHeaderDTO
+	SiteCode string
+	BinID    string
+	SKU      string
+	OnHand   int
+	Reserved int
+	Version  int64
+	Reason   string
+}
+
 // productClassifiedDTO deliberately has no eventName/occurredAt header: the
 // log shape of ProductClassified has always been its bare field set.
 type productClassifiedDTO struct {
@@ -119,6 +131,8 @@ func logPayload(event shared.DomainEvent) any {
 		return cycleCountCompletedDTO{headerOf(e), e.BinID.String(), e.CountedQty.Int(), e.SystemQty.Int(), e.Discrepancy}
 	case shared.DiscrepancyDetected:
 		return discrepancyDetectedDTO{headerOf(e), e.BinID.String(), e.CountedQty.Int(), e.SystemQty.Int()}
+	case shared.BinStockLevelChanged:
+		return binStockLevelChangedDTO{headerOf(e), e.SiteID.String(), e.BinID.String(), e.SKU.String(), e.OnHand.Int(), e.Reserved.Int(), e.Version, string(e.Reason)}
 	case product.ProductClassified:
 		return productClassifiedFor(e)
 	default:

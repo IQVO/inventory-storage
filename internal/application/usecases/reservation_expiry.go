@@ -40,7 +40,7 @@ import (
 // quantities to its stock units, persisting each unit. It is the shared
 // body of expiry and revocation, which both give a reservation's
 // allocation back to usable stock.
-func releaseAllocations(ctx context.Context, stock ports.StockRepo, res *reservation.Reservation) error {
+func releaseAllocations(ctx context.Context, stock ports.StockRepo, levels *BinLevelEmitter, res *reservation.Reservation) error {
 	for _, alloc := range res.Allocations() {
 		unit, err := stock.FindByID(ctx, alloc.StockUnitID)
 		if err != nil {
@@ -55,11 +55,14 @@ func releaseAllocations(ctx context.Context, stock ports.StockRepo, res *reserva
 		if err := stock.Save(ctx, unit); err != nil {
 			return err
 		}
+		if err := levels.Track(ctx, shared.BinLevelRevoke, unit.BinID(), unit.SKU()); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func expireIfDue(ctx context.Context, uow ports.UnitOfWork, stock ports.StockRepo, reservations ports.ReservationRepo, pub ports.EventPublisher, clock ports.Clock, res *reservation.Reservation) (*reservation.Reservation, error) {
+func expireIfDue(ctx context.Context, uow ports.UnitOfWork, levels *BinLevelEmitter, stock ports.StockRepo, reservations ports.ReservationRepo, pub ports.EventPublisher, clock ports.Clock, res *reservation.Reservation) (*reservation.Reservation, error) {
 	if res == nil || res.Status() != reservation.StatusActive {
 		return res, nil
 	}
@@ -69,8 +72,8 @@ func expireIfDue(ctx context.Context, uow ports.UnitOfWork, stock ports.StockRep
 		return res, nil
 	}
 
-	err := atomically(ctx, uow, func(ctx context.Context) error {
-		if err := releaseAllocations(ctx, stock, res); err != nil {
+	err := levels.Atomically(ctx, uow, func(ctx context.Context) error {
+		if err := releaseAllocations(ctx, stock, levels, res); err != nil {
 			return err
 		}
 
@@ -97,9 +100,9 @@ func expireIfDue(ctx context.Context, uow ports.UnitOfWork, stock ports.StockRep
 // reservation), rather than one scope for the whole batch — a later
 // reservation's expiry failing must not roll back an earlier one that
 // already committed.
-func expireAllIfDue(ctx context.Context, uow ports.UnitOfWork, stock ports.StockRepo, reservations ports.ReservationRepo, pub ports.EventPublisher, clock ports.Clock, results []*reservation.Reservation) ([]*reservation.Reservation, error) {
+func expireAllIfDue(ctx context.Context, uow ports.UnitOfWork, levels *BinLevelEmitter, stock ports.StockRepo, reservations ports.ReservationRepo, pub ports.EventPublisher, clock ports.Clock, results []*reservation.Reservation) ([]*reservation.Reservation, error) {
 	for i, res := range results {
-		updated, err := expireIfDue(ctx, uow, stock, reservations, pub, clock, res)
+		updated, err := expireIfDue(ctx, uow, levels, stock, reservations, pub, clock, res)
 		if err != nil {
 			return nil, err
 		}

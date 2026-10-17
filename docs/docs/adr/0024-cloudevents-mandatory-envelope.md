@@ -13,7 +13,8 @@ description: "ADR 0024 — every Kafka message inventory-storage produces or con
 
 **Accepted.** Fleet-wide standard (2026-09-30), applied to this service in
 the same change that introduces this record. Type catalogue extended by
-[ADR 0039](./0039-intra-site-relocation-stockrelocated-cloudevents.md) (`StockRelocated`). Supersedes
+[ADR 0039](./0039-intra-site-relocation-stockrelocated-cloudevents.md) (`StockRelocated`) and by
+[ADR 0040](./0040-bin-stock-level-changed-cloudevents.md) (`BinStockLevelChanged`). Supersedes
 [ADR 0004](./0004-kafka-integration-events.md)'s flat envelope and the
 "Envelope v1" (`schema_version`) of
 [ADR 0011](./0011-analytical-data-product.md). Every other decision in those
@@ -96,6 +97,7 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | transfer line id |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged` (ADR 0040) | `<bin>:<sku>` |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.product.ProductClassified` (backfill command only, ADR 0034) | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.StockReceived` | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | SKU |
