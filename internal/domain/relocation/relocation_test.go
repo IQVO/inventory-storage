@@ -95,6 +95,28 @@ func TestParseReason(t *testing.T) {
 	}
 }
 
+// REPLENISHMENT is a system-set reason: the aggregate accepts it, the
+// operator-facing parser (POST /relocations) does not.
+func TestReplenishmentReason_AcceptedByNewRejectedByParseReason(t *testing.T) {
+	spec := validSpec()
+	spec.Reason = ReasonReplenishment
+	spec.SourceRef = "req-1"
+	r, err := New(spec)
+	if err != nil {
+		t.Fatalf("New with REPLENISHMENT: %v", err)
+	}
+	if r.Reason() != ReasonReplenishment || string(r.Reason()) != "REPLENISHMENT" {
+		t.Fatalf("reason %q, want REPLENISHMENT", r.Reason())
+	}
+	if _, err := ParseReason("REPLENISHMENT"); !errors.Is(err, ErrUnknownReason) {
+		t.Fatalf("ParseReason must keep rejecting REPLENISHMENT, got %v", err)
+	}
+	spec.Reason = Reason("replenishment")
+	if _, err := New(spec); !errors.Is(err, ErrUnknownReason) {
+		t.Fatalf("reasons are case-sensitive, got %v", err)
+	}
+}
+
 // --- Apply ---------------------------------------------------------------------
 
 func unitAt(t *testing.T, id string, bin shared.BinId, qty, reserved int) *stock.StockUnit {
