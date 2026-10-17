@@ -432,8 +432,8 @@ func TestBinLevels_TransferStow_RaisesStowForEveryLegBin(t *testing.T) {
 	assertLevel(t, got[lvBinB], wantLevel{lvBinB, "SKU-T", 2, 0, 1, shared.BinLevelStow})
 }
 
-// The REPLENISHMENT reason is wired but cannot fire yet: no relocation can
-// carry that reason until the later pick-face replenishment change.
+// REPLENISHMENT is reachable since ADR 0041 (a completed REPLENISH task); the
+// end-to-end test is TestBinLevels_ReplenishTask_RaisesReplenishmentLevels….
 func TestBinLevels_RelocationReasonMapping(t *testing.T) {
 	cases := map[string]shared.BinLevelReason{
 		"SLOTTING":      shared.BinLevelRelocate,
