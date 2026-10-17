@@ -73,7 +73,7 @@ server with a 10 s drain; the projector cancels its consumer first.
 
 | Database | Files | Applied by | DSN used |
 | --- | --- | --- | --- |
-| OLTP | `migrations/*.sql` (golang-migrate, `0001`–`0008`, `0030`–`0035`) | `cmd/inventory` **and** `cmd/mcp`, at every start, before the pool opens | `MIGRATIONS_DATABASE_URL`, falling back to `DATABASE_URL` |
+| OLTP | `migrations/*.sql` (golang-migrate, `0001`–`0008`, `0030`–`0037`) | `cmd/inventory` **and** `cmd/mcp`, at every start, before the pool opens | `MIGRATIONS_DATABASE_URL`, falling back to `DATABASE_URL` |
 | Analytical | `migrations/analytics/*.sql` (`0001_report`) | `cmd/inventory-projector`, at every start | `ANALYTICS_DATABASE_URL` |
 
 There is no separate migration Job. golang-migrate serializes concurrent runs
@@ -87,7 +87,7 @@ Tables created by the OLTP migrations: `bins`, `stock_units`, `reservations`,
 `reservation_allocations`, `product_classifications`, `outbox_events`
 (`0005` drops the original `events` table of `0001`), `idempotency_keys`,
 `transfer_allocations`, `transfer_receipts`, `inventory_exceptions`,
-`processed_events`, `order_pick_progress`. Analytical tables:
+`processed_events`, `order_pick_progress`, `relocations` (`0036`, one immutable row per applied `RelocateStock`) and `bin_sku_levels` (`0037`, the per-(bin, SKU) version counter behind `BinStockLevelChanged`, bumped inside the ledger transaction). Analytical tables:
 `analytics_processed_events`, `analytics_consumed_events`,
 `flow_accuracy_rollup`. Column-level detail is on
 [Entity relationship](../ddd/entity-relationship.md).
