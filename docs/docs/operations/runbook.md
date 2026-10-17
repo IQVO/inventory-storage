@@ -73,7 +73,7 @@ server with a 10 s drain; the projector cancels its consumer first.
 
 | Database | Files | Applied by | DSN used |
 | --- | --- | --- | --- |
-| OLTP | `migrations/*.sql` (golang-migrate, `0001`–`0008`, `0030`–`0035`) | `cmd/inventory` **and** `cmd/mcp`, at every start, before the pool opens | `MIGRATIONS_DATABASE_URL`, falling back to `DATABASE_URL` |
+| OLTP | `migrations/*.sql` (golang-migrate, `0001`–`0008`, `0030`–`0037`) | `cmd/inventory` **and** `cmd/mcp`, at every start, before the pool opens | `MIGRATIONS_DATABASE_URL`, falling back to `DATABASE_URL` |
 | Analytical | `migrations/analytics/*.sql` (`0001_report`) | `cmd/inventory-projector`, at every start | `ANALYTICS_DATABASE_URL` |
 
 There is no separate migration Job. golang-migrate serializes concurrent runs
@@ -87,7 +87,7 @@ Tables created by the OLTP migrations: `bins`, `stock_units`, `reservations`,
 `reservation_allocations`, `product_classifications`, `outbox_events`
 (`0005` drops the original `events` table of `0001`), `idempotency_keys`,
 `transfer_allocations`, `transfer_receipts`, `inventory_exceptions`,
-`processed_events`, `order_pick_progress`. Analytical tables:
+`processed_events`, `order_pick_progress`, `relocations` (`0036`, one immutable row per applied `RelocateStock`) and `bin_sku_levels` (`0037`, the per-(bin, SKU) version counter behind `BinStockLevelChanged`, bumped inside the ledger transaction). Analytical tables:
 `analytics_processed_events`, `analytics_consumed_events`,
 `flow_accuracy_rollup`. Column-level detail is on
 [Entity relationship](../ddd/entity-relationship.md).
@@ -125,7 +125,7 @@ Payloads are on [Integration events](../api-reference/events.md).
 | `warehouse.network-inventory-planning.events` | `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` | `cmd/inventory`, `TRANSFER_ALLOCATION_CONSUMER_MODE=kafka` | `inventory-storage-transfer-allocation` (override `TRANSFER_ALLOCATION_CONSUMER_GROUP`) | transient errors retry the same message forever (200 ms → 5 s); poison is logged and committed past; no DLQ |
 | `warehouse.product-master.events` | `com.warehouse.wms.product-master.product.ProductClassified` | `cmd/inventory`, `PRODUCT_MASTER_CONSUMER_GROUP` set | the configured value (no default) | same as transfer; dedupe through `processed_events` |
 | `warehouse.inbound-receiving.events` | `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` | `cmd/inventory`, `INBOUND_RECEIPT_CONSUMER_GROUP` set | the configured value (no default) | same as transfer; dedupe through `processed_events` |
-| `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` (`task_type` `PICK` → confirm-pick, `RELOCATE` → relocation, ADR 0039) | `cmd/inventory`, `TASK_COMPLETED_CONSUMER_MODE=kafka` | `inventory-storage-confirm-pick` (override `TASK_COMPLETED_CONSUMER_GROUP`) | 5 attempts then DLQ; poison (incl. a RELOCATE the ledger can never apply) straight to `warehouse.fulfillment.events.dlq`; offset committed only after the DLQ write; dedupe through `processed_events` (`task-completed-confirm-pick` / `task-completed-relocate`) |
+| `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` (`task_type` `PICK` → confirm-pick, `RELOCATE` → relocation, ADR 0039; `REPLENISH` → `REPLENISHMENT` relocation, ADR 0041) | `cmd/inventory`, `TASK_COMPLETED_CONSUMER_MODE=kafka` | `inventory-storage-confirm-pick` (override `TASK_COMPLETED_CONSUMER_GROUP`) | 5 attempts then DLQ; poison (incl. a RELOCATE or REPLENISH the ledger can never apply, or a REPLENISH without `request_ref`) straight to `warehouse.fulfillment.events.dlq`; offset committed only after the DLQ write; dedupe through `processed_events` (`task-completed-confirm-pick` / `task-completed-relocate` / `task-completed-replenish`) |
 | `warehouse.inventory.analytics` | the analytics types above | `cmd/inventory-projector` | `inventory-analytics` | invalid CloudEvents are logged at WARN and skipped (no DLQ); dedupe through `analytics_consumed_events` |
 
 Every group-based consumer starts a **new** group at the earliest offset
@@ -289,6 +289,17 @@ stock, so the ledger is now out of step with the bins:
 Until fulfillment-execution sends the additive fields, every RELOCATE
 completion lands here with `malformed relocation task: sku: ...`; that is
 expected and needs no action.
+
+**A dead-lettered REPLENISH completion** (ADR 0041) is handled like the RELOCATE
+one above (same `malformed relocation task` prefix in `x-dlq-error`, same checks
+of the bins and usable stock), with two differences: a message
+`request_ref is missing` means the producer did not send the replenishment
+request id (there is no task-id fallback, because pick-face-replenishment
+closes a request by `source_ref == request id`), so fix the producer and
+re-produce the original value; and a manual `POST /relocations` is **not**
+possible (`reason` `REPLENISHMENT` is rejected there), so re-produce the value.
+Dedupe consumer name:
+`task-completed-replenish`. No new environment variable.
 
 ### Inspect stuck outbox rows
 

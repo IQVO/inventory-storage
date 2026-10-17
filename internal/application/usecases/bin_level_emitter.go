@@ -186,16 +186,11 @@ func (e *BinLevelEmitter) advance(ctx context.Context, pending []pendingLevel) (
 	return levels, nil
 }
 
-// replenishmentRelocationReason is the relocation reason the later
-// pick-face replenishment change introduces. No relocation can carry it
-// today (relocation.ParseReason rejects it), so REPLENISHMENT levels are never
-// emitted yet; the mapping below is the code path that change switches on.
-const replenishmentRelocationReason = "REPLENISHMENT"
-
 // relocationLevelReason maps a relocation's own reason to the level event's
-// reason: REPLENISHMENT stays REPLENISHMENT, every other reason is RELOCATE.
+// reason: REPLENISHMENT (a completed REPLENISH task, ADR 0041) stays
+// REPLENISHMENT, every other reason is RELOCATE.
 func relocationLevelReason(reason relocation.Reason) shared.BinLevelReason {
-	if string(reason) == replenishmentRelocationReason {
+	if reason == relocation.ReasonReplenishment {
 		return shared.BinLevelReplenishment
 	}
 	return shared.BinLevelRelocate

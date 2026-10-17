@@ -96,12 +96,14 @@ func buildTaskCompletedConsumer(
 	consumer := inboundkafka.NewTaskCompletedConsumer(cfg.kafkaBrokers, cfg.taskCompletedConsumerGroup, confirm, logger)
 	// RELOCATE completions (ADR 0039) ride the same consumer, group and DLQ.
 	consumer.Relocate = newApplyRelocationTask(set, clock, processed)
+	// REPLENISH completions (ADR 0041) ride the same consumer, group and DLQ.
+	consumer.Replenish = newApplyReplenishTask(set, clock, processed)
 	group := cfg.taskCompletedConsumerGroup
 	if group == "" {
 		group = inboundkafka.DefaultTaskCompletedConsumerGroup
 	}
 	logger.Info("task-completed confirm-pick consumer configured",
-		"mode", "kafka", "task_types", "PICK,RELOCATE", "topic", inboundkafka.FulfillmentTopic, "dlq_topic", inboundkafka.FulfillmentTopic+".dlq",
+		"mode", "kafka", "task_types", "PICK,RELOCATE,REPLENISH", "topic", inboundkafka.FulfillmentTopic, "dlq_topic", inboundkafka.FulfillmentTopic+".dlq",
 		"consumer_group", group, "overridden", cfg.taskCompletedConsumerGroup != "")
 
 	runDone := make(chan struct{})
@@ -128,6 +130,17 @@ func buildTaskCompletedConsumer(
 // CloudEvents id claimed in processed_events in the move's UnitOfWork.
 func newApplyRelocationTask(set adapterSet, clock ports.Clock, processed ports.ProcessedEventRepo) *usecases.ApplyRelocationTask {
 	return &usecases.ApplyRelocationTask{
+		Relocate:        newRelocateStock(set, clock),
+		ProcessedEvents: processed,
+		UnitOfWork:      set.uow,
+	}
+}
+
+// newApplyReplenishTask wires the REPLENISH branch of the TaskCompleted
+// consumer (ADR 0041): the same RelocateStock, with reason REPLENISHMENT, the
+// CloudEvents id claimed under its own consumer name in the move's UnitOfWork.
+func newApplyReplenishTask(set adapterSet, clock ports.Clock, processed ports.ProcessedEventRepo) *usecases.ApplyReplenishTask {
+	return &usecases.ApplyReplenishTask{
 		Relocate:        newRelocateStock(set, clock),
 		ProcessedEvents: processed,
 		UnitOfWork:      set.uow,
