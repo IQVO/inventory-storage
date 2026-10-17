@@ -170,6 +170,66 @@ func NewStockRelocated(occurredAt time.Time, relocationID string, siteID SiteID,
 	}
 }
 
+// BinLevelReason is the closed set of causes carried by BinStockLevelChanged
+// (ADR 0040). The values are wire-stable; consumers ignore values they do not
+// know.
+type BinLevelReason string
+
+const (
+	// BinLevelStow: stock was placed into the bin (stow, transfer stow).
+	BinLevelStow BinLevelReason = "STOW"
+	// BinLevelPick: a confirmed pick physically removed stock from the bin.
+	BinLevelPick BinLevelReason = "PICK"
+	// BinLevelRelocate: an intra-site relocation took stock out of, or put
+	// stock into, the bin.
+	BinLevelRelocate BinLevelReason = "RELOCATE"
+	// BinLevelReplenishment: a relocation whose own reason is REPLENISHMENT
+	// (raised by the later pick-face replenishment change; never emitted
+	// while no relocation can carry that reason).
+	BinLevelReplenishment BinLevelReason = "REPLENISHMENT"
+	// BinLevelCount: a cycle count marked part of the bin's stock unlocated.
+	BinLevelCount BinLevelReason = "COUNT"
+	// BinLevelReserve: stock in the bin was bound to a reservation.
+	BinLevelReserve BinLevelReason = "RESERVE"
+	// BinLevelRevoke: a revoked or expired reservation released stock in the bin.
+	BinLevelRevoke BinLevelReason = "REVOKE"
+	// BinLevelUnlocated: reserved on the wire for an unlocated receive; this
+	// service has no receive path that names a bin, so it is never emitted.
+	BinLevelUnlocated BinLevelReason = "UNLOCATED"
+)
+
+// BinStockLevelChanged: the absolute stock level of one SKU in one bin after a
+// ledger change (ADR 0040). OnHand is the quantity physically in the bin as
+// the ledger sees it (located, still-present units); Reserved is the part of it
+// bound to active reservations. Both are levels, never deltas. Version is the
+// persisted per-(bin, sku) counter that strictly increases with every event of
+// that pair, so a consumer keeps the highest and ignores lower ones.
+type BinStockLevelChanged struct {
+	base
+	SiteID   SiteID
+	BinID    BinId
+	SKU      SKU
+	OnHand   Quantity
+	Reserved Quantity
+	Version  int64
+	Reason   BinLevelReason
+}
+
+// NewBinStockLevelChanged builds the event; the caller resolved the levels and
+// the version inside the ledger change's transaction.
+func NewBinStockLevelChanged(occurredAt time.Time, siteID SiteID, binID BinId, sku SKU, onHand, reserved Quantity, version int64, reason BinLevelReason) BinStockLevelChanged {
+	return BinStockLevelChanged{
+		base:     newBase("BinStockLevelChanged", occurredAt),
+		SiteID:   siteID,
+		BinID:    binID,
+		SKU:      sku,
+		OnHand:   onHand,
+		Reserved: reserved,
+		Version:  version,
+		Reason:   reason,
+	}
+}
+
 // TransferStockAllocated: origin-site stock was reserved for a network
 // transfer line (command/reply leg of the transfer saga — the Reservation
 // aggregate holds the stock; this event carries the transfer correlation).

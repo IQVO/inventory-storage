@@ -119,6 +119,18 @@ type InboundReceiptMetrics interface {
 	InboundReceiptUnits(ctx context.Context, outcome string, units int)
 }
 
+// BinLevelLedger advances and reads the per-(bin, sku) level.
+type BinLevelLedger interface {
+	// Advance bumps the persisted version of (bin, sku) and returns it with
+	// the absolute levels read from the ledger AFTER the bump. It must be
+	// called inside the UnitOfWork of the ledger change that moved the
+	// level: the bump takes a row lock held until that transaction ends, so
+	// concurrent changes of the same pair are serialised, the levels read
+	// include every change committed before the lock was granted, and a
+	// rolled-back change rolls its bump back (versions stay gapless).
+	Advance(ctx context.Context, bin shared.BinId, sku shared.SKU) (shared.BinLevel, error)
+}
+
 // Clock abstracts current time so use cases and tests are deterministic.
 type Clock interface {
 	Now() time.Time
