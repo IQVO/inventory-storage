@@ -132,6 +132,7 @@ const sidebars: SidebarsConfig = {
         'adr/0037-stock-receipts-from-inbound-receiving',
         'adr/0038-outbox-relay-attempt-cap',
         'adr/0039-intra-site-relocation-stockrelocated-cloudevents',
+        'adr/0040-bin-stock-level-changed-cloudevents',
       ],
     },
   ],

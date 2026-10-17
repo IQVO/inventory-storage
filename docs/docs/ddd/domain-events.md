@@ -38,6 +38,7 @@ table, Kafka) is a composition-root decision.
 | `CycleCountCompleted` | Bin | Any cycle count finishes, clean or not | `binId`, `countedQty`, `systemQty`, `discrepancy` |
 | `DiscrepancyDetected` | Bin | A cycle count finds counted ≠ system | `binId`, `countedQty`, `systemQty` |
 | `StockRelocated` | Relocation | `RelocateStock` moves a quantity of one SKU between two bins of one site — from `POST /relocations` or, for a completed `RELOCATE` task, from `ApplyRelocationTask` ([ADR 0039](/docs/adr/0039)) | `relocationId`, `siteId`, `sku`, `fromBin`, `toBin`, `quantity`, `reason`, `sourceRef` |
+| `BinStockLevelChanged` | StockUnit ledger *(per bin and SKU)* | Any use case that moves a (bin, SKU) level, from the same transaction: stow, pick, relocate (source then destination), cycle-count shortfall, reserve, revoke / expiry ([ADR 0040](/docs/adr/0040)) | `siteId`, `binId`, `sku`, `onHand`, `reserved` (absolute levels), `version` (per bin and SKU), `reason` |
 | `ProductClassified` | ProductClassification | Legacy since [ADR 0034](/docs/adr/0034): raised by no write path; re-emitted only by the one-shot `republish-product-classifications` backfill | `sku`, `handlingTags`, `temperatureClass`, `dotHazardClass`; wire fields below |
 
 ## Which events flow where
@@ -58,27 +59,29 @@ flowchart LR
   BF["republish-product-classifications<br/>(backfill, ADR 0034)"] --> E11["ProductClassified"]
   TCR["TaskCompleted (consumed)<br/>RELOCATE (ADR 0039)"] --> ART["ApplyRelocationTask"] --> RLS["RelocateStock"]
   RLS --> E12["StockRelocated"]
+  LVL["every stock-moving use case<br/>(stow, pick, relocate, count, reserve, revoke)"] --> E13["BinStockLevelChanged"]
 
-  E4 & E5 & E11 & E12 --> KAF["warehouse.inventory.events<br/>integration topic"]
+  E4 & E5 & E11 & E12 & E13 --> KAF["warehouse.inventory.events<br/>integration topic"]
   E1 & E2 & E4 & E5 & E6 & E7 & E8 & E9 & E10 --> ANA["warehouse.inventory.analytics<br/>internal analytics topic"]
   E3 --> LOG["in-process only<br/>never leaves the service<br/>no consumer, decided 2026-10-06"]
 
   classDef wired fill:#0f766e,stroke:#134e4a,color:#fff;
   classDef local fill:#94a3b8,stroke:#475569,color:#0f172a;
-  class E4,E5,E11,E12,KAF wired;
+  class E4,E5,E11,E12,E13,KAF wired;
   class LOG local;
 ```
 
 **`StockReserved`, `ReservationRevoked` and the legacy `ProductClassified`
 are the integration events on the reservation and master-data paths** (plus
-the two transfer replies, [ADR 0030](/docs/adr/0030), and `StockRelocated` on
-the relocation path, [ADR 0039](/docs/adr/0039)); since
+the two transfer replies, [ADR 0030](/docs/adr/0030), `StockRelocated` on
+the relocation path, [ADR 0039](/docs/adr/0039), and `BinStockLevelChanged`,
+the per-bin absolute level feed, [ADR 0040](/docs/adr/0040)); since
 [ADR 0034](/docs/adr/0034) `ProductClassified` comes only from the one-shot
 backfill command, for product-master's legacy importer. The integration
 publisher's `Encode` returns nothing for every other event — deliberate, not
 an oversight: those are the published integration contract. Nine of the
-twelve events go to the internal analytics topic (`StockRelocated` does not:
-it is integration-only); `LocationRecorded` goes
+thirteen events go to the internal analytics topic (`StockRelocated` and
+`BinStockLevelChanged` do not: they are integration-only); `LocationRecorded` goes
 nowhere (no outbox row, no Kafka message — it has no consumer, so it stays
 in-process by decision). `apis/asyncapi.yaml` documents both channels, so a
 downstream team cannot mistake a documented analytics event for a wired
@@ -110,6 +113,7 @@ relayed by `cmd/inventory`.
 | TransferReceiptStaged | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | `warehouse.inventory.events` | transfer line id / transfer line id | `transfer_id`, `transfer_line_id`, `destination_site_id`, `sku`, `expected_quantity`, `received_quantity`, `variance` (signed, ADR 0033) | `StageTransferReceipt` | planning reconciliation (over/short is explicit, never absorbed) |
 | TransferStockStowed | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | `warehouse.inventory.events` | transfer line id / transfer line id | `transfer_id`, `transfer_line_id`, `destination_site_id`, `sku`, `received_quantity`, `stowed_quantity`, `allocations[]` (ADR 0033) | `StowTransferStock` | the only event that raises destination usable; `wes-work-planning` may project it |
 | StockRelocated | `com.warehouse.wms.inventory-storage.stock.StockRelocated` | `warehouse.inventory.events` | relocation id / relocation id | `relocation_id`, `site_code`, `sku`, `from_bin`, `to_bin`, `quantity`, `reason`, `source_ref` (always present, `""` when none), `occurred_at` ([ADR 0039](/docs/adr/0039)) | `RelocateStock` (`POST /relocations`, and `ApplyRelocationTask` on a RELOCATE `TaskCompleted`) | slotting-optimization (slot-plan execution progress, its ADR 0010) |
+| BinStockLevelChanged | `com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged` | `warehouse.inventory.events` | `<bin>:<sku>` / `<bin>:<sku>` | `site_code`, `bin`, `sku`, `on_hand`, `reserved` (absolute levels after the change), `version` (per bin and SKU, strictly increasing), `reason` (`STOW`/`PICK`/`RELOCATE`/`REPLENISHMENT`/`COUNT`/`RESERVE`/`REVOKE`/`UNLOCATED`), `occurred_at` ([ADR 0040](/docs/adr/0040)) | every stock-moving use case, from its own transaction: `StowStock`, `StowTransferStock`, `ConfirmPick`/`ConfirmPicksForOrder`, `RelocateStock`, `RunCycleCount` (shortfall), `ReserveStock`, `AllocateTransferStock`, `RevokeReservation` and lazy expiry | pick-face-replenishment (forward-slot minimum detection) |
 | LocationRecorded | — (not published; **decided 2026-10-06: stays in-process**, no consumer) | — | — | — | `StowStock` | none |
 | ProductClassified | `com.warehouse.wms.inventory-storage.product.ProductClassified` | `warehouse.inventory.events` | SKU / SKU | `sku`, `handling_tags`, `temperature_class?`, `dot_hazard_class?` (full-state replacement) | `RepublishProductClassifications` (one-shot backfill via the outbox, [ADR 0034](/docs/adr/0034)) | product-master's legacy importer |
 
