@@ -18,18 +18,19 @@ func buildServer(
 ) *inboundhttp.Server {
 	stockRepo, locationRepo, reservationRepo, classificationRepo := a.stock, a.locations, a.reservations, a.classifications
 	publisher, uow := a.publisher, a.uow
+	levels := a.levelEmitter(clock)
 	return &inboundhttp.Server{
 		ReceiveStock: &usecases.ReceiveStock{Events: publisher, Clock: clock, UnitOfWork: uow},
 		StowStock: &usecases.StowStock{
 			Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
-			Classifications: classificationRepo, LocationLookup: locationLookup, UnitOfWork: uow,
+			Classifications: classificationRepo, LocationLookup: locationLookup, UnitOfWork: uow, Levels: levels,
 		},
-		ReserveStock:               &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow},
-		RevokeReservation:          &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow},
-		ConfirmPick:                &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
+		ReserveStock:               &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow, Levels: levels},
+		RevokeReservation:          &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow, Levels: levels},
+		ConfirmPick:                &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow, Levels: levels},
 		GetUsable:                  &usecases.GetUsable{Stock: stockRepo},
-		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
-		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock, UnitOfWork: uow},
+		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow, Levels: levels},
+		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock, UnitOfWork: uow, Levels: levels},
 		RegisterBin:                &usecases.RegisterBin{Locations: locationRepo, UnitOfWork: uow},
 		GetBin:                     &usecases.GetBin{Locations: locationRepo},
 		StageTransferReceipt: &usecases.StageTransferReceipt{
@@ -47,6 +48,7 @@ func buildServer(
 			Events:     publisher,
 			Clock:      clock,
 			UnitOfWork: uow,
+			Levels:     levels,
 		},
 		RelocateStock:   newRelocateStock(a, clock),
 		GetRelocation:   &usecases.GetRelocation{Relocations: a.relocations},
@@ -69,6 +71,6 @@ func buildServer(
 func newRelocateStock(a adapterSet, clock ports.Clock) *usecases.RelocateStock {
 	return &usecases.RelocateStock{
 		Stock: a.stock, Locations: a.locations, Relocations: a.relocations,
-		Events: a.publisher, Clock: clock, UnitOfWork: a.uow,
+		Events: a.publisher, Clock: clock, UnitOfWork: a.uow, Levels: a.levelEmitter(clock),
 	}
 }

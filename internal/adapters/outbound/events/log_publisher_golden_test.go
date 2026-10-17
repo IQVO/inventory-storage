@@ -73,6 +73,7 @@ func goldenEvents(t *testing.T) map[string]shared.DomainEvent {
 		shared.NewItemUnlocated(at, "su-1", sku, bin, qty),
 		shared.NewCycleCountCompleted(at, bin, qty, system, true),
 		shared.NewDiscrepancyDetected(at, bin, qty, system),
+		shared.NewBinStockLevelChanged(at, "WH1", bin, sku, qty, mustQty(t, 2), 3, shared.BinLevelPick),
 		product.NewProductClassified(cls, at),
 	}
 	out := make(map[string]shared.DomainEvent, len(evs))

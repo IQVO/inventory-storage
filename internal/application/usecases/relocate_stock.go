@@ -42,12 +42,16 @@ type RelocateStock struct {
 	// UnitOfWork brackets every write atomically (ADR 0017). Optional: nil
 	// means "no transactional backing" (in-memory runs).
 	UnitOfWork ports.UnitOfWork
+	// Levels raises BinStockLevelChanged for the source bin, then the
+	// destination bin, in the move's transaction (ADR 0040). Optional: nil
+	// means "not emitted".
+	Levels *BinLevelEmitter
 }
 
 // Execute performs one relocation and returns the applied record.
 func (uc *RelocateStock) Execute(ctx context.Context, cmd RelocateStockCommand) (*relocation.Relocation, error) {
 	var applied *relocation.Relocation
-	err := atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+	err := uc.Levels.Atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		rel, err := uc.relocate(ctx, cmd)
 		applied = rel
 		return err
@@ -142,7 +146,20 @@ func (uc *RelocateStock) apply(ctx context.Context, rel *relocation.Relocation, 
 	if err := uc.Relocations.Save(ctx, rel); err != nil {
 		return err
 	}
+	if err := uc.trackLevels(ctx, rel); err != nil {
+		return err
+	}
 	return uc.Events.Publish(ctx, rel.Event())
+}
+
+// trackLevels records both bins whose level the move changed, the source
+// first: a relocation raises two BinStockLevelChanged, FROM then TO (ADR 0040).
+func (uc *RelocateStock) trackLevels(ctx context.Context, rel *relocation.Relocation) error {
+	reason := relocationLevelReason(rel.Reason())
+	if err := uc.Levels.Track(ctx, reason, rel.FromBin(), rel.SKU()); err != nil {
+		return err
+	}
+	return uc.Levels.Track(ctx, reason, rel.ToBin(), rel.SKU())
 }
 
 // saveBins saves both bins in ascending id order, so two opposite

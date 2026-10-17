@@ -76,6 +76,7 @@ func buildTaskCompletedConsumer(
 	}
 
 	clock := memory.SystemClock{}
+	levels := set.levelEmitter(clock)
 	processed := postgres.NewProcessedEventRepo(set.pool)
 	confirm := &usecases.ConfirmPicksForOrder{
 		Stock:        set.stock,
@@ -84,11 +85,12 @@ func buildTaskCompletedConsumer(
 		Clock:        clock,
 		Confirm: &usecases.ConfirmPick{
 			Stock: set.stock, Locations: set.locations, Reservations: set.reservations,
-			Events: set.publisher, Clock: clock, UnitOfWork: set.uow,
+			Events: set.publisher, Clock: clock, UnitOfWork: set.uow, Levels: levels,
 		},
 		ProcessedEvents: processed,
 		PickProgress:    postgres.NewOrderPickProgressRepo(set.pool),
 		UnitOfWork:      set.uow,
+		Levels:          levels,
 		Metrics:         metrics,
 	}
 	consumer := inboundkafka.NewTaskCompletedConsumer(cfg.kafkaBrokers, cfg.taskCompletedConsumerGroup, confirm, logger)

@@ -28,6 +28,10 @@ type RunCycleCount struct {
 	// UnitOfWork brackets every Save/Publish this use case makes
 	// atomically (ADR 0017). Optional: nil means "no transactional backing".
 	UnitOfWork ports.UnitOfWork
+	// Levels raises BinStockLevelChanged (COUNT) for every (bin, sku) whose
+	// units the shortfall marked unlocated, in the count's transaction (ADR
+	// 0040). Optional: nil means "not emitted".
+	Levels *BinLevelEmitter
 }
 
 func (uc *RunCycleCount) Execute(ctx context.Context, binID shared.BinId, countedQty shared.Quantity) (CycleCountResult, error) {
@@ -41,7 +45,7 @@ func (uc *RunCycleCount) Execute(ctx context.Context, binID shared.BinId, counte
 	now := uc.Clock.Now()
 	var result CycleCountResult
 
-	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+	err = uc.Levels.Atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		if countedQty == systemQty {
 			r, err := uc.complete(ctx, now, binID, countedQty, systemQty, false)
 			if err != nil {
@@ -120,6 +124,9 @@ func (uc *RunCycleCount) markShortfallUnlocated(ctx context.Context, binID share
 		}
 		unit.MarkUnlocated()
 		if err := uc.Stock.Save(ctx, unit); err != nil {
+			return err
+		}
+		if err := uc.Levels.Track(ctx, shared.BinLevelCount, binID, unit.SKU()); err != nil {
 			return err
 		}
 		if err := uc.Events.Publish(ctx, shared.NewItemUnlocated(now, unit.ID(), unit.SKU(), binID, take)); err != nil {

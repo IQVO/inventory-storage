@@ -174,6 +174,10 @@ func newRouter(mcpHandler http.Handler, serviceName string) http.Handler {
 type adapters struct {
 	stock        ports.StockRepo
 	reservations ports.ReservationRepo
+	// locations and binLevels back the BinStockLevelChanged a revocation
+	// raises (ADR 0040): site resolution and the per-(bin, sku) version.
+	locations ports.LocationRepo
+	binLevels ports.BinLevelLedger
 	// relocations backs the read-only get_relocation tool (ADR 0039).
 	relocations ports.RelocationRepo
 	publisher   ports.EventPublisher
@@ -181,6 +185,15 @@ type adapters struct {
 	// the use cases' atomically() helper treats as "run fn directly".
 	uow   ports.UnitOfWork
 	close func()
+}
+
+// levelEmitter builds the BinStockLevelChanged emitter over the FINAL
+// publisher, or nil when the adapters carry no level ledger.
+func (a adapters) levelEmitter(clock ports.Clock) *usecases.BinLevelEmitter {
+	if a.binLevels == nil || a.locations == nil {
+		return nil
+	}
+	return &usecases.BinLevelEmitter{Ledger: a.binLevels, Locations: a.locations, Events: a.publisher, Clock: clock}
 }
 
 // buildDeps wires the MCP tools' use cases over ad. RevokeReservation gets
@@ -192,7 +205,7 @@ func buildDeps(ad adapters, clock ports.Clock, metrics ports.ReservationMetrics)
 		GetUsable: &usecases.GetUsable{Stock: ad.stock},
 		RevokeReservation: &usecases.RevokeReservation{
 			Stock: ad.stock, Reservations: ad.reservations, Events: ad.publisher,
-			Clock: clock, Metrics: metrics, UnitOfWork: ad.uow,
+			Clock: clock, Metrics: metrics, UnitOfWork: ad.uow, Levels: ad.levelEmitter(clock),
 		},
 		Stock:         ad.stock,
 		GetRelocation: &usecases.GetRelocation{Relocations: ad.relocations},
@@ -228,8 +241,10 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migr
 	if databaseURL == "" {
 		logger.Info("database url not configured; using in-memory adapters")
 		reservationRepo := memory.NewReservationRepo()
+		stockRepo := memory.NewStockRepo()
 		ad := adapters{
-			stock: memory.NewStockRepo(), reservations: reservationRepo, relocations: memory.NewRelocationRepo(),
+			stock: stockRepo, reservations: reservationRepo, relocations: memory.NewRelocationRepo(),
+			locations: memory.NewLocationRepo(), binLevels: memory.NewBinLevelLedger(stockRepo),
 			publisher: events.NewLogPublisher(logger), close: noop,
 		}
 		if !kafkaMode {
@@ -274,6 +289,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migr
 	reservationRepo := postgres.NewReservationRepo(pool)
 	ad := adapters{
 		stock: stockRepo, reservations: reservationRepo,
+		locations: postgres.NewLocationRepo(pool), binLevels: postgres.NewBinLevelLedger(pool),
 		relocations: postgres.NewRelocationRepo(pool),
 		publisher:   events.NewLogPublisher(logger),
 		uow:         postgres.NewUnitOfWork(pool),

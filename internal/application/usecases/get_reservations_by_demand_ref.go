@@ -30,6 +30,10 @@ type GetReservationsByDemandRef struct {
 	// a timed-out reservation atomically (ADR 0017). Optional: nil means
 	// "no transactional backing".
 	UnitOfWork ports.UnitOfWork
+	// Levels raises BinStockLevelChanged (REVOKE) for the bins a lazily
+	// expired reservation releases (ADR 0040). Optional: nil means "not
+	// emitted".
+	Levels *BinLevelEmitter
 }
 
 func (uc *GetReservationsByDemandRef) Execute(ctx context.Context, demandRef string) ([]*reservation.Reservation, error) {
@@ -37,5 +41,5 @@ func (uc *GetReservationsByDemandRef) Execute(ctx context.Context, demandRef str
 	if err != nil {
 		return nil, err
 	}
-	return expireAllIfDue(ctx, uc.UnitOfWork, uc.Stock, uc.Reservations, uc.Events, uc.Clock, results)
+	return expireAllIfDue(ctx, uc.UnitOfWork, uc.Levels, uc.Stock, uc.Reservations, uc.Events, uc.Clock, results)
 }

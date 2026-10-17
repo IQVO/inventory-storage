@@ -14,6 +14,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
+	"github.com/claudioed/inventory-storage/internal/application/usecases"
 )
 
 // shutdownDrainTimeout bounds how long graceful shutdown (ADR-0020
@@ -57,6 +58,20 @@ type adapterSet struct {
 	// relocations is the intra-site relocation record repo (ADR 0039),
 	// same Postgres/in-memory selection as the other repos.
 	relocations ports.RelocationRepo
+	// binLevels advances and reads the per-(bin, sku) level behind
+	// BinStockLevelChanged (ADR 0040), same Postgres/in-memory selection.
+	binLevels ports.BinLevelLedger
+}
+
+// levelEmitter builds the BinStockLevelChanged emitter over the adapter set's
+// FINAL publisher (the outbox publisher once Kafka publishing is wired), so
+// every level event leaves through the same path as the other domain events.
+// Call it only after buildAdapters has returned.
+func (a adapterSet) levelEmitter(clock ports.Clock) *usecases.BinLevelEmitter {
+	if a.binLevels == nil {
+		return nil
+	}
+	return &usecases.BinLevelEmitter{Ledger: a.binLevels, Locations: a.locations, Events: a.publisher, Clock: clock}
 }
 
 // buildAdapters wires the Postgres adapters when DATABASE_URL is set, or
@@ -100,6 +115,7 @@ func buildRepos(ctx context.Context, databaseURL, migrationsDatabaseURL, migrati
 		transferReceipts:    postgres.NewTransferReceiptRepo(pool),
 		inventoryExceptions: postgres.NewInventoryExceptionRepo(pool),
 		relocations:         postgres.NewRelocationRepo(pool),
+		binLevels:           postgres.NewBinLevelLedger(pool),
 		// UnitOfWork brackets every use case's Save(s) + Publish(es) in
 		// one Postgres transaction (ADR 0017). It is safe to hand out
 		// even when eventPublisher="log": OutboxPublisher is only ever
@@ -116,8 +132,9 @@ func buildRepos(ctx context.Context, databaseURL, migrationsDatabaseURL, migrati
 // without a database.
 func memoryAdapters(logger *slog.Logger) adapterSet {
 	logger.Info("database url not configured; using in-memory adapters")
+	stockRepo := memory.NewStockRepo()
 	return adapterSet{
-		stock:               memory.NewStockRepo(),
+		stock:               stockRepo,
 		locations:           memory.NewLocationRepo(),
 		reservations:        memory.NewReservationRepo(),
 		classifications:     memory.NewProductClassificationRepo(),
@@ -126,6 +143,7 @@ func memoryAdapters(logger *slog.Logger) adapterSet {
 		transferReceipts:    memory.NewTransferReceiptRepo(),
 		inventoryExceptions: memory.NewInventoryExceptionRepo(),
 		relocations:         memory.NewRelocationRepo(),
+		binLevels:           memory.NewBinLevelLedger(stockRepo),
 		close:               func() {},
 	}
 }
