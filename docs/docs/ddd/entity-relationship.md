@@ -8,7 +8,8 @@ description: The final OLTP and analytical Postgres schemas of inventory-storage
 # Entity-Relationship Diagram
 
 The schema after applying `migrations/0001`…`0008`, `0033` (`processed_events`),
-`0034` (`order_pick_progress`) and `0035` (`reservations.line_no`) (OLTP database,
+`0034` (`order_pick_progress`), `0035` (`reservations.line_no`), `0036` (`relocations`) and `0037`
+(`bin_sku_levels`) (OLTP database,
 `DATABASE_URL`) and `migrations/analytics/0001` (analytical database,
 `ANALYTICS_DATABASE_URL`) in order. Relationship lines are drawn **only**
 where a real `FOREIGN KEY` (`REFERENCES`) exists in the migrations.
@@ -92,6 +93,26 @@ erDiagram
         INTEGER picked_tasks "completed PICK tasks, one per order line"
         TIMESTAMPTZ updated_at "indexed, what the sweeper ages out"
     }
+    relocations {
+        TEXT id PK "one row per applied RelocateStock, immutable (ADR 0039)"
+        TEXT site_code
+        TEXT sku
+        TEXT from_bin "no FK, CHECK from_bin <> to_bin"
+        TEXT to_bin "no FK"
+        INTEGER quantity "CHECK quantity > 0"
+        TEXT reason
+        TEXT source_ref "default empty, indexed when set"
+        JSONB legs "source contributions [{stock_unit_id, quantity}]"
+        TEXT destination_stock_unit_id "no FK"
+        TIMESTAMPTZ occurred_at
+        TIMESTAMPTZ created_at
+    }
+    bin_sku_levels {
+        TEXT bin_id PK "no FK"
+        TEXT sku PK
+        BIGINT version "CHECK version >= 1, rides every BinStockLevelChanged (ADR 0040)"
+        TIMESTAMPTZ updated_at
+    }
 
     bins ||--o{ stock_units : "bin_id"
     reservations ||--|{ reservation_allocations : "reservation_id"
@@ -101,7 +122,8 @@ erDiagram
 Source: `migrations/0001_init.up.sql` … `migrations/0008_reservation_allocation_bin_id.up.sql`,
 plus `0033_product_master_local_copy.up.sql` (`processed_events`),
 `0034_order_pick_progress.up.sql` (`order_pick_progress`, ADR 0035) and
-`0035_reservation_line_no.up.sql` (`reservations.line_no`, ADR 0036);
+`0035_reservation_line_no.up.sql` (`reservations.line_no`, ADR 0036),
+`0036_relocations.up.sql` (`relocations`, ADR 0039) and `0037_bin_sku_levels.up.sql` (`bin_sku_levels`, ADR 0040);
 `schema_migrations` is created by golang-migrate (`internal/adapters/outbound/postgres/migrate.go`).
 Omitted: the `events` table created by `0001` — `0005` drops it, so it is
 not part of the final schema — and the tables and columns that migrations
