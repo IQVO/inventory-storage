@@ -18,7 +18,7 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api-reference/rest/receive-stock",
           label: "Acknowledge inbound stock for a SKU",
-          className: "api-method post",
+          className: "menu__list-item--deprecated api-method post",
         },
         {
           type: "doc",
@@ -70,7 +70,7 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api-reference/rest/confirm-pick",
           label: "Confirm a reservation's physical pick",
-          className: "api-method post",
+          className: "menu__list-item--deprecated api-method post",
         },
       ],
     },
