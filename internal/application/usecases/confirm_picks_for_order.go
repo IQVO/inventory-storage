@@ -143,6 +143,12 @@ type ConfirmPicksForOrder struct {
 	// UnitOfWork brackets the claim and all confirmations. Optional: nil
 	// means "no transactional backing" (in-memory runs).
 	UnitOfWork ports.UnitOfWork
+	// Levels is the outermost bracket of the claim and every confirmation, so
+	// an order that picks several lines from one (bin, sku) raises ONE
+	// BinStockLevelChanged for it with the final level (ADR 0040). The
+	// confirm use case must carry the same emitter. Optional: nil means "not
+	// emitted".
+	Levels *BinLevelEmitter
 	// Metrics counts per-reservation outcomes after commit. Optional.
 	Metrics ports.PickConfirmationMetrics
 }
@@ -162,7 +168,7 @@ func (uc *ConfirmPicksForOrder) Execute(ctx context.Context, in PickCompletion) 
 	}
 
 	var result ConfirmPicksResult
-	err := atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+	err := uc.Levels.Atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		// The closure may run again on a retried transaction: start clean.
 		result = ConfirmPicksResult{}
 
@@ -327,7 +333,7 @@ func (uc *ConfirmPicksForOrder) settle(ctx context.Context, res *reservation.Res
 	// resolved here exactly as any other read would (stock returned to usable,
 	// ReservationExpired raised) and then skipped, not confirmed.
 	if res.IsExpired(uc.Clock.Now()) {
-		if _, err := expireIfDue(ctx, uc.UnitOfWork, uc.Stock, uc.Reservations, uc.Events, uc.Clock, res); err != nil {
+		if _, err := expireIfDue(ctx, uc.UnitOfWork, uc.Levels, uc.Stock, uc.Reservations, uc.Events, uc.Clock, res); err != nil {
 			return err
 		}
 		result.Expired++

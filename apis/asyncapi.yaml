@@ -49,7 +49,8 @@ info:
     **What reaches Kafka.** This document is the complete domain-event
     catalog for the bounded context. Two topics carry a subset of it:
     `warehouse.inventory.events` (the integration contract — `StockReserved`,
-    `ReservationRevoked`, the transfer replies, the transfer receipt/stow events, and the legacy
+    `ReservationRevoked`, the transfer replies, the transfer receipt/stow events,
+    `BinStockLevelChanged` (the per-bin absolute level feed, ADR 0040), and the legacy
     `ProductClassified`, from
     `internal/adapters/outbound/kafka/publisher.go`) and
     `warehouse.inventory.analytics` (the analytics data product — every
@@ -154,7 +155,8 @@ channels:
       constant in `internal/adapters/outbound/kafka/publisher.go`). Reaching
       it: `StockReserved` and `ReservationRevoked` (keyed by reservation
       id), the transfer replies and receipt/stow events (keyed by transfer line id),
-      `StockRelocated` (keyed by relocation id, ADR 0039), and the legacy `ProductClassified`
+      `StockRelocated` (keyed by relocation id, ADR 0039), `BinStockLevelChanged`
+      (keyed by `<bin>:<sku>`, ADR 0040), and the legacy `ProductClassified`
       (keyed by SKU), which since ADR 0034 only the one-shot
       `republish-product-classifications` backfill emits (product-master's
       legacy importer consumes it). The primary downstream consumer is
@@ -182,6 +184,7 @@ channels:
           - $ref: "#/components/messages/TransferReceiptStaged"
           - $ref: "#/components/messages/TransferStockStowed"
           - $ref: "#/components/messages/StockRelocated"
+          - $ref: "#/components/messages/BinStockLevelChanged"
           - $ref: "#/components/messages/ProductClassified"
 
   warehouse.inventory.analytics:
@@ -1053,6 +1056,79 @@ components:
               reason: SLOTTING
               source_ref: plan-9#3
               occurred_at: "2026-10-13T12:00:00Z"
+
+    BinStockLevelChanged:
+      name: BinStockLevelChanged
+      title: Bin Stock Level Changed
+      summary: The absolute stock level of one SKU in one bin after a ledger change — on hand, reserved, and a per-(bin, sku) version.
+      description: >-
+        Raised from the SAME transaction as every ledger change that moves
+        the level of a SKU in a bin (ADR 0040), through the transactional
+        outbox: stow and transfer stow (`STOW`), a confirmed pick (`PICK`), a
+        relocation or RELOCATE task (`RELOCATE`: two events, the source bin
+        then the destination bin), a cycle-count shortfall (`COUNT`), a
+        reservation or transfer allocation (`RESERVE`), and a revoked or
+        expired reservation (`REVOKE`). One event per distinct (bin, sku) per
+        transaction, carrying the FINAL level after the whole transaction: an
+        order whose lines pick the same (bin, sku) raises it once. Nothing is
+        raised when the level did not change (idempotent replays, rejected
+        commands).
+
+
+        `on_hand` and `reserved` are ABSOLUTE levels after the change, never
+        deltas. `on_hand` is the quantity physically in the bin as the ledger
+        sees it (located, still-present units: units a cycle count marked
+        unlocated, and fully picked-out units, are not counted);
+        `reserved` is the part of it bound to active reservations, so
+        `on_hand - reserved` is what a new reservation could still draw from
+        the bin. `version` is the persisted per-(bin, sku) counter, strictly
+        increasing and gapless across restarts and concurrent changes: a
+        consumer keeps the highest version it has seen for a (bin, sku) and
+        ignores any lower one.
+
+
+        `reason` is `STOW`, `PICK`, `RELOCATE`, `REPLENISHMENT`, `COUNT`,
+        `RESERVE`, `REVOKE` or `UNLOCATED`; consumers ignore values they do not
+        know. `REPLENISHMENT` is reserved for the relocation reason the later
+        pick-face replenishment change adds, and `UNLOCATED` for an unlocated
+        receive with a bin: neither is emitted today (a receive names no bin).
+        A bin whose site cannot be determined (not registered, or neither a
+        recorded site custody nor a facility-layout location code) raises no
+        event.
+
+
+        **Integration topic only** (no analytics variant). Kafka key and
+        CloudEvents `subject` are `<bin>:<sku>`, so every level of one pair
+        lands on one partition in version order (ADR 0021).
+        pick-face-replenishment consumes it to detect a forward pick slot
+        below its minimum.
+      contentType: application/cloudevents+json
+      tags:
+        - name: stock
+          description: Raised by every ledger change that moves a bin level (ADR 0040).
+      payload:
+        $ref: "#/components/schemas/BinStockLevelChangedEvent"
+      examples:
+        - name: pickLeavesTheForwardSlotLow
+          summary: A confirmed pick left 12 units of SKU-1 in a forward bin, 5 of them reserved.
+          payload:
+            specversion: "1.0"
+            id: 0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged
+            subject: WH1-STOR-AMB-A01-01-01-A:SKU-1
+            time: "2026-08-21T22:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:BinStockLevelChanged:v1
+            data:
+              site_code: WH1
+              bin: WH1-STOR-AMB-A01-01-01-A
+              sku: SKU-1
+              on_hand: 12
+              reserved: 5
+              version: 7
+              reason: PICK
+              occurred_at: "2026-08-21T22:00:00Z"
 
     ReservationExpired:
       name: ReservationExpired
@@ -2394,6 +2470,73 @@ components:
                   description: >-
                     The caller's reference (a slot-plan move, the task's
                     relocation_ref, or the task id); always present, "" when none.
+                occurred_at:
+                  type: string
+                  format: date-time
+
+    BinStockLevelChangedEvent:
+      description: CloudEvents envelope for a BinStockLevelChanged domain event (ADR 0040).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for BinStockLevelChanged.
+              const: "com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged"
+            subject:
+              type: string
+              description: The Kafka key too, `<bin>:<sku>`.
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:BinStockLevelChanged:v1
+              pattern: "^urn:warehouse:inventory-storage:events:BinStockLevelChanged:v1$"
+            data:
+              type: object
+              description: >-
+                Business payload for BinStockLevelChanged (v1, frozen).
+                `on_hand` and `reserved` are the absolute levels of `sku` in
+                `bin` after the change.
+              required:
+                - site_code
+                - bin
+                - sku
+                - on_hand
+                - reserved
+                - version
+                - reason
+                - occurred_at
+              properties:
+                site_code:
+                  type: string
+                  description: The site the bin belongs to (recorded custody, else the site segment of its location code).
+                bin:
+                  type: string
+                  description: The bin's location code.
+                sku:
+                  type: string
+                on_hand:
+                  type: integer
+                  minimum: 0
+                  description: Units physically in the bin after the change (located, still-present units).
+                reserved:
+                  type: integer
+                  minimum: 0
+                  description: The part of on_hand bound to active reservations (never above on_hand).
+                version:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  description: Per-(bin, sku) strictly increasing counter; keep the highest, ignore lower.
+                reason:
+                  type: string
+                  enum: [STOW, PICK, RELOCATE, REPLENISHMENT, COUNT, RESERVE, REVOKE, UNLOCATED]
+                  description: >-
+                    What moved the level. Consumers ignore values they do not
+                    know. REPLENISHMENT and UNLOCATED are not emitted yet.
                 occurred_at:
                   type: string
                   format: date-time

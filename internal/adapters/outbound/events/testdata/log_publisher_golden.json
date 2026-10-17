@@ -1,4 +1,15 @@
 {
+  "BinStockLevelChanged": {
+    "eventName": "BinStockLevelChanged",
+    "occurredAt": "2026-08-21T22:00:00Z",
+    "SiteCode": "WH1",
+    "BinID": "A-1-1",
+    "SKU": "SKU-1",
+    "OnHand": 5,
+    "Reserved": 2,
+    "Version": 3,
+    "Reason": "PICK"
+  },
   "CycleCountCompleted": {
     "eventName": "CycleCountCompleted",
     "occurredAt": "2026-08-21T22:00:00Z",

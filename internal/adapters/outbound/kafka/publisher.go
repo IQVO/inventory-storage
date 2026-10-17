@@ -187,6 +187,42 @@ func newStockRelocatedData(e shared.StockRelocated) stockRelocatedData {
 	}
 }
 
+// binStockLevelChangedData is the `data` payload for BinStockLevelChanged
+// (v1, frozen — ADR 0040). on_hand and reserved are ABSOLUTE levels after the
+// change, version the per-(bin, sku) counter, reason one of STOW | PICK |
+// RELOCATE | REPLENISHMENT | COUNT | RESERVE | REVOKE | UNLOCATED.
+// pick-face-replenishment decodes exactly these field names.
+type binStockLevelChangedData struct {
+	SiteCode   string    `json:"site_code"`
+	Bin        string    `json:"bin"`
+	SKU        string    `json:"sku"`
+	OnHand     int       `json:"on_hand"`
+	Reserved   int       `json:"reserved"`
+	Version    int64     `json:"version"`
+	Reason     string    `json:"reason"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+func newBinStockLevelChangedData(e shared.BinStockLevelChanged) binStockLevelChangedData {
+	return binStockLevelChangedData{
+		SiteCode:   e.SiteID.String(),
+		Bin:        e.BinID.String(),
+		SKU:        e.SKU.String(),
+		OnHand:     e.OnHand.Int(),
+		Reserved:   e.Reserved.Int(),
+		Version:    e.Version,
+		Reason:     string(e.Reason),
+		OccurredAt: e.OccurredAt().UTC(),
+	}
+}
+
+// binLevelKey is the Kafka key and CloudEvents subject of a
+// BinStockLevelChanged: "<bin>:<sku>", so every level of one (bin, sku)
+// lands on one partition in version order (ADR 0021, ADR 0040).
+func binLevelKey(e shared.BinStockLevelChanged) string {
+	return e.BinID.String() + ":" + e.SKU.String()
+}
+
 // Publisher publishes StockReserved and ReservationRevoked domain events as
 // integration events on Topic. It satisfies both ports.EventPublisher
 // (direct publish) and kafka.Encoder (used by postgres.OutboxPublisher to
@@ -236,7 +272,7 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 	case shared.StockReserved, shared.ReservationRevoked,
 		shared.TransferStockAllocated, shared.TransferStockAllocationRejected,
 		shared.TransferReceiptStaged, shared.TransferStockStowed,
-		shared.StockRelocated,
+		shared.StockRelocated, shared.BinStockLevelChanged,
 		product.ProductClassified:
 		return true
 	default:
@@ -391,9 +427,23 @@ func encodeEvent(ctx context.Context, p *Publisher, event shared.DomainEvent) (d
 		key = e.RelocationID
 		entity = stockEntity
 	default:
-		return nil, "", "", nil
+		return encodeLevelEvent(event)
 	}
 	return data, key, entity, nil
+}
+
+// encodeLevelEvent maps BinStockLevelChanged onto its wire data payload, Kafka
+// key and entity segment (the only event of the per-bin level feed, split out
+// of encodeEvent to keep that switch small). Key = subject = "<bin>:<sku>":
+// every level of one (bin, sku) stays ordered on one partition, so a consumer
+// that keeps the highest version sees them in order (ADR 0021, ADR 0040). Any
+// other event is outside this publisher's contract (nil data, nil error).
+func encodeLevelEvent(event shared.DomainEvent) (data any, key, entity string, err error) {
+	e, ok := event.(shared.BinStockLevelChanged)
+	if !ok {
+		return nil, "", "", nil
+	}
+	return newBinStockLevelChangedData(e), binLevelKey(e), stockEntity, nil
 }
 
 // transferLegsOut maps domain allocation legs onto their wire shape.

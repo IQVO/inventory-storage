@@ -18,6 +18,10 @@ type ConfirmPick struct {
 	// UnitOfWork brackets every Save/Publish this use case makes
 	// atomically (ADR 0017). Optional: nil means "no transactional backing".
 	UnitOfWork ports.UnitOfWork
+	// Levels raises BinStockLevelChanged (PICK) for every bin the pick
+	// emptied, in the same transaction (ADR 0040). Optional: nil means
+	// "not emitted".
+	Levels *BinLevelEmitter
 }
 
 func (uc *ConfirmPick) Execute(ctx context.Context, reservationID string) error {
@@ -35,7 +39,7 @@ func (uc *ConfirmPick) Execute(ctx context.Context, reservationID string) error 
 	// and ReservationExpired raised — Confirm(now) below then correctly
 	// rejects it via ErrAlreadyResolved rather than never discovering the
 	// timeout at all.
-	res, err = expireIfDue(ctx, uc.UnitOfWork, uc.Stock, uc.Reservations, uc.Events, uc.Clock, res)
+	res, err = expireIfDue(ctx, uc.UnitOfWork, uc.Levels, uc.Stock, uc.Reservations, uc.Events, uc.Clock, res)
 	if err != nil {
 		return err
 	}
@@ -45,7 +49,7 @@ func (uc *ConfirmPick) Execute(ctx context.Context, reservationID string) error 
 		return err
 	}
 
-	return atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+	return uc.Levels.Atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		for _, alloc := range res.Allocations() {
 			if err := uc.pickFromBin(ctx, alloc.StockUnitID, alloc.Quantity); err != nil {
 				return err
@@ -77,6 +81,9 @@ func (uc *ConfirmPick) pickFromBin(ctx context.Context, stockUnitID string, qty 
 		return err
 	}
 	if err := uc.Stock.Save(ctx, unit); err != nil {
+		return err
+	}
+	if err := uc.Levels.Track(ctx, shared.BinLevelPick, binID, unit.SKU()); err != nil {
 		return err
 	}
 

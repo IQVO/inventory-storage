@@ -43,6 +43,9 @@ type StowStock struct {
 	// UnitOfWork brackets every Save and Publish below atomically (ADR
 	// 0017). Optional: nil means "no transactional backing".
 	UnitOfWork ports.UnitOfWork
+	// Levels raises BinStockLevelChanged (STOW) for the bin in the same
+	// transaction (ADR 0040). Optional: nil means "not emitted".
+	Levels *BinLevelEmitter
 }
 
 func (uc *StowStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Quantity, binID shared.BinId) (*stock.StockUnit, error) {
@@ -76,11 +79,14 @@ func (uc *StowStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Qua
 	}
 
 	now := uc.Clock.Now()
-	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+	err = uc.Levels.Atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		if err := uc.Locations.Save(ctx, bin); err != nil {
 			return err
 		}
 		if err := uc.Stock.Save(ctx, unit); err != nil {
+			return err
+		}
+		if err := uc.Levels.Track(ctx, shared.BinLevelStow, binID, sku); err != nil {
 			return err
 		}
 		if err := uc.Events.Publish(ctx, shared.NewItemStowed(now, sku, binID, qty)); err != nil {

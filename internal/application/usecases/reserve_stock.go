@@ -30,6 +30,10 @@ type ReserveStock struct {
 	// atomically (ADR 0017), including the ones expireAllIfDue/expireIfDue
 	// make internally. Optional: nil means "no transactional backing".
 	UnitOfWork ports.UnitOfWork
+	// Levels raises BinStockLevelChanged (RESERVE, and REVOKE for lazily
+	// expired reservations) in the same transaction (ADR 0040). Optional:
+	// nil means "not emitted".
+	Levels *BinLevelEmitter
 }
 
 func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Quantity, demandRef string) (*reservation.Reservation, error) {
@@ -89,9 +93,12 @@ func (uc *ReserveStock) ExecuteForLine(ctx context.Context, sku shared.SKU, qty 
 	// left the stock decremented with no reservation holding it.
 	// Atomicity therefore does not depend on an outer transaction (e.g.
 	// the HTTP idempotency middleware's) already being on ctx.
-	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+	err = uc.Levels.Atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		for _, unit := range touched {
 			if err := uc.Stock.Save(ctx, unit); err != nil {
+				return err
+			}
+			if err := uc.Levels.Track(ctx, shared.BinLevelReserve, unit.BinID(), sku); err != nil {
 				return err
 			}
 		}
@@ -154,7 +161,7 @@ func (uc *ReserveStock) activeReservationFor(ctx context.Context, demandRef stri
 	// caller retrying against a demandRef whose only "active" match has
 	// actually timed out must fall through to a genuine new reservation
 	// attempt, not be handed back an expired one as if it were live.
-	existing, err = expireAllIfDue(ctx, uc.UnitOfWork, uc.Stock, uc.Reservations, uc.Events, uc.Clock, existing)
+	existing, err = expireAllIfDue(ctx, uc.UnitOfWork, uc.Levels, uc.Stock, uc.Reservations, uc.Events, uc.Clock, existing)
 	if err != nil {
 		return nil, err
 	}

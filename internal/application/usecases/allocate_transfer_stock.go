@@ -39,6 +39,10 @@ type AllocateTransferStock struct {
 	Clock        ports.Clock
 	Timeout      time.Duration
 	UnitOfWork   ports.UnitOfWork
+	// Levels raises BinStockLevelChanged (RESERVE) for the bins a held
+	// allocation draws from, in the decision's transaction (ADR 0040).
+	// Optional: nil means "not emitted".
+	Levels *BinLevelEmitter
 }
 
 // ErrMalformedTransferCommand marks a command that failed validation
@@ -115,7 +119,7 @@ func (uc *AllocateTransferStock) Execute(ctx context.Context, cmd TransferComman
 	// path, which falls through to the ledger re-read below.
 	var decided *Result
 
-	err := atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+	err := uc.Levels.Atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		// Re-check inside the transaction: a concurrent duplicate may
 		// have inserted the ledger row between the outer read and here.
 		existing, err := uc.Transfers.FindByTransferLineID(ctx, cmd.TransferLineID)
@@ -191,6 +195,9 @@ func (uc *AllocateTransferStock) decideNew(ctx context.Context, cmd TransferComm
 	// ledger row + the reply event's outbox row: one transaction.
 	for _, unit := range touched {
 		if err := uc.Stock.Save(ctx, unit); err != nil {
+			return err
+		}
+		if err := uc.Levels.Track(ctx, shared.BinLevelReserve, unit.BinID(), cmd.SKU); err != nil {
 			return err
 		}
 	}
