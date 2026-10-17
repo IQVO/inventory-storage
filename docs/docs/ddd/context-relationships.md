@@ -83,7 +83,8 @@ service, but it is the downstream customer of this service's REST OHS.
 `network-fulfillment` reads `GET /inventory/{sku}/usable`, and
 `warehouse-ops-agent` reads `GET /reservations?demandRef=`, the Flow &
 Accuracy report and two MCP read tools — the same OHS, omitted from the
-diagram for legibility; the one-shot legacy `ProductClassified` backfill
+diagram for legibility; the legacy `ProductClassified` backfill (retired at
+stage E, 2026-10-17)
 towards product-master is omitted too. See the
 [Context Map](/docs/ecosystem/context-map) for every wire. No sibling reads
 `GET /products/{sku}/classification` any more (deprecated, [ADR 0034](/docs/adr/0034)).
@@ -158,10 +159,11 @@ version-guarded local copy in `product_classifications`
 `PRODUCT_MASTER_CONSUMER_GROUP`). `StowStock`'s hazmat/temperature placement
 (ADR 0009) and same-bin DOT segregation (ADR 0010) read that copy and stay
 owned here — co-locating goods in a bin is still this context's job.
-`PUT /products/{sku}/classification` answers `410 classification-moved`; the
-`GET` is deprecated. The edge back is migration-only: the legacy
-`com.warehouse.wms.inventory-storage.product.ProductClassified` is emitted
-solely by the one-shot `republish-product-classifications` backfill, which
+`PUT` and `GET /products/{sku}/classification` were removed at stage E
+(2026-10-17). The edge back was migration-only: the legacy
+`com.warehouse.wms.inventory-storage.product.ProductClassified` was emitted
+solely by the one-shot `republish-product-classifications` backfill (retired
+at stage E, 2026-10-17), which
 product-master's legacy importer translates (product-master ADR 0003 stage B).
 
 ### inventory-storage ↔ workforce-management — **no relationship**

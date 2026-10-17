@@ -2,7 +2,6 @@ package product
 
 import (
 	"testing"
-	"time"
 
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
@@ -282,36 +281,6 @@ func TestRehydrate_ReconstructsWithoutValidation(t *testing.T) {
 		t.Fatalf("expected DOTHazardClass=4, got %v", c.DOTHazardClass())
 	}
 }
-
-func TestNewProductClassified_CarriesFieldsAndOccurredAt(t *testing.T) {
-	c, err := New(mustSKU(t, "SKU-1"), []HandlingTag{Hazmat, TemperatureSensitive}, Frozen, 3)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	occurredAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	event := NewProductClassified(c, occurredAt)
-
-	if event.EventName() != "ProductClassified" {
-		t.Fatalf("expected EventName=ProductClassified, got %s", event.EventName())
-	}
-	if !event.OccurredAt().Equal(occurredAt) {
-		t.Fatalf("expected OccurredAt=%v, got %v", occurredAt, event.OccurredAt())
-	}
-	if event.SKU != c.SKU() {
-		t.Fatalf("expected SKU=%v, got %v", c.SKU(), event.SKU)
-	}
-	if event.TemperatureClass != Frozen {
-		t.Fatalf("expected TemperatureClass=Frozen, got %v", event.TemperatureClass)
-	}
-	if event.DOTHazardClass != 3 {
-		t.Fatalf("expected DOTHazardClass=3, got %v", event.DOTHazardClass)
-	}
-	if len(event.HandlingTags) != 2 {
-		t.Fatalf("expected 2 handling tags, got %d (%v)", len(event.HandlingTags), event.HandlingTags)
-	}
-}
-
-var _ shared.DomainEvent = ProductClassified{}
 
 // ParseDOTHazardClass accepts exactly the 1-9 range: both edges are valid,
 // and the values just outside them are rejected. Pins the boundaries so a

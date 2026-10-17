@@ -3,7 +3,6 @@ package events
 import (
 	"time"
 
-	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
@@ -92,16 +91,6 @@ type binStockLevelChangedDTO struct {
 	Reason   string
 }
 
-// productClassifiedDTO deliberately has no eventName/occurredAt header: the
-// log shape of ProductClassified has always been its bare field set.
-type productClassifiedDTO struct {
-	SKU              string
-	HandlingTags     []string
-	TemperatureClass string
-	DOTHazardClass   int
-	At               time.Time
-}
-
 func headerOf(e shared.DomainEvent) eventHeaderDTO {
 	return eventHeaderDTO{EventName: e.EventName(), OccurredAt: e.OccurredAt()}
 }
@@ -133,27 +122,7 @@ func logPayload(event shared.DomainEvent) any {
 		return discrepancyDetectedDTO{headerOf(e), e.BinID.String(), e.CountedQty.Int(), e.SystemQty.Int()}
 	case shared.BinStockLevelChanged:
 		return binStockLevelChangedDTO{headerOf(e), e.SiteID.String(), e.BinID.String(), e.SKU.String(), e.OnHand.Int(), e.Reserved.Int(), e.Version, string(e.Reason)}
-	case product.ProductClassified:
-		return productClassifiedFor(e)
 	default:
 		return headerOf(event)
-	}
-}
-
-func productClassifiedFor(e product.ProductClassified) productClassifiedDTO {
-	// Preserve nil-ness: the original encoding rendered a nil slice as null.
-	var tags []string
-	if e.HandlingTags != nil {
-		tags = make([]string, len(e.HandlingTags))
-		for i, t := range e.HandlingTags {
-			tags[i] = string(t)
-		}
-	}
-	return productClassifiedDTO{
-		SKU:              e.SKU.String(),
-		HandlingTags:     tags,
-		TemperatureClass: string(e.TemperatureClass),
-		DOTHazardClass:   int(e.DOTHazardClass),
-		At:               e.At,
 	}
 }

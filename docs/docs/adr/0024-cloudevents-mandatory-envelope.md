@@ -98,7 +98,6 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged` (ADR 0040) | `<bin>:<sku>` |
-| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.product.ProductClassified` (backfill command only, ADR 0034) | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.StockReceived` | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | stock unit id |
@@ -111,7 +110,8 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | _(none: in-process only, never published)_ | `com.warehouse.wms.inventory-storage.stock.LocationRecorded` | _n/a_ |
 
 `ProductClassified` (`internal/domain/product`), entity segment `product`
-(`com.warehouse.wms.inventory-storage.product.ProductClassified`), was
+(`com.warehouse.wms.inventory-storage.product.ProductClassified`), retired at
+product-master ADR 0003 stage E (2026-10-17), was
 published on both topics by ADR 0031. Since
 [ADR 0034](./0034-product-master-owns-classification.md) it is emitted only by
 the one-shot `republish-product-classifications` backfill, on
@@ -162,7 +162,6 @@ com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned   -> i
 com.warehouse.wms.facility-layout.zone.ZoneRegistered                       -> inventory-storage
 com.warehouse.wms.product-master.product.ProductClassified                  -> inventory-storage (ADR 0034)
 com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived             -> inventory-storage (ADR 0037)
-com.warehouse.wms.inventory-storage.product.ProductClassified               -> product-master (legacy importer, backfill only)
 com.warehouse.wms.inventory-storage.reservation.StockReserved               -> wes-work-planning
 com.warehouse.wms.inventory-storage.reservation.ReservationRevoked          -> wes-work-planning
 com.warehouse.wes.order-management.order.OrderAllocated                     -> wes-work-planning

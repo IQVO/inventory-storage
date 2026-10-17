@@ -137,15 +137,6 @@ type binResponse struct {
 	Available int    `json:"available"`
 }
 
-type productClassificationResponse struct {
-	SKU              string   `json:"sku"`
-	HandlingTags     []string `json:"handlingTags"`
-	TemperatureClass string   `json:"temperatureClass,omitempty"`
-	// DOTHazardClass is omitted from the response entirely when
-	// unspecified, rather than serialized as 0 — 0 is not a valid class.
-	DOTHazardClass *int `json:"dotHazardClass,omitempty"`
-}
-
 // problemDetails is the RFC 7807 (Problem Details for HTTP APIs) response
 // body used for every error response in this service.
 type problemDetails struct {

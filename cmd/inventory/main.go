@@ -14,7 +14,6 @@
 //	productmaster.go product-master classification consumer (ADR 0034)
 //	inboundreceipt.go inbound-receiving receipt consumer (ADR 0037)
 //	confirmpick.go  TaskCompleted confirm-pick consumer (ADR 0035)
-//	republish.go    republish-product-classifications one-shot subcommand
 //	server.go       use-case + HTTP server wiring
 //	shutdown.go     signal handling and graceful drain
 package main
@@ -32,11 +31,6 @@ import (
 )
 
 func main() {
-	// A subcommand (e.g. republish-product-classifications, ADR 0034) runs
-	// once and exits instead of starting the service.
-	if len(os.Args) > 1 {
-		os.Exit(runCommand(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
-	}
 	if err := run(); err != nil {
 		slog.Error("service exited with error", "error", err)
 		os.Exit(1)

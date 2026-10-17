@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
-	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
@@ -57,11 +56,6 @@ func goldenEvents(t *testing.T) map[string]shared.DomainEvent {
 	qty := mustQty(t, 5)
 	system := mustQty(t, 7)
 
-	cls, err := product.New(sku, []product.HandlingTag{product.Hazmat, product.TemperatureSensitive}, product.Chilled, 3)
-	if err != nil {
-		t.Fatalf("product.New: %v", err)
-	}
-
 	evs := []shared.DomainEvent{
 		shared.NewStockReceived(at, sku, qty),
 		shared.NewItemStowed(at, sku, bin, qty),
@@ -74,7 +68,6 @@ func goldenEvents(t *testing.T) map[string]shared.DomainEvent {
 		shared.NewCycleCountCompleted(at, bin, qty, system, true),
 		shared.NewDiscrepancyDetected(at, bin, qty, system),
 		shared.NewBinStockLevelChanged(at, "WH1", bin, sku, qty, mustQty(t, 2), 3, shared.BinLevelPick),
-		product.NewProductClassified(cls, at),
 	}
 	out := make(map[string]shared.DomainEvent, len(evs))
 	for _, e := range evs {

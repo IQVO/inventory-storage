@@ -21,7 +21,7 @@ Dependencies are plain struct fields, wired once per binary in
 | 5 | `ConfirmPick` | `POST /reservations/{id}/confirm-pick` | — | `StockPicked` (+ `ReservationExpired` via lazy expiry) |
 | 6 | `GetUsable` | `GET /inventory/{sku}/usable` | `check_availability`, resource `inventory://{sku}/usable` | — (read model) |
 | 7 | `RunCycleCount` | `POST /bins/{binId}/cycle-count` | — | `CycleCountCompleted`, `DiscrepancyDetected`, `ItemUnlocated` |
-| 8 | `ApplyProductClassification` | — (Kafka: `warehouse.product-master.events`, ADR 0034; `PUT /products/{sku}/classification` is 410) | — | — (local copy; `ProductClassified` only from the backfill command) |
+| 8 | `ApplyProductClassification` | — (Kafka: `warehouse.product-master.events`, ADR 0034) | — | — (local copy) |
 | 9 | `GetReservationsByDemandRef` | `GET /reservations?demandRef=` | — | `ReservationExpired` via lazy expiry only |
 | 10 | `RegisterBin` | `PUT /bins/{binId}` | — | — (local topology master data, ADR 0025) |
 | 11 | `GetBin` | `GET /bins/{binId}` | — | — (read) |
@@ -35,7 +35,8 @@ Dependencies are plain struct fields, wired once per binary in
 | 19 | `GetRelocation` | `GET /relocations/{id}` | `get_relocation` | — (read) |
 | 20 | `ApplyReplenishTask` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted` with `task_type=REPLENISH`, ADR 0041) | — | `StockRelocated` (reason `REPLENISHMENT`, `source_ref` = `request_ref`) and two `BinStockLevelChanged` through `RelocateStock` |
 
-(`RepublishProductClassifications`, the one-shot `republish-product-classifications`
+(`RepublishProductClassifications`, the one-shot backfill retired at stage E
+(2026-10-17), `republish-product-classifications`
 backfill subcommand, is covered under #8 rather than tabulated: it is a maintenance
 command, not an operation trigger.)
 
