@@ -95,7 +95,13 @@ func skuOnHandAt(t *testing.T, pool *pgxpool.Pool, bin shared.BinId) int {
 	return total
 }
 
-func relocatedOutboxRows(t *testing.T, pool *pgxpool.Pool) []classifiedOutboxRow {
+// outboxRow is one outbox_events row as the integration tests read it.
+type outboxRow struct {
+	topic, key string
+	value      []byte
+}
+
+func relocatedOutboxRows(t *testing.T, pool *pgxpool.Pool) []outboxRow {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
 		`SELECT topic, key, value FROM outbox_events WHERE event_type = $1 ORDER BY id`, stockRelocatedType)
@@ -103,9 +109,9 @@ func relocatedOutboxRows(t *testing.T, pool *pgxpool.Pool) []classifiedOutboxRow
 		t.Fatalf("query outbox: %v", err)
 	}
 	defer rows.Close()
-	var out []classifiedOutboxRow
+	var out []outboxRow
 	for rows.Next() {
-		var r classifiedOutboxRow
+		var r outboxRow
 		var key []byte
 		if err := rows.Scan(&r.topic, &key, &r.value); err != nil {
 			t.Fatalf("scan: %v", err)

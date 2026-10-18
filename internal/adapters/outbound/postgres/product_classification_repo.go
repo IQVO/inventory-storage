@@ -74,34 +74,6 @@ func (r *ProductClassificationRepo) FindBySKU(ctx context.Context, sku shared.SK
 	return rehydrateClassification(sku, rawTags, temperatureClass, dotHazardClass), nil
 }
 
-// ListAfter returns up to limit rows whose sku sorts strictly after
-// afterSKU, in sku order (keyset pagination on the primary key).
-func (r *ProductClassificationRepo) ListAfter(ctx context.Context, afterSKU shared.SKU, limit int) ([]*product.ProductClassification, error) {
-	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT sku, handling_tags, temperature_class, dot_hazard_class
-		FROM product_classifications
-		WHERE sku > $1
-		ORDER BY sku
-		LIMIT $2
-	`, afterSKU.String(), limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []*product.ProductClassification
-	for rows.Next() {
-		var rawSKU, temperatureClass string
-		var rawTags []string
-		var dotHazardClass *int
-		if err := rows.Scan(&rawSKU, &rawTags, &temperatureClass, &dotHazardClass); err != nil {
-			return nil, err
-		}
-		out = append(out, rehydrateClassification(shared.SKU(rawSKU), rawTags, temperatureClass, dotHazardClass))
-	}
-	return out, rows.Err()
-}
-
 func rehydrateClassification(sku shared.SKU, rawTags []string, temperatureClass string, dotHazardClass *int) *product.ProductClassification {
 	tags := make([]product.HandlingTag, 0, len(rawTags))
 	for _, raw := range rawTags {

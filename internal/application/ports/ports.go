@@ -174,15 +174,6 @@ type ProductClassificationLocalCopy interface {
 	ApplyIfNewer(ctx context.Context, c *product.ProductClassification, version int64, source string) (bool, error)
 }
 
-// ProductClassificationCatalogue pages through every stored classification
-// in SKU order. Only the one-shot republish-product-classifications backfill
-// uses it (ADR 0034, stage B).
-type ProductClassificationCatalogue interface {
-	// ListAfter returns up to limit classifications whose SKU sorts
-	// strictly after afterSKU (afterSKU "" starts from the beginning).
-	ListAfter(ctx context.Context, afterSKU shared.SKU, limit int) ([]*product.ProductClassification, error)
-}
-
 // ProcessedEventRepo records which inbound CloudEvents a consumer has
 // already applied, so at-least-once delivery has an exactly-once effect.
 type ProcessedEventRepo interface {

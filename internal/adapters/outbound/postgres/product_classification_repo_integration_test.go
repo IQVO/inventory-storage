@@ -102,40 +102,6 @@ func TestPostgres_ProductClassification_FindBySKU_UnknownReturnsNil(t *testing.T
 	}
 }
 
-// ListAfter pages the table in SKU order (keyset on the primary key).
-func TestPostgres_ProductClassification_ListAfterPages(t *testing.T) {
-	pool := outboxDB(t)
-	ctx := context.Background()
-	repo := postgres.NewProductClassificationRepo(pool)
-	for _, raw := range []string{"LA-C", "LA-A", "LA-B"} {
-		c, _ := product.New(shared.SKU(raw), []product.HandlingTag{product.Fragile}, "", 0)
-		if _, err := repo.ApplyIfNewer(ctx, c, 1, "native"); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	page1, err := repo.ListAfter(ctx, "", 2)
-	if err != nil || len(page1) != 2 || page1[0].SKU() != "LA-A" || page1[1].SKU() != "LA-B" {
-		t.Fatalf("page1 = %v err=%v", skus(page1), err)
-	}
-	page2, err := repo.ListAfter(ctx, page1[1].SKU(), 2)
-	if err != nil || len(page2) != 1 || page2[0].SKU() != "LA-C" || !page2[0].HasTag(product.Fragile) {
-		t.Fatalf("page2 = %v err=%v", skus(page2), err)
-	}
-	page3, err := repo.ListAfter(ctx, page2[0].SKU(), 2)
-	if err != nil || len(page3) != 0 {
-		t.Fatalf("page3 = %v err=%v, want empty", skus(page3), err)
-	}
-}
-
-func skus(cs []*product.ProductClassification) []shared.SKU {
-	out := make([]shared.SKU, 0, len(cs))
-	for _, c := range cs {
-		out = append(out, c.SKU())
-	}
-	return out
-}
-
 func TestPostgres_ProcessedEvents_ClaimOnce(t *testing.T) {
 	pool := outboxDB(t)
 	ctx := context.Background()

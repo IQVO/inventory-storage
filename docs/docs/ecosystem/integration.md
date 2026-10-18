@@ -33,7 +33,6 @@ each edge behaves when the other side fails, as implemented here.
 | --- | --- | --- |
 | wes-work-planning | Kafka `warehouse.inventory.events`: `StockReserved`, `ReservationRevoked` | Outbox: a broker outage delays events (relay retries the oldest row) but never loses or reorders them per key. |
 | network-inventory-planning | Kafka `warehouse.inventory.events`: `TransferStockAllocated`, `TransferStockAllocationRejected`, `TransferReceiptStaged`, `TransferStockStowed` | Same outbox guarantee. |
-| product-master | Kafka `warehouse.inventory.events`: legacy `product.ProductClassified`, only from the re-publish backfill | Same. |
 | order-management | REST `POST /reservations` (`Idempotency-Key`), `DELETE /reservations/{id}` | Synchronous: `409 insufficient-usable` / `concurrent-modification`, `422 idempotency-key-reused`. A retried POST with the same key and body replays the stored response. |
 | network-fulfillment | REST `GET /inventory/{sku}/usable` | Read-only; no side effects. |
 | warehouse-ops-agent | REST `GET /reservations?demandRef=`; reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP `check_availability`, `get_bin_occupancy` ([MCP tools](../mcp/tools.md)) | Read-only. MCP sessions are per process; reports reflect the projector's lag. |
@@ -50,10 +49,10 @@ facility-layout lookup. Every route, topic and group is also on the
 | | |
 | --- | --- |
 | **Topic** | `warehouse.inventory.events` |
-| **Events** | `StockReserved`, `ReservationRevoked`, the transfer replies (ADR 0030, ADR 0033), and the legacy `ProductClassified` from the one-shot backfill only ([ADR 0034](/docs/adr/0034)) |
+| **Events** | `StockReserved`, `ReservationRevoked`, the transfer replies (ADR 0030, ADR 0033); the legacy `ProductClassified` was retired at product-master ADR 0003 stage E (2026-10-17) |
 | **Client library** | `github.com/segmentio/kafka-go` |
 | **Balancer** | `Hash` (message key = reservation id, [ADR 0021](/docs/adr/0021-kafka-producer-partition-key)), `AllowAutoTopicCreation: true` |
-| **Consumers today** | `wes-work-planning` (`StockReserved`, `ReservationRevoked`); `network-inventory-planning` (the transfer replies); product-master's legacy importer (the backfill's `ProductClassified`, product-master ADR 0003 stage B) |
+| **Consumers today** | `wes-work-planning` (`StockReserved`, `ReservationRevoked`); `network-inventory-planning` (the transfer replies) |
 
 ## What this service consumes
 
@@ -127,7 +126,7 @@ stored one. Every other product-master type is committed past; a message that
 is not a valid CloudEvent, or breaks the classification invariants, is logged
 and committed past. The copy is what `StowStock` reads for its placement and
 DOT segregation rules. `PUT /products/{sku}/classification` answers
-`410 classification-moved`; `GET /products/{sku}/classification` is
+`410 classification-moved` — both retired at stage E (2026-10-17); `GET /products/{sku}/classification` was
 deprecated and served from the copy. See [ADR 0034](/docs/adr/0034).
 
 | Env var | Default | Purpose |
@@ -259,8 +258,8 @@ If you are building another consumer:
    is the contract and is Spectral-linted in CI.
 2. **The integration topic carries `StockReserved`, `ReservationRevoked`
    and the transfer replies (ADR 0030, ADR 0033), plus the legacy
-   `ProductClassified` that only the one-shot backfill emits
-   ([ADR 0034](/docs/adr/0034)).** Do not build on `ProductClassified` here:
+   `ProductClassified` (retired at stage E, 2026-10-17,
+   [ADR 0034](/docs/adr/0034)).** Do not build on `ProductClassified` here:
    product classification is owned by product-master, so read
    `com.warehouse.wms.product-master.product.ProductClassified` from
    `warehouse.product-master.events` instead. `warehouse.inventory.analytics` is internal to this

@@ -4,10 +4,9 @@
 //
 // Only the reservation-lifecycle events (StockReserved, ReservationRevoked),
 // the transfer replies, and the receipt/stow facts (ADR 0030, ADR 0033) are
-// part of the published integration contract; the legacy ProductClassified
-// (ADR 0031) is emitted only by the one-shot republish-product-classifications
-// backfill since ADR 0034 handed SKU master data to product-master (see CLAUDE.md's
-// Cross-service integration section and apis/asyncapi.yaml); every other
+// part of the published integration contract (see apis/asyncapi.yaml); the
+// legacy ProductClassified (ADR 0031) was retired at product-master ADR 0003
+// stage E (2026-10-17); every other
 // domain event is a local concern and is not forwarded here.
 package kafka
 
@@ -26,7 +25,6 @@ import (
 
 	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
-	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
@@ -39,11 +37,6 @@ const Topic = "warehouse.inventory.events"
 // AllocateTransferStock replies on its stock-holding path — see
 // apis/asyncapi.yaml).
 const reservationEntity = "reservation"
-
-// productEntity is the `<entity>` segment for ProductClassified, raised by
-// the ProductClassification master-data aggregate (ADR 0033, ADR 0024's
-// reserved name).
-const productEntity = "product"
 
 // stockEntity is the `<entity>` segment for the destination receipt/stow
 // custody events (ADR 0033): TransferReceiptStaged and TransferStockStowed
@@ -106,33 +99,6 @@ type transferRejectedData struct {
 	SKU               string `json:"sku"`
 	RequestedQuantity int    `json:"requested_quantity"`
 	Reason            string `json:"reason"`
-}
-
-// productClassifiedData is the `data` payload for ProductClassified on BOTH
-// topics (v1; ADR 0033). It is the SKU master-data classification as a
-// full-state replacement: a consumer keeping a local copy overwrites its
-// row with this, and an absent optional field means "none". No PII — SKU
-// handling attributes only.
-type productClassifiedData struct {
-	SKU              string   `json:"sku"`
-	HandlingTags     []string `json:"handling_tags"`
-	TemperatureClass string   `json:"temperature_class,omitempty"`
-	DOTHazardClass   int      `json:"dot_hazard_class,omitempty"`
-}
-
-// newProductClassifiedData maps the domain event to its wire payload.
-// HandlingTags arrive in the aggregate's stable enum order.
-func newProductClassifiedData(e product.ProductClassified) productClassifiedData {
-	tags := make([]string, 0, len(e.HandlingTags))
-	for _, tag := range e.HandlingTags {
-		tags = append(tags, string(tag))
-	}
-	return productClassifiedData{
-		SKU:              e.SKU.String(),
-		HandlingTags:     tags,
-		TemperatureClass: string(e.TemperatureClass),
-		DOTHazardClass:   int(e.DOTHazardClass),
-	}
 }
 
 // receiptStagedData is the `data` payload for TransferReceiptStaged
@@ -272,8 +238,7 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 	case shared.StockReserved, shared.ReservationRevoked,
 		shared.TransferStockAllocated, shared.TransferStockAllocationRejected,
 		shared.TransferReceiptStaged, shared.TransferStockStowed,
-		shared.StockRelocated, shared.BinStockLevelChanged,
-		product.ProductClassified:
+		shared.StockRelocated, shared.BinStockLevelChanged:
 		return true
 	default:
 		return false
@@ -384,13 +349,6 @@ func encodeEvent(ctx context.Context, p *Publisher, event shared.DomainEvent) (d
 		// Key = subject = transfer_line_id: a rejection has no
 		// reservation, so the line is the aggregate the reply is about.
 		key = e.TransferLineID
-	case product.ProductClassified:
-		data = newProductClassifiedData(e)
-		// Key = subject = SKU: reclassifications of one SKU stay ordered
-		// on one partition, so a consumer's local copy converges on the
-		// last write (ADR-0021).
-		entity = productEntity
-		key = e.SKU.String()
 	case shared.TransferReceiptStaged:
 		data = receiptStagedData{
 			TransferID:        e.TransferID,

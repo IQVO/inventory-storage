@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"sort"
 	"sync"
 
 	"github.com/claudioed/inventory-storage/internal/domain/product"
@@ -69,28 +68,6 @@ func (r *ProductClassificationRepo) VersionOf(sku shared.SKU) (version int64, so
 	defer r.mu.RUnlock()
 	row, ok := r.rows[sku]
 	return row.version, row.source, ok
-}
-
-// ListAfter returns up to limit classifications with SKU > afterSKU, in SKU
-// order.
-func (r *ProductClassificationRepo) ListAfter(_ context.Context, afterSKU shared.SKU, limit int) ([]*product.ProductClassification, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	skus := make([]shared.SKU, 0, len(r.rows))
-	for sku := range r.rows {
-		if sku > afterSKU {
-			skus = append(skus, sku)
-		}
-	}
-	sort.Slice(skus, func(i, j int) bool { return skus[i] < skus[j] })
-	if limit > 0 && len(skus) > limit {
-		skus = skus[:limit]
-	}
-	out := make([]*product.ProductClassification, 0, len(skus))
-	for _, sku := range skus {
-		out = append(out, r.rows[sku].classification)
-	}
-	return out, nil
 }
 
 // ProcessedEventRepo is an in-memory ports.ProcessedEventRepo.
