@@ -154,6 +154,7 @@ paths:
   /stock/receive:
     post:
       operationId: receiveStock
+      deprecated: true
       summary: Acknowledge inbound stock for a SKU
       description: >
         Stages a quantity of a SKU as received into the building
@@ -164,6 +165,12 @@ paths:
         The durable, addressable record only starts at StowStock — that is
         why this operation returns 202 Accepted rather than 201 Created:
         there is no resource here to hand back a Location for.
+        Superseded by the inbound-receiving handover (K24, ADR 0037:
+        inbound-receiving publishes
+        `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived`,
+        whose Good lines are booked as staged stock through the same
+        ReceiveStock use case); this endpoint stays as the documented
+        manual fallback; removal planned with the next breaking window.
       tags: [Stock]
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -693,6 +700,7 @@ paths:
   /reservations/{id}/confirm-pick:
     post:
       operationId: confirmPick
+      deprecated: true
       summary: Confirm a reservation's physical pick
       description: >
         Consumes a reservation: for every Allocation it holds, the
@@ -702,6 +710,9 @@ paths:
         one-way command on the resource in the domain command style (not
         forced into PUT/PATCH) — a reservation that is already resolved,
         expired, or has no allocations cannot be confirmed again.
+        Superseded by the TaskCompleted consumer (K37: fulfillment-execution's
+        TaskCompleted for a PICK task confirms the reservation — ADR 0035 /
+        ADR 0036); removal planned with the next breaking window.
       tags: [Reservations]
       parameters:
         - $ref: "#/components/parameters/ReservationId"
