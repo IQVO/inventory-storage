@@ -89,10 +89,12 @@ The AsyncAPI document is the **complete domain-event catalog**. Two topics
 carry it: `warehouse.inventory.events` (integration — the contract other
 services build against) and `warehouse.inventory.analytics` (internal,
 consumed only by this service's analytics projector). `LocationRecorded` is
-in-process only (no consumer; decided 2026-10-06). `ProductClassified` (entity
+in-process only (no consumer; decided 2026-10-06). The legacy `ProductClassified`
+(entity
 `product`, SKU master data) is **legacy** since [ADR 0034](/docs/adr/0034):
 product-master owns classification, no write path raises the event, and only
-the one-shot `republish-product-classifications` backfill emits it, on the
+the one-shot `republish-product-classifications` backfill emitted it (both
+retired at stage E, 2026-10-17), on the
 integration topic only, for product-master's legacy importer (it was published
 on both topics per write from 2026-10-06 under [ADR 0031](/docs/adr/0031)).
 This service also **consumes** product-master's
@@ -134,7 +136,6 @@ This service also **consumes** product-master's
 
 | Event | `type` | Integration topic `data` | Analytics topic `data` |
 | --- | --- | --- | --- |
-| **ProductClassified** (legacy) | `com.warehouse.wms.inventory-storage.product.ProductClassified` | `sku`, `handling_tags[]`, `temperature_class?`, `dot_hazard_class?` (ADR-0031; key = SKU; full-state replacement, optional fields omitted when unset); emitted only by the one-shot backfill since ADR-0034 | — (no longer published here since ADR-0034) |
 
 ## The two integration events in full
 

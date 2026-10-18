@@ -46,16 +46,6 @@
     "StockUnitID": "su-1",
     "BinID": "A-1-1"
   },
-  "ProductClassified": {
-    "SKU": "SKU-1",
-    "HandlingTags": [
-      "Hazmat",
-      "TemperatureSensitive"
-    ],
-    "TemperatureClass": "Chilled",
-    "DOTHazardClass": 3,
-    "At": "2026-08-21T22:00:00Z"
-  },
   "ReservationExpired": {
     "eventName": "ReservationExpired",
     "occurredAt": "2026-08-21T22:00:00Z",

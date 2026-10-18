@@ -120,28 +120,6 @@ const sidebar: SidebarsConfig = {
     },
     {
       type: "category",
-      label: "Products",
-      link: {
-        type: "doc",
-        id: "api-reference/rest/products",
-      },
-      items: [
-        {
-          type: "doc",
-          id: "api-reference/rest/classify-product",
-          label: "Retired - classify the SKU in product-master instead (410)",
-          className: "menu__list-item--deprecated api-method put",
-        },
-        {
-          type: "doc",
-          id: "api-reference/rest/get-product-classification",
-          label: "Get a SKU's product classification (deprecated local copy)",
-          className: "menu__list-item--deprecated api-method get",
-        },
-      ],
-    },
-    {
-      type: "category",
       label: "Health",
       link: {
         type: "doc",

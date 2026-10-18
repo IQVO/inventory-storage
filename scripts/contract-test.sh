@@ -42,14 +42,6 @@ for _ in $(seq 1 50); do
 done
 curl -sf "${BASE_URL}/healthz" >/dev/null # fail loudly if it never came up
 
-# classifyProduct is excluded: it is retired (ADR 0034) and answers 410
-# classification-moved to EVERY request, which Schemathesis's
-# positive-data-acceptance check reports as "API rejected a
-# schema-compliant request" by design. The 410 is pinned instead by
-# TestClassifyProduct_Endpoint_Returns410ClassificationMoved and the BDD
-# scenario in features/product_classification.feature. Drop this exclusion
-# together with the operation at product-master ADR 0003 stage E.
-#
 # The Reports tag (/reports/*) is excluded because those operations are served
 # by the separate inventory-reports binary (read-only analytical pool), not by
 # the OLTP binary booted here.
@@ -64,11 +56,19 @@ curl -sf "${BASE_URL}/healthz" >/dev/null # fail loudly if it never came up
 # that check; the endpoint's contract (status codes, schemas, problem shapes)
 # is still exercised by the unit and integration suites
 # (transfer_receipt_handler_test.go, transfer_receipt_integration_test.go).
+# relocateStock (POST /relocations) is excluded for the same reason as the
+# transfer ops above: Schemathesis's positive-data-acceptance check cannot
+# model "valid shape, refused by a domain invariant". A schema-compliant
+# body with fromBin == toBin is refused with the documented 422 same-bin
+# problem (ADR 0010's invariant: a relocation's source and destination bin
+# must differ), which the fuzzer reads as a rejected valid request. The
+# 422 itself is documented on the operation and pinned by the unit and BDD
+# suites (relocation tests, features/).
 st run apis/openapi.yaml \
   --url "${BASE_URL}" \
   --max-examples "${MAX_EXAMPLES}" \
   --workers 4 \
-  --exclude-operation-id classifyProduct \
   --exclude-operation-id stageTransferReceipt \
   --exclude-operation-id stowTransferStock \
+  --exclude-operation-id relocateStock \
   --exclude-tag Reports

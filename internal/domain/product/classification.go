@@ -14,7 +14,6 @@ package product
 
 import (
 	"errors"
-	"time"
 
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
@@ -260,31 +259,4 @@ type SlotAttributes struct {
 	Hazmat           bool
 	TemperatureClass TemperatureClass
 	Known            bool
-}
-
-// ProductClassified is the domain event raised when a SKU's classification
-// is registered or replaced.
-type ProductClassified struct {
-	SKU              shared.SKU
-	HandlingTags     []HandlingTag
-	TemperatureClass TemperatureClass
-	DOTHazardClass   DOTHazardClass
-	At               time.Time
-}
-
-func (e ProductClassified) EventName() string     { return "ProductClassified" }
-func (e ProductClassified) OccurredAt() time.Time { return e.At }
-
-// NewProductClassified builds the domain event for a construction/update of
-// c, using occurredAt as the event's timestamp (supplied by the Clock port,
-// not wall-clock time — consistent with every other event in this
-// context).
-func NewProductClassified(c *ProductClassification, occurredAt time.Time) ProductClassified {
-	return ProductClassified{
-		SKU:              c.SKU(),
-		HandlingTags:     c.HandlingTags(),
-		TemperatureClass: c.TemperatureClass(),
-		DOTHazardClass:   c.DOTHazardClass(),
-		At:               occurredAt,
-	}
 }

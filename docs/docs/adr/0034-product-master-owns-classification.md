@@ -132,13 +132,16 @@ kubectl exec deploy/inventory-storage -- ./inventory republish-product-classific
    `ports.ProductClassificationRepo.FindBySKU` as before; the table is now
    fed by the consumer instead of a REST write.
 5. **`GET /products/{sku}/classification` stays**, served from the local
-   copy, and is marked `deprecated: true` in `apis/openapi.yaml`. It is
-   removed at product-master ADR 0003 stage E.
+   copy, and is marked `deprecated: true` in `apis/openapi.yaml`. It was
+   removed at product-master ADR 0003 stage E (2026-10-17).
 
-### Stage E (not in this change)
+### Stage E (executed 2026-10-17)
 
-The deprecated `GET` endpoint, the backfill command and the legacy encoder
-mapping are removed after the cluster is verified (product-master ADR 0003).
+The deprecated `PUT`/`GET` endpoints, the backfill command and the legacy
+encoder mapping were removed after the cluster was verified: every
+classification row of `product_classifications` had a product-master product
+(six SKUs the importer missed were backfilled through the product-master
+REST API first). This file otherwise documents stages A-D as run.
 
 ## Consequences
 

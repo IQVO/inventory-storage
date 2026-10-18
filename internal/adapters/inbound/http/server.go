@@ -19,7 +19,6 @@ import (
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
-	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
@@ -161,8 +160,6 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	r.Put("/bins/{binId}", s.handleRegisterBin)
 	r.Get("/bins/{binId}", s.handleGetBin)
 	r.Post("/bins/{binId}/cycle-count", s.handleRunCycleCount)
-	r.Put("/products/{sku}/classification", s.handleClassificationMoved)
-	r.Get("/products/{sku}/classification", s.handleGetProductClassification)
 
 	// The two destination transfer-custody endpoints (ADR 0031), both
 	// behind RequireIdempotencyKey when a transactional pool is wired:
@@ -488,46 +485,6 @@ func (s *Server) handleGetBin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toBinResponse(bin))
 }
 
-// productMasterClassificationEndpoint is where SKU classifications are
-// written since ADR 0034: product-master's REST API.
-const productMasterClassificationEndpoint = "product-master's PUT /products/{sku}/classification"
-
-// handleClassificationMoved backs the retired PUT /products/{sku}/classification:
-// product-master owns product classification (ADR 0034, product-master ADR
-// 0003 stage C), so every write here is a 410 Gone pointing at the new
-// owner. The body is not read and nothing is written.
-func (s *Server) handleClassificationMoved(w http.ResponseWriter, r *http.Request) {
-	writeProblem(w, http.StatusGone,
-		problemInfo{"classification-moved", "Product classification has moved to product-master"},
-		"product classification is owned by product-master; classify this SKU with "+productMasterClassificationEndpoint+" (inventory-storage keeps a read-only local copy)",
-		r.URL.Path)
-}
-
-// handleGetProductClassification backs the DEPRECATED
-// GET /products/{sku}/classification, served from the local copy of
-// product-master's classifications (ADR 0034). Removed at product-master
-// ADR 0003 stage E.
-func (s *Server) handleGetProductClassification(w http.ResponseWriter, r *http.Request) {
-	skuParam := chi.URLParam(r, "sku")
-	sku, err := shared.NewSKU(skuParam)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	c, err := s.Classifications.FindBySKU(r.Context(), sku)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	if c == nil {
-		writeError(w, r, usecases.ErrProductClassificationNotFound)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, toProductClassificationResponse(c))
-}
-
 const timeFormat = "2006-01-02T15:04:05Z07:00"
 
 func toStockUnitResponse(u *stock.StockUnit) stockUnitResponse {
@@ -565,25 +522,6 @@ func toBinResponse(b *location.Bin) binResponse {
 		Capacity:  b.Capacity().Int(),
 		Occupied:  b.Occupied().Int(),
 		Available: b.Available().Int(),
-	}
-}
-
-func toProductClassificationResponse(c *product.ProductClassification) productClassificationResponse {
-	tags := c.HandlingTags()
-	handlingTags := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		handlingTags = append(handlingTags, string(tag))
-	}
-	var dotHazardClass *int
-	if c.DOTHazardClass() != product.DOTHazardClassUnspecified {
-		v := int(c.DOTHazardClass())
-		dotHazardClass = &v
-	}
-	return productClassificationResponse{
-		SKU:              c.SKU().String(),
-		HandlingTags:     handlingTags,
-		TemperatureClass: string(c.TemperatureClass()),
-		DOTHazardClass:   dotHazardClass,
 	}
 }
 

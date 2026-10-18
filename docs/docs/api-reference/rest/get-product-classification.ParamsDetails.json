@@ -1,1 +1,0 @@
-{"parameters":[{"name":"sku","in":"path","required":true,"description":"The stock-keeping unit identifier.","schema":{"type":"string","example":"SKU-1"}}]}

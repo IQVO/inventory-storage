@@ -12,7 +12,6 @@ import (
 
 	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
-	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
 
@@ -228,10 +227,6 @@ func (p *AnalyticsPublisher) analyticsEventFor(ctx context.Context, e shared.Dom
 			"reservation_id": ev.ReservationID,
 			"sku":            p.reservationSKU(ctx, ev.ReservationID),
 		}}, true
-	case product.ProductClassified:
-		// SKU master data (ADR 0031): same payload as the integration
-		// topic, keyed and subjected by SKU.
-		return analyticsEvent{entity: productEntity, subject: ev.SKU.String(), key: ev.SKU.String(), data: newProductClassifiedData(ev)}, true
 	default:
 		return p.binOrUnlocatedEvent(e)
 	}

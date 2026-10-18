@@ -40,7 +40,6 @@ flowchart LR
     FL -->|"U OHS+PL to D CF<br/>Kafka warehouse.facility.events<br/>ZoneRegistered, LocationSlotRegistered,<br/>LocationSlotDecommissioned · LIVE"| INV
     FL -.->|"U OHS to D ACL<br/>REST GET /locations/code/classification<br/>LOCATION_LOOKUP_MODE=http · WIRED, UNUSED"| INV
     PM -->|"U OHS+PL to D CF<br/>Kafka warehouse.product-master.events<br/>ProductClassified to local copy · LIVE, ADR 0034"| INV
-    INV -.->|"U PL to D ACL<br/>Kafka warehouse.inventory.events<br/>legacy ProductClassified, one-shot backfill only<br/>(product-master ADR 0003 stage B)"| PM
     INV -->|"U OHS+PL to D CF<br/>Kafka warehouse.inventory.events<br/>StockReserved, ReservationRevoked · LIVE"| WP
     INV -->|"U OHS+PL to D C/S+ACL<br/>REST POST /reservations, DELETE /reservations/id · LIVE"| OM
     FE -.->|"U OHS+PL to D CF<br/>Kafka warehouse.fulfillment.events<br/>TaskCompleted (PICK, order_ref, line_no) · WIRED, OFF BY DEFAULT, ADR 0035/0036"| INV
@@ -67,7 +66,8 @@ wired in code but not part of steady-state traffic: the
 default, `TASK_COMPLETED_CONSUMER_MODE`; it acts once fulfillment-execution
 publishes the additive `order_ref` and `line_no` — ADR 0035, ADR 0036), the
 `inventory-storage` → `product-master` edge carries only the one-shot
-`republish-product-classifications` backfill (run once, on 2026-10-07), and the
+`republish-product-classifications` backfill (run once, on 2026-10-07; both
+removed at stage E, 2026-10-17), and the
 unconnected `workforce-management` node is a deliberate Separate Ways.
 Path parameters are written without braces in the diagram (`/reservations/id`
 for `/reservations/{id}`).
@@ -77,7 +77,7 @@ Source: `internal/adapters/outbound/kafka/publisher.go`,
 `internal/adapters/outbound/facilitylayout/client.go`,
 `internal/adapters/inbound/kafka/product_master_consumer.go`,
 `internal/adapters/inbound/http/server.go`, `internal/adapters/inbound/mcp/tools.go`,
-`cmd/inventory/main.go`, `cmd/inventory/republish.go`, and each caller's
+`cmd/inventory/main.go`, and each caller's
 adapter listed below.
 Omitted: this service's own analytics topic and projector (internal, not a
 context relationship), the `inventory-mfe` remote in `web/` (this context's
@@ -91,12 +91,11 @@ bounded context).
 | 1 | `facility-layout` → `inventory-storage` | OHS + PL / CF | Kafka `warehouse.facility.events`: `com.warehouse.wms.facility-layout.zone.ZoneRegistered`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | here: `internal/adapters/outbound/facilitycache/consumer.go` (per-process group, FirstOffset replay, DLQ `warehouse.facility.events.dlq`); there: facility-layout's Kafka publisher | **Live** when `LOCATION_LOOKUP_MODE=kafka` (what `warehouse-infra` sets); the binary default `permissive` does no lookup |
 | 2 | `facility-layout` → `inventory-storage` | OHS / ACL | REST `GET /locations/{locationCode}/classification` | here: `internal/adapters/outbound/facilitylayout/client.go` + `breaker.go` (circuit breaker, ADR 0020); there: `internal/adapters/inbound/http/server.go` route `/locations/{locationCode}/classification` | **Wired, unused** — `LOCATION_LOOKUP_MODE=http` is the documented rollback for #1 |
 | 3 | `product-master` → `inventory-storage` | OHS + PL / CF | Kafka `warehouse.product-master.events`: `com.warehouse.wms.product-master.product.ProductClassified` (key and subject = SKU; every other product-master type is committed past) → version-guarded local copy in `product_classifications`, read by `StowStock` ([ADR 0034](/docs/adr/0034)) | here: `internal/adapters/inbound/kafka/product_master_consumer.go`, `internal/application/usecases/apply_product_classification.go`, group from `PRODUCT_MASTER_CONSUMER_GROUP` (unset = consumer off); there: product-master's outbox relay and `internal/adapters/outbound/kafka/encoder.go` | **Live** (`warehouse-infra` sets the group `inventory-storage-product-master`) |
-| 4 | `inventory-storage` → `product-master` | PL / ACL | Kafka `warehouse.inventory.events`: the legacy `com.warehouse.wms.inventory-storage.product.ProductClassified`, emitted **only** by the one-shot `republish-product-classifications` backfill (product-master ADR 0003 stage B); no write path raises it since ADR 0034 | here: `cmd/inventory/republish.go`, `internal/application/usecases/republish_product_classifications.go` (via the outbox); there: `internal/adapters/inbound/kafka/legacy_importer.go`, group from `LEGACY_IMPORT_CONSUMER_GROUP` | **One-shot** — run once on 2026-10-07; removed at product-master ADR 0003 stage E |
-| 5 | `inventory-storage` → `wes-work-planning` | OHS + PL / CF | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.reservation.StockReserved`, `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | here: `internal/adapters/outbound/kafka/publisher.go` (via outbox relay); there: `internal/adapters/inbound/kafka/consumer.go`, group `wes-work-planning`, projects `UsableInventoryObserved` | **Live** (`EVENT_PUBLISHER=kafka`) |
-| 6 | `inventory-storage` → `order-management` | OHS + PL / C/S + ACL | REST `POST /reservations` (with `Idempotency-Key`), `DELETE /reservations/{id}` | there: `internal/adapters/outbound/inventorystorage/client.go` (+ `breaker.go`); gated by `INVENTORY_STORAGE_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** in the cluster; caller default `permissive` |
-| 7 | `fulfillment-execution` → `inventory-storage` | OHS + PL / CF | **Decided 2026-10-06, built ([ADR 0035](/docs/adr/0035), supersedes ADR 0032); per line since 2026-10-07 ([ADR 0036](/docs/adr/0036))**: Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`. For `task_type=PICK` with the additive optional `order_ref` (the OrderId = a reservation's `demand_ref`) and `line_no` this service confirms exactly the ACTIVE reservation of (`order_ref`, `line_no`) itself (the reservation stores `line_no`, sent by order-management as `lineNo`; the order's other lines stay ACTIVE), idempotently and atomically; a task without `line_no`, or a reservation without one, falls back to ADR 0035's counting (`order_pick_progress`, confirm on the order's **last** completed PICK task, never early). No sync call: the REST route `POST /reservations/{id}/confirm-pick` stays for operators and the simulator. **Short picks not modelled** (a Task has no SKU or quantity) | here: `internal/adapters/inbound/kafka/task_completed_consumer.go`, `internal/application/usecases/confirm_picks_for_order.go` (fixed group `inventory-storage-confirm-pick`, DLQ `warehouse.fulfillment.events.dlq`); there: `TaskCompleted` publisher, which adds `order_ref` and `line_no` in sibling changes (a message without `order_ref` is a no-op here, one without `line_no` takes the counting fallback) | **Wired, off by default** (`TASK_COMPLETED_CONSUMER_MODE=kafka`; needs `DATABASE_URL`, `KAFKA_BROKERS`, and `EVENT_PUBLISHER=kafka` for `StockPicked` to leave the service) |
-| 8 | `inventory-storage` → `network-fulfillment` | OHS + PL / ACL | REST `GET /inventory/{sku}/usable` | there: `internal/adapters/outbound/inventoryclient/client.go`, `INVENTORY_STORAGE_URL` (default `http://localhost:8080`, no mode switch) | **Live** |
-| 9 | `inventory-storage` → `warehouse-ops-agent` | OHS + PL / CF | REST `GET /reservations?demandRef=`; reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP (Streamable HTTP) `check_availability`, `get_bin_occupancy` | there: `internal/adapters/outbound/restclient/clients.go`, `reports_clients.go`, `internal/adapters/outbound/mcpclient/inventory_storage.go`; `INVENTORY_STORAGE_REST_URL`, `INVENTORY_STORAGE_REPORTS_REST_URL`, `INVENTORY_STORAGE_MCP_ENDPOINT` | **Live**, read-only; the MCP write tool `revoke_reservation` exists here but the agent does not call it |
+| 4 | `inventory-storage` → `wes-work-planning` | OHS + PL / CF | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.reservation.StockReserved`, `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | here: `internal/adapters/outbound/kafka/publisher.go` (via outbox relay); there: `internal/adapters/inbound/kafka/consumer.go`, group `wes-work-planning`, projects `UsableInventoryObserved` | **Live** (`EVENT_PUBLISHER=kafka`) |
+| 5 | `inventory-storage` → `order-management` | OHS + PL / C/S + ACL | REST `POST /reservations` (with `Idempotency-Key`), `DELETE /reservations/{id}` | there: `internal/adapters/outbound/inventorystorage/client.go` (+ `breaker.go`); gated by `INVENTORY_STORAGE_MODE` + `INVENTORY_STORAGE_BASE_URL` | **Live** in the cluster; caller default `permissive` |
+| 6 | `fulfillment-execution` → `inventory-storage` | OHS + PL / CF | **Decided 2026-10-06, built ([ADR 0035](/docs/adr/0035), supersedes ADR 0032); per line since 2026-10-07 ([ADR 0036](/docs/adr/0036))**: Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`. For `task_type=PICK` with the additive optional `order_ref` (the OrderId = a reservation's `demand_ref`) and `line_no` this service confirms exactly the ACTIVE reservation of (`order_ref`, `line_no`) itself (the reservation stores `line_no`, sent by order-management as `lineNo`; the order's other lines stay ACTIVE), idempotently and atomically; a task without `line_no`, or a reservation without one, falls back to ADR 0035's counting (`order_pick_progress`, confirm on the order's **last** completed PICK task, never early). No sync call: the REST route `POST /reservations/{id}/confirm-pick` stays for operators and the simulator. **Short picks not modelled** (a Task has no SKU or quantity) | here: `internal/adapters/inbound/kafka/task_completed_consumer.go`, `internal/application/usecases/confirm_picks_for_order.go` (fixed group `inventory-storage-confirm-pick`, DLQ `warehouse.fulfillment.events.dlq`); there: `TaskCompleted` publisher, which adds `order_ref` and `line_no` in sibling changes (a message without `order_ref` is a no-op here, one without `line_no` takes the counting fallback) | **Wired, off by default** (`TASK_COMPLETED_CONSUMER_MODE=kafka`; needs `DATABASE_URL`, `KAFKA_BROKERS`, and `EVENT_PUBLISHER=kafka` for `StockPicked` to leave the service) |
+| 7 | `inventory-storage` → `network-fulfillment` | OHS + PL / ACL | REST `GET /inventory/{sku}/usable` | there: `internal/adapters/outbound/inventoryclient/client.go`, `INVENTORY_STORAGE_URL` (default `http://localhost:8080`, no mode switch) | **Live** |
+| 8 | `inventory-storage` → `warehouse-ops-agent` | OHS + PL / CF | REST `GET /reservations?demandRef=`; reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP (Streamable HTTP) `check_availability`, `get_bin_occupancy` | there: `internal/adapters/outbound/restclient/clients.go`, `reports_clients.go`, `internal/adapters/outbound/mcpclient/inventory_storage.go`; `INVENTORY_STORAGE_REST_URL`, `INVENTORY_STORAGE_REPORTS_REST_URL`, `INVENTORY_STORAGE_MCP_ENDPOINT` | **Live**, read-only; the MCP write tool `revoke_reservation` exists here but the agent does not call it |
 | 10 | `inventory-storage` ↔ `workforce-management` | Separate Ways | — | no client, topic or type in either repo | **Deliberately absent** |
 | 11 | `network-inventory-planning` → `inventory-storage` | OHS + PL / CF | Kafka `warehouse.network-inventory-planning.events`: `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` (a command, ADR 0030) | here: `internal/adapters/inbound/kafka/transfer_consumer.go` (`TRANSFER_ALLOCATION_CONSUMER_MODE`, group `TRANSFER_ALLOCATION_CONSUMER_GROUP`, default `inventory-storage-transfer-allocation`) | **Live** (`warehouse-infra` sets `kafka`); binary default `off` |
 | 12 | `inventory-storage` → `network-inventory-planning` | OHS + PL / — | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated`, `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected` (ADR 0030), `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged`, `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` (ADR 0033) | here: `internal/adapters/outbound/kafka/publisher.go` (via outbox relay); there: `internal/adapters/inbound/kafka/transfer_reply_consumer.go` | **Live** |
@@ -119,7 +118,7 @@ message is CloudEvents 1.0 structured mode (ADR 0024).
 
 The consumer of `StockReserved` / `ReservationRevoked` on this service's
 integration topic (product-master's legacy importer reads the same topic, but
-only for the backfill's legacy `ProductClassified`). Full technical
+Full technical
 detail — envelope, payloads, smoke test — is on the
 [Integration](./integration.md) page. Strategically **Customer/Supplier with
 a Conformist downstream**: `wes-work-planning` takes `StockReserved` /
@@ -162,11 +161,11 @@ set, `internal/adapters/inbound/kafka/product_master_consumer.go` reads
 `processed_events` in one transaction. `StowStock`'s placement and DOT
 segregation rules (ADR 0009, ADR 0010) read that copy and stay owned here.
 
-`PUT /products/{sku}/classification` answers `410 classification-moved`;
-`GET /products/{sku}/classification` is deprecated and served from the local
-copy until product-master ADR 0003 stage E. In the other direction, the legacy
-`com.warehouse.wms.inventory-storage.product.ProductClassified` is emitted only
-by the one-shot `republish-product-classifications` backfill, for
+`PUT` and `GET /products/{sku}/classification` were removed at
+product-master ADR 0003 stage E (2026-10-17). In the other direction, the
+legacy `com.warehouse.wms.inventory-storage.product.ProductClassified` was
+emitted only by the one-shot `republish-product-classifications` backfill
+(retired at stage E), for
 product-master's legacy importer (run once, 2026-10-07).
 
 ### Read-only callers
