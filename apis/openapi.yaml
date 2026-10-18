@@ -2291,39 +2291,6 @@ components:
           description: True if countedQuantity differed from systemQuantity.
           example: true
 
-    ProductClassification:
-      type: object
-      description: >
-        SKU-level master data describing how an item must be handled,
-        independent of any StockUnit or bin. Owned by product-master
-        (ADR 0034); this is this service's local copy. dotHazardClass adds a
-        same-bin DOT segregation check enforced at stow time (ADR 0010).
-      properties:
-        sku:
-          type: string
-          example: SKU-1
-        handlingTags:
-          type: array
-          items:
-            type: string
-            enum: [Hazmat, Fragile, TemperatureSensitive, Oversized, HighValue]
-          example: [Hazmat, TemperatureSensitive]
-        temperatureClass:
-          type: string
-          description: Empty unless handlingTags includes TemperatureSensitive.
-          enum: [Ambient, Chilled, Frozen]
-          example: Frozen
-        dotHazardClass:
-          type: integer
-          format: int32
-          minimum: 1
-          maximum: 9
-          nullable: true
-          description: >
-            Omitted/null unless handlingTags includes Hazmat AND a DOT
-            hazard class was explicitly recorded (ADR 0010).
-          example: 3
-
     FlowAccuracyReport:
       type: object
       description: The Inventory Flow & Accuracy report for a window.
