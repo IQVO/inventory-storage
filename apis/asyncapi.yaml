@@ -400,6 +400,42 @@ channels:
       message:
         $ref: "#/components/messages/InboundReceivingReceiptLineReceived"
 
+  warehouse.network-inventory-planning.events:
+    description: >
+      network-inventory-planning's integration topic, its Published Language
+      for transfer commands (the `Topic` constant in
+      `internal/adapters/inbound/kafka/transfer_consumer.go`). CONSUMED by
+      this service (ADR 0030), not published: key and `subject` = the
+      transfer line id, `source=/warehouse/network-inventory-planning`.
+      Only
+      `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested`
+      is acted on; every other CloudEvents `type` on the topic is ignored.
+      The consumer runs only when `TRANSFER_ALLOCATION_CONSUMER_MODE=kafka`
+      (default `off`; also requires `DATABASE_URL` and `KAFKA_BROKERS`),
+      under the fixed group `inventory-storage-transfer-allocation`
+      (override `TRANSFER_ALLOCATION_CONSUMER_GROUP`).
+    publish:
+      operationId: allocateTransferStock
+      summary: Apply the transfer-allocation command and reply through the outbox.
+      description: >
+        At-least-once, fixed group: FetchMessage, then CommitMessages only
+        after the handler settles; a transient error retries the SAME message
+        with capped backoff (200ms to 5s), so a failed handler can never drop
+        or skip a command. The CloudEvents `id` is claimed in
+        `processed_events` in the SAME transaction as AllocateTransferStock,
+        so a redelivery is a no-op. A payload that can never be applied (an
+        undecodable payload, an invalid `origin_site_id`, an empty `sku`, a
+        non-positive `quantity`) is logged (WARN) and committed past; there
+        is no DLQ on this topic. The reply — TransferStockAllocated or
+        TransferStockAllocationRejected — is published on this service's own
+        integration topic through the transactional outbox, never back onto
+        the command topic.
+      tags:
+        - name: network-inventory-planning
+          description: Consumed from the network-inventory-planning bounded context.
+      message:
+        $ref: "#/components/messages/NetworkInventoryPlanningTransferAllocationRequested"
+
 components:
   messages:
     StockReceived:
@@ -793,6 +829,44 @@ components:
               quantity: 4
               condition: Damaged
               received_at: "2026-10-09T08:12:00Z"
+
+    NetworkInventoryPlanningTransferAllocationRequested:
+      name: NetworkInventoryPlanningTransferAllocationRequested
+      title: Transfer Allocation Requested (from network-inventory-planning, consumed)
+      summary: network-inventory-planning asked this context to allocate origin stock for a transfer line.
+      description: >
+        CONSUMED command, not produced (ADR 0030). Pinned by
+        network-inventory-planning's `apis/asyncapi.yaml`: type
+        `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested`,
+        `source=/warehouse/network-inventory-planning`, subject and Kafka
+        key = the transfer line id. `data` is exactly five fields — the
+        whole consumed contract; this service replies with
+        TransferStockAllocated or TransferStockAllocationRejected on its own
+        integration topic.
+      contentType: application/cloudevents+json
+      tags:
+        - name: network-inventory-planning
+          description: Consumed from network-inventory-planning.
+      payload:
+        $ref: "#/components/schemas/NetworkInventoryPlanningTransferAllocationRequestedEvent"
+      examples:
+        - name: singleLineAllocation
+          summary: Allocate 24 units of SKU-1 at the origin site for a transfer's single line.
+          payload:
+            specversion: "1.0"
+            id: b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e
+            source: /warehouse/network-inventory-planning
+            type: com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested
+            subject: tfr-77451:1
+            time: "2026-10-17T08:15:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:network-inventory-planning:events:TransferAllocationRequested:v1
+            data:
+              transfer_id: tfr-77451
+              transfer_line_id: tfr-77451:1
+              origin_site_id: ABE1
+              sku: SKU-1
+              quantity: 24
 
     StockReserved:
       name: StockReserved
@@ -1911,6 +1985,69 @@ components:
             received_at:
               type: string
               format: date-time
+
+    NetworkInventoryPlanningTransferAllocationRequestedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of network-inventory-planning's
+        TransferAllocationRequested command as consumed here (not composed
+        from CloudEventBase, whose `source` is this service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events).
+        source:
+          type: string
+          enum: ["/warehouse/network-inventory-planning"]
+        type:
+          type: string
+          const: "com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested"
+        subject:
+          type: string
+          description: The transfer line id (also the Kafka key and the reply-correlation key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:network-inventory-planning:events:TransferAllocationRequested:v1
+        data:
+          type: object
+          description: Exactly five fields — the whole consumed contract.
+          required:
+            - transfer_id
+            - transfer_line_id
+            - origin_site_id
+            - sku
+            - quantity
+          properties:
+            transfer_id:
+              type: string
+            transfer_line_id:
+              type: string
+              description: "<transfer_id>:1 in v1's single-line saga; also the allocation-ledger and reply-correlation key."
+            origin_site_id:
+              type: string
+            sku:
+              type: string
+            quantity:
+              type: integer
+              minimum: 1
 
     StockReservedEvent:
       description: >
