@@ -12,28 +12,6 @@ import (
 	"testing"
 )
 
-// TestPublisherBrokers pins the single KAFKA_BROKERS default (gap fix D22):
-// the publishers and the outbox relay fall back to localhost:9092 when the
-// variable is unset, while the consumers keep the raw (nil) list so their
-// "requires KAFKA_BROKERS" boot checks still fire.
-func TestPublisherBrokers(t *testing.T) {
-	t.Setenv("KAFKA_BROKERS", "")
-	unset := loadConfig()
-	if unset.kafkaBrokers != nil {
-		t.Fatalf("consumer broker list = %v, want nil when KAFKA_BROKERS is unset", unset.kafkaBrokers)
-	}
-	if got := unset.publisherBrokers(); !slices.Equal(got, []string{"localhost:9092"}) {
-		t.Fatalf("publisherBrokers() unset = %v, want [localhost:9092]", got)
-	}
-
-	t.Setenv("KAFKA_BROKERS", "a:9092,b:9092")
-	set := loadConfig()
-	want := []string{"a:9092", "b:9092"}
-	if !slices.Equal(set.kafkaBrokers, want) || !slices.Equal(set.publisherBrokers(), want) {
-		t.Fatalf("kafkaBrokers = %v, publisherBrokers() = %v, want both %v", set.kafkaBrokers, set.publisherBrokers(), want)
-	}
-}
-
 // kafkaBrokersReads returns file:line of every getenv/os.Getenv call whose
 // key is the literal "KAFKA_BROKERS" in one Go file.
 func kafkaBrokersReads(t *testing.T, path string) []string {
@@ -79,5 +57,19 @@ func TestKafkaBrokersReadOnce(t *testing.T) {
 	}
 	if len(reads) != 1 || !strings.HasPrefix(reads[0], "config.go:") {
 		t.Fatalf("KAFKA_BROKERS reads = %v, want exactly one, in config.go", reads)
+	}
+}
+
+// TestLoadConfig_SplitsTheBrokerList: the list is split on "," and blanks and
+// whitespace are dropped.
+func TestLoadConfig_SplitsTheBrokerList(t *testing.T) {
+	env := validEnv()
+	env["KAFKA_BROKERS"] = " a:9092, b:9092 ,,"
+	cfg, err := loadConfig(mapEnv(env))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if want := []string{"a:9092", "b:9092"}; !slices.Equal(cfg.kafkaBrokers, want) {
+		t.Fatalf("kafkaBrokers = %v, want %v", cfg.kafkaBrokers, want)
 	}
 }

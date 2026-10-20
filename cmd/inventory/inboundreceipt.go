@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 
 	inboundkafka "github.com/claudioed/inventory-storage/internal/adapters/inbound/kafka"
-	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/system"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/telemetry"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 )
@@ -21,11 +20,11 @@ import (
 // the SAME transaction as the StockReceived outbox row. Damaged lines are
 // counted, not booked.
 //
-// cfg.inboundReceiptConsumerGroup is INBOUND_RECEIPT_CONSUMER_GROUP. Unset
-// means the consumer is not started (receipts then only arrive over REST).
-// Set, it requires DATABASE_URL (the claim + receive are only atomic through
-// the Postgres UnitOfWork) and KAFKA_BROKERS; a misconfiguration fails boot
-// with the real cause instead of silently skipping the consumer.
+// The consumer ALWAYS runs: Postgres and Kafka are the only runtime (the
+// real-wiring ADR). loadConfig already refused a missing DATABASE_URL,
+// KAFKA_BROKERS or INBOUND_RECEIPT_CONSUMER_GROUP (cfg.inboundReceiptConsumerGroup
+// is INBOUND_RECEIPT_CONSUMER_GROUP), and StockReceived leaves the service
+// through the always-on outbox relay.
 //
 // ctx is the shared inbound-consumer context (see run()), so shutdown's
 // stopLookup cancel unblocks this loop too.
@@ -35,27 +34,12 @@ func buildInboundReceiptConsumer(
 	cfg config,
 	set adapterSet,
 ) (transferConsumerHandle, error) {
-	if cfg.inboundReceiptConsumerGroup == "" {
-		logger.Info("inbound-receiving receipt consumer not started", "reason", "INBOUND_RECEIPT_CONSUMER_GROUP unset")
-		return noopTransferConsumer(), nil
-	}
-	if cfg.databaseURL == "" || set.pool == nil {
-		return noopTransferConsumer(), errors.New("INBOUND_RECEIPT_CONSUMER_GROUP requires DATABASE_URL (the receipt is only atomic with its dedupe claim through the Postgres unit of work)")
-	}
-	if len(cfg.kafkaBrokers) == 0 {
-		return noopTransferConsumer(), errors.New("INBOUND_RECEIPT_CONSUMER_GROUP requires KAFKA_BROKERS to be set")
-	}
-	if !strings.EqualFold(cfg.eventPublisher, "kafka") {
-		logger.Warn("inbound-receiving receipts are booked but StockReceived will not leave the service",
-			"reason", "EVENT_PUBLISHER is not kafka")
-	}
-
 	metrics, err := telemetry.NewInboundReceiptMetrics()
 	if err != nil {
 		return noopTransferConsumer(), err
 	}
 	book := &usecases.BookInboundReceiptLine{
-		Receive:         &usecases.ReceiveStock{Events: set.publisher, Clock: memory.SystemClock{}, UnitOfWork: set.uow},
+		Receive:         &usecases.ReceiveStock{Events: set.publisher, Clock: system.Clock{}, UnitOfWork: set.uow},
 		ProcessedEvents: postgres.NewProcessedEventRepo(set.pool),
 		UnitOfWork:      set.uow,
 		Metrics:         metrics,

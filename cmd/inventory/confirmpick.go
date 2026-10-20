@@ -5,15 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
 
 	inboundkafka "github.com/claudioed/inventory-storage/internal/adapters/inbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/bootretry"
-	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/system"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 )
@@ -41,12 +40,11 @@ var dialBroker = func(ctx context.Context, brokers []string) error {
 // and all confirmations (stock, bin, reservation, outbox rows) commit in ONE
 // UnitOfWork transaction.
 //
-// mode is TASK_COMPLETED_CONSUMER_MODE: "off" (default — the feature stays
-// dark until an operator opts a deployment in) or "kafka". "kafka" also
-// requires KAFKA_BROKERS and DATABASE_URL: the claim and the confirmations are
-// only atomic through the Postgres UnitOfWork/outbox, so an in-memory run must
-// not consume real completions. A misconfiguration returns an error so boot
-// fails with the real cause rather than silently skipping the consumer. The
+// The consumer ALWAYS runs: Postgres and Kafka are the only runtime (the
+// real-wiring ADR). loadConfig already refused a missing DATABASE_URL,
+// KAFKA_BROKERS or TASK_COMPLETED_CONSUMER_GROUP, and
+// TASK_COMPLETED_CONSUMER_MODE is accepted only as unset or kafka; the claim
+// and the confirmations are atomic through the Postgres UnitOfWork/outbox. The
 // first dial of the broker runs under bootretry, like the other boot-time
 // dials (ADR 0028).
 //
@@ -59,23 +57,13 @@ func buildTaskCompletedConsumer(
 	set adapterSet,
 	metrics ports.PickConfirmationMetrics,
 ) (transferConsumerHandle, error) {
-	if !strings.EqualFold(cfg.taskCompletedConsumerMode, "kafka") {
-		logger.Info("task-completed confirm-pick consumer not started", "reason", "TASK_COMPLETED_CONSUMER_MODE is not kafka")
-		return noopTransferConsumer(), nil
-	}
-	if cfg.databaseURL == "" || set.pool == nil {
-		return noopTransferConsumer(), errors.New("TASK_COMPLETED_CONSUMER_MODE=kafka requires DATABASE_URL (the confirmations are only atomic through the Postgres unit of work)")
-	}
-	if len(cfg.kafkaBrokers) == 0 {
-		return noopTransferConsumer(), errors.New("TASK_COMPLETED_CONSUMER_MODE=kafka requires KAFKA_BROKERS to be set")
-	}
 	if err := bootretry.Retry(ctx, logger, "dial fulfillment kafka brokers", func() error {
 		return dialBroker(ctx, cfg.kafkaBrokers)
 	}); err != nil {
 		return noopTransferConsumer(), fmt.Errorf("failed to start the task-completed consumer: %w", err)
 	}
 
-	clock := memory.SystemClock{}
+	clock := system.Clock{}
 	levels := set.levelEmitter(clock)
 	processed := postgres.NewProcessedEventRepo(set.pool)
 	confirm := &usecases.ConfirmPicksForOrder{
@@ -99,12 +87,9 @@ func buildTaskCompletedConsumer(
 	// REPLENISH completions (ADR 0041) ride the same consumer, group and DLQ.
 	consumer.Replenish = newApplyReplenishTask(set, clock, processed)
 	group := cfg.taskCompletedConsumerGroup
-	if group == "" {
-		group = inboundkafka.DefaultTaskCompletedConsumerGroup
-	}
 	logger.Info("task-completed confirm-pick consumer configured",
-		"mode", "kafka", "task_types", "PICK,RELOCATE,REPLENISH", "topic", inboundkafka.FulfillmentTopic, "dlq_topic", inboundkafka.FulfillmentTopic+".dlq",
-		"consumer_group", group, "overridden", cfg.taskCompletedConsumerGroup != "")
+		"task_types", "PICK,RELOCATE,REPLENISH", "topic", inboundkafka.FulfillmentTopic, "dlq_topic", inboundkafka.FulfillmentTopic+".dlq",
+		"consumer_group", group)
 
 	runDone := make(chan struct{})
 	go func() {

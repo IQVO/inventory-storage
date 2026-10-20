@@ -17,11 +17,11 @@ import (
 // claiming each CloudEvents id in processed_events in the SAME transaction
 // as the version-guarded upsert.
 //
-// cfg.productMasterConsumerGroup is PRODUCT_MASTER_CONSUMER_GROUP. Unset
-// means the consumer is not started (the local copy then only holds legacy
-// rows). Set, it requires DATABASE_URL (the claim + upsert are only atomic
-// through the Postgres UnitOfWork) and KAFKA_BROKERS; a misconfiguration
-// fails boot with the real cause instead of silently skipping the consumer.
+// The consumer ALWAYS runs: Postgres and Kafka are the only runtime (the
+// real-wiring ADR). loadConfig already refused a missing DATABASE_URL,
+// KAFKA_BROKERS or PRODUCT_MASTER_CONSUMER_GROUP (cfg.productMasterConsumerGroup
+// is PRODUCT_MASTER_CONSUMER_GROUP); the claim + upsert are atomic through the
+// Postgres UnitOfWork.
 //
 // ctx is the shared inbound-consumer context (see run()), so shutdown's
 // stopLookup cancel unblocks this loop too.
@@ -31,17 +31,6 @@ func buildProductMasterConsumer(
 	cfg config,
 	set adapterSet,
 ) (transferConsumerHandle, error) {
-	if cfg.productMasterConsumerGroup == "" {
-		logger.Info("product-master classification consumer not started", "reason", "PRODUCT_MASTER_CONSUMER_GROUP unset")
-		return noopTransferConsumer(), nil
-	}
-	if cfg.databaseURL == "" || set.pool == nil {
-		return noopTransferConsumer(), errors.New("PRODUCT_MASTER_CONSUMER_GROUP requires DATABASE_URL (the local copy is only atomic through the Postgres unit of work)")
-	}
-	if len(cfg.kafkaBrokers) == 0 {
-		return noopTransferConsumer(), errors.New("PRODUCT_MASTER_CONSUMER_GROUP requires KAFKA_BROKERS to be set")
-	}
-
 	apply := &usecases.ApplyProductClassification{
 		Classifications: postgres.NewProductClassificationRepo(set.pool),
 		ProcessedEvents: postgres.NewProcessedEventRepo(set.pool),
