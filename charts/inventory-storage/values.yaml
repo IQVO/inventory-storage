@@ -169,23 +169,28 @@ autoscaling:
 # exports. Set per-cluster (local / staging / production).
 environment: "local"
 
-# Falls back to in-memory adapters + log-only event publishing when
-# database.url / kafka.enabled are left empty, same as running the binary
-# locally with no env vars set.
+# Postgres (database.*) and Kafka (kafka.brokers) are the only runtime: the
+# binaries exit at boot without DATABASE_URL / KAFKA_BROKERS, and the chart
+# REFUSES TO RENDER (helm template / lint / install fails, naming the value)
+# when a release would produce a pod that cannot boot -- no database source,
+# kafka.enabled=false or empty kafka.brokers, a publisher other than kafka,
+# a lookup mode other than kafka/http, a consumer mode of off, an empty
+# consumer-group id, or an extraEnv entry that overrides one of those.
+# There is no in-memory adapter, no log publisher and no permissive mode.
 #
 # Every key below is rendered into templates/configmap.yaml and reaches
 # cmd/inventory through the api Deployment's `envFrom: configMapRef` (gap fix
 # D14); explicit env/extraEnv entries win for the same key.
 config:
   httpAddr: ":8080"
-  eventPublisher: "log"   # "log" or "kafka"
+  eventPublisher: "kafka"   # "kafka" (or empty, which means kafka); "log" is refused
   migrationsPath: "migrations"
   logLevel: "info"        # debug | info | warn (or warning) | error
   # Where cmd/inventory resolves bin -> location classification (ADR-0013 /
-  # ADR-0009). kafka = facility-events cache (needs kafka.enabled),
-  # http = synchronous facility-layout call (needs facilityLayoutBaseUrl),
-  # permissive = accept every bin (rollback / local).
-  locationLookupMode: "permissive"
+  # ADR-0009). kafka = facility-events cache (needs kafka.brokers),
+  # http = synchronous facility-layout call (needs facilityLayoutBaseUrl).
+  # Anything else, including empty and the removed "permissive", is refused.
+  locationLookupMode: "kafka"
   facilityLayoutBaseUrl: ""   # FACILITY_LAYOUT_BASE_URL (LOCATION_LOOKUP_MODE=http)
   # Transactional-outbox relay poll interval (ADR-0017); OUTBOX_RELAY_INTERVAL.
   outboxRelayInterval: "1s"
@@ -203,42 +208,41 @@ config:
   idempotencyKeyTtl: "24h"
   outboxRetention: "168h"
   orderPickProgressRetention: "720h"
-  # Site-scoped transfer allocation command consumer (ADR-0030). "kafka"
-  # enables consuming network-inventory-planning's
-  # TransferAllocationRequested commands; requires database.* and
-  # kafka.enabled (the decision is only atomic through the Postgres
-  # UnitOfWork/outbox). transferConsumerGroup overrides the consumer
-  # group id (default inventory-storage-transfer-allocation) so a
-  # locally-run process can never steal the live Deployment's partitions.
-  transferAllocationConsumerMode: "off"
-  transferAllocationConsumerGroup: ""
-  # product-master classification local copy (ADR-0034). Set to a stable
-  # group id (e.g. inventory-storage-product-master) to consume
+  # All four consumers ALWAYS run and each needs a stable, non-empty consumer
+  # group id (a restarted pod resumes from its committed offsets); an empty
+  # id is refused at render. The two *Mode keys accept only "kafka" (or
+  # empty, which means kafka); "off" is refused. Override a group id only to
+  # keep a locally-run process from stealing the live Deployment's
+  # partitions.
+  #
+  # Site-scoped transfer allocation command consumer (ADR-0030): consumes
+  # network-inventory-planning's TransferAllocationRequested commands (the
+  # decision is only atomic through the Postgres UnitOfWork/outbox).
+  transferAllocationConsumerMode: "kafka"
+  transferAllocationConsumerGroup: "inventory-storage-transfer-allocation"
+  # product-master classification local copy (ADR-0034): consumes
   # product-master's ProductClassified from warehouse.product-master.events
-  # into product_classifications; empty = consumer not started. Requires
-  # database.* and kafka.enabled.
-  productMasterConsumerGroup: ""
-  # inbound-receiving receipt consumer (ADR-0037). Set to a stable group id
-  # (e.g. inventory-storage-inbound-receipt) to consume inbound-receiving's
-  # ReceiptLineReceived from warehouse.inbound-receiving.events and book every
+  # into product_classifications.
+  productMasterConsumerGroup: "inventory-storage-product-master"
+  # inbound-receiving receipt consumer (ADR-0037): consumes inbound-receiving's
+  # ReceiptLineReceived from warehouse.inbound-receiving.events and books every
   # condition=Good line as a staged receipt (ReceiveStock; Damaged is counted,
-  # not booked); empty = consumer not started. Requires database.* and
-  # kafka.enabled, and EVENT_PUBLISHER=kafka for StockReceived to leave the
-  # service.
-  inboundReceiptConsumerGroup: ""
-  # TaskCompleted confirm-pick consumer (ADR-0035). "kafka" enables consuming
+  # not booked); StockReceived leaves through the outbox (EVENT_PUBLISHER=kafka).
+  inboundReceiptConsumerGroup: "inventory-storage-inbound-receipts"
+  # TaskCompleted confirm-pick consumer (ADR-0035): consumes
   # fulfillment-execution's TaskCompleted from warehouse.fulfillment.events,
   # counting each PICK task per order (order_ref) and confirming every ACTIVE
   # reservation of the order when its LAST pick completes (one PICK task per
-  # order line); requires database.* and kafka.enabled (the claim, the counter
-  # and the confirmations are only atomic through the Postgres UnitOfWork/outbox) and
-  # EVENT_PUBLISHER=kafka for StockPicked to leave the service. Default off.
-  # taskCompletedConsumerGroup overrides the group id (default
-  # inventory-storage-confirm-pick). Poison / exhausted messages go to
+  # order line); the claim, the counter and the confirmations are only atomic
+  # through the Postgres UnitOfWork/outbox, and StockPicked leaves through the
+  # outbox (EVENT_PUBLISHER=kafka). Poison / exhausted messages go to
   # warehouse.fulfillment.events.dlq.
-  taskCompletedConsumerMode: "off"
-  taskCompletedConsumerGroup: ""
+  taskCompletedConsumerMode: "kafka"
+  taskCompletedConsumerGroup: "inventory-storage-confirm-pick"
 
+# Postgres is REQUIRED: the chart refuses to render unless url or
+# existingSecret is set. Prefer existingSecret outside a throwaway cluster: an
+# inline url lands in the release's stored manifest in plain text.
 database:
   url: ""
   existingSecret: ""
@@ -257,19 +261,18 @@ database:
   # order-management's ADR-0029).
   migrationsExistingSecretKey: "MIGRATIONS_DATABASE_URL"
 
-# Kafka wiring. This service PUBLISHES (StockReserved /
-# ReservationRevoked / the ADR-0030 transfer replies) and, when
-# config.transferAllocationConsumerMode=kafka, CONSUMES
-# network-inventory-planning's transfer allocation commands; when
-# config.productMasterConsumerGroup is set it also CONSUMES product-master's
-# ProductClassified (ADR-0034); when config.inboundReceiptConsumerGroup is set
-# it also CONSUMES inbound-receiving's ReceiptLineReceived (ADR-0037); when
-# config.taskCompletedConsumerMode=kafka it
-# also CONSUMES fulfillment-execution's TaskCompleted (ADR-0035).
-# kafka.enabled gates EVENT_PUBLISHER=kafka.
+# Kafka wiring, REQUIRED. This service PUBLISHES (StockReserved /
+# ReservationRevoked / the ADR-0030 transfer replies) through the
+# transactional outbox and CONSUMES network-inventory-planning's transfer
+# allocation commands, product-master's ProductClassified (ADR-0034),
+# inbound-receiving's ReceiptLineReceived (ADR-0037) and
+# fulfillment-execution's TaskCompleted (ADR-0035). KAFKA_BROKERS is always
+# set on the api, mcp and projector pods and the chart refuses to render with
+# brokers empty or kafka.enabled=false. There is no localhost default: set
+# brokers explicitly (warehouse-infra supplies them in _platform.yaml).
 kafka:
-  enabled: false
-  brokers: "kafka:9092"
+  enabled: true
+  brokers: ""   # REQUIRED, comma-separated host:port list (KAFKA_BROKERS)
 
 # OpenTelemetry traces + metrics, pushed over OTLP/gRPC to a Collector. The
 # endpoint below is the in-cluster Collector Service in the warehouse-infra
@@ -332,6 +335,9 @@ affinity: {}
 # unaffected; set analytics.enabled=true to deploy the two extra processes.
 analytics:
   enabled: false
+  # While enabled the chart requires analytics.database.projectorUrl or
+  # analytics.database.existingSecret (ANALYTICS_DATABASE_URL); the projector
+  # reads kafka.brokers above.
   # Directory (inside the image) of the analytical *.up.sql migrations the
   # projector applies on start.
   migrationsPath: "migrations/analytics"

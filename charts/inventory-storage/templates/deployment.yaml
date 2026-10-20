@@ -1,3 +1,4 @@
+{{- include "inventory-storage.requireRealRuntime" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -73,26 +74,20 @@ spec:
             - name: FACILITY_LAYOUT_BASE_URL
               value: {{ .Values.config.facilityLayoutBaseUrl | quote }}
             {{- end }}
+            # The four consumer-group ids are mandatory (the render fails when
+            # one is empty), so they are always set.
             - name: TRANSFER_ALLOCATION_CONSUMER_MODE
               value: {{ .Values.config.transferAllocationConsumerMode | quote }}
-            {{- if .Values.config.transferAllocationConsumerGroup }}
             - name: TRANSFER_ALLOCATION_CONSUMER_GROUP
               value: {{ .Values.config.transferAllocationConsumerGroup | quote }}
-            {{- end }}
-            {{- if .Values.config.productMasterConsumerGroup }}
             - name: PRODUCT_MASTER_CONSUMER_GROUP
               value: {{ .Values.config.productMasterConsumerGroup | quote }}
-            {{- end }}
-            {{- if .Values.config.inboundReceiptConsumerGroup }}
             - name: INBOUND_RECEIPT_CONSUMER_GROUP
               value: {{ .Values.config.inboundReceiptConsumerGroup | quote }}
-            {{- end }}
             - name: TASK_COMPLETED_CONSUMER_MODE
               value: {{ .Values.config.taskCompletedConsumerMode | quote }}
-            {{- if .Values.config.taskCompletedConsumerGroup }}
             - name: TASK_COMPLETED_CONSUMER_GROUP
               value: {{ .Values.config.taskCompletedConsumerGroup | quote }}
-            {{- end }}
             - name: OUTBOX_RELAY_INTERVAL
               value: {{ .Values.config.outboxRelayInterval | quote }}
             - name: OUTBOX_MAX_ATTEMPTS
@@ -115,7 +110,8 @@ spec:
             - name: OTEL_SERVICE_NAME
               value: {{ .Values.otel.serviceName | quote }}
             {{- end }}
-            {{- if or .Values.database.url .Values.database.existingSecret }}
+            # DATABASE_URL is always set and required (the render fails
+            # without database.url or database.existingSecret).
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -135,11 +131,10 @@ spec:
                   key: {{ .Values.database.migrationsExistingSecretKey }}
                   optional: true
             {{- end }}
-            {{- end }}
-            {{- if .Values.kafka.enabled }}
+            # KAFKA_BROKERS is always set and required (the render fails when
+            # kafka.brokers is empty or kafka.enabled is false).
             - name: KAFKA_BROKERS
               value: {{ .Values.kafka.brokers | quote }}
-            {{- end }}
             {{- range .Values.extraEnv }}
             - {{ toYaml . | nindent 14 | trim }}
             {{- end }}

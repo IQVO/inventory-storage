@@ -9,7 +9,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
 	inboundkafka "github.com/claudioed/inventory-storage/internal/adapters/inbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/analyticsstore"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/bootretry"
@@ -32,19 +35,65 @@ import (
 // cmd/inventory.
 const telemetryFlushTimeout = 5 * time.Second
 
+// drainTimeout bounds the consumer's and the admin server's shutdown.
+const drainTimeout = 10 * time.Second
+
 // errMissingAnalyticsURL is returned when ANALYTICS_DATABASE_URL is unset: the
 // projector is the writer of the analytical database and cannot start without
 // it.
 var errMissingAnalyticsURL = errors.New("ANALYTICS_DATABASE_URL is required")
 
+// projectorConfig is the mandatory part of the process environment.
+type projectorConfig struct {
+	analyticsURL   string
+	kafkaBrokers   []string
+	migrationsPath string
+}
+
+// loadConfig reads and validates the environment through get (os.Getenv in
+// production, a map lookup in the tests). Postgres and Kafka are the only
+// runtime (the real-wiring ADR): ANALYTICS_DATABASE_URL and KAFKA_BROKERS are
+// required (no localhost default) and the error names the variable, so the
+// process exits before any dial. The consumer group is a fixed constant of the
+// binary (inboundkafka.AnalyticsConsumerGroup), so it needs no variable.
+func loadConfig(get func(string) string) (projectorConfig, error) {
+	cfg := projectorConfig{
+		analyticsURL:   strings.TrimSpace(get("ANALYTICS_DATABASE_URL")),
+		migrationsPath: "migrations/analytics",
+	}
+	if cfg.analyticsURL == "" {
+		return projectorConfig{}, errMissingAnalyticsURL
+	}
+	for _, b := range strings.Split(get("KAFKA_BROKERS"), ",") {
+		if b = strings.TrimSpace(b); b != "" {
+			cfg.kafkaBrokers = append(cfg.kafkaBrokers, b)
+		}
+	}
+	if len(cfg.kafkaBrokers) == 0 {
+		return projectorConfig{}, errors.New("KAFKA_BROKERS is required: the projector runs on a real Kafka (comma-separated host:port list), there is no localhost default")
+	}
+	if v := get("ANALYTICS_MIGRATIONS_PATH"); v != "" {
+		cfg.migrationsPath = v
+	}
+	return cfg, nil
+}
+
 func main() {
-	if err := run(); err != nil {
+	// ctx is cancelled by SIGINT/SIGTERM: the start of the graceful drain.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	err := run(ctx)
+	stop()
+	if err != nil {
 		slog.Error("inventory-projector exited with error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(ctx context.Context) error {
+	cfg, err := loadConfig(os.Getenv)
+	if err != nil {
+		return err
+	}
 	logger := newLogger(getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(logger)
 
@@ -62,16 +111,9 @@ func run() error {
 		}
 	}()
 
-	analyticsURL := os.Getenv("ANALYTICS_DATABASE_URL")
-	if analyticsURL == "" {
-		return errMissingAnalyticsURL
-	}
-	kafkaBrokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
-	migrationsPath := getenv("ANALYTICS_MIGRATIONS_PATH", "migrations/analytics")
-
 	// The projector owns the analytical schema: run its migrations on start,
 	// then open the pool it projects into.
-	pool, err := openAnalyticsPool(context.Background(), logger, analyticsURL, migrationsPath)
+	pool, err := openAnalyticsPool(ctx, logger, cfg.analyticsURL, cfg.migrationsPath)
 	if err != nil {
 		return err
 	}
@@ -79,10 +121,15 @@ func run() error {
 
 	projection := analyticsstore.NewPostgresProjection(pool)
 	consumed := analyticsstore.NewConsumedEventsRepo(pool)
-	consumer := inboundkafka.NewAnalyticsConsumer(kafkaBrokers, outboundkafka.AnalyticsTopic, projection, consumed, logger)
+	consumer := inboundkafka.NewAnalyticsConsumer(cfg.kafkaBrokers, outboundkafka.AnalyticsTopic, projection, consumed, logger)
 	defer func() { _ = consumer.Close() }()
 
-	srv := newAdminServer()
+	// /readyz: the drain gate AND the analytical Postgres and Kafka answering.
+	readiness := inboundhttp.NewReadiness(inboundhttp.DefaultReadinessTTL, inboundhttp.DefaultReadinessTimeout,
+		inboundhttp.Dependency{Name: "postgres", Check: pool.Ping},
+		inboundhttp.Dependency{Name: "kafka", Check: outboundkafka.NewBrokerCheck(cfg.kafkaBrokers).Check},
+	)
+	srv := newAdminServer(readiness)
 	go func() {
 		logger.Info("projector admin server listening", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -90,7 +137,7 @@ func run() error {
 		}
 	}()
 
-	return serveUntilSignal(logger, consumer, srv, kafkaBrokers)
+	return serveUntilDone(ctx, logger, consumer.Run, srv, readiness, cfg.kafkaBrokers)
 }
 
 // openAnalyticsPool runs the analytical schema migrations this projector
@@ -125,40 +172,83 @@ func openAnalyticsPool(ctx context.Context, logger *slog.Logger, analyticsURL, m
 	return pool, nil
 }
 
-// newAdminServer builds the projector's admin server: a health endpoint
+// newAdminServer builds the projector's admin server: health and readiness
 // only, on the admin port — the writer serves no reports and no business
 // surface (ADR-0011 keeps the writer and reader deployables separate).
-func newAdminServer() *http.Server {
+//
+//   - GET /healthz is liveness: 200 while the process is up.
+//   - GET /readyz is the drain gate plus the analytical Postgres and Kafka:
+//     503 not_ready while draining, 503 dependency-unavailable (naming the
+//     dependencies) while one is unreachable.
+func newAdminServer(readiness *inboundhttp.Readiness) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if !readiness.Ready() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"not_ready"}`))
+			return
+		}
+		if failing := readiness.Failing(r.Context()); len(failing) > 0 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "dependency-unavailable", "dependencies": failing})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
+	})
 	return &http.Server{Addr: getenv("ADMIN_ADDR", ":8091"), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 }
 
-// serveUntilSignal runs the analytics consumer until SIGINT/SIGTERM, then
-// drains: it cancels the consumer's context and shuts the admin server down
-// within a bounded grace period.
-func serveUntilSignal(logger *slog.Logger, consumer *inboundkafka.AnalyticsConsumer, srv *http.Server, kafkaBrokers []string) error {
-	consumerCtx, cancelConsumer := context.WithCancel(context.Background())
+// serveUntilDone runs the analytics consumer (runConsumer) until ctx is
+// cancelled (SIGINT/SIGTERM) or the consumer stops by itself. A signal drains
+// in order: readiness flips to not-ready, the consumer's context is cancelled
+// and awaited (bounded), the admin server shuts down. A consumer that stops
+// WITHOUT a signal is a broken projector — Postgres and Kafka are the only
+// runtime and the consumer is always on — so the same drain runs and the
+// consumer's error is returned, which makes the process exit non-zero and the
+// orchestrator restart it.
+func serveUntilDone(ctx context.Context, logger *slog.Logger, runConsumer func(context.Context) error, srv *http.Server, readiness *inboundhttp.Readiness, kafkaBrokers []string) error {
+	consumerCtx, cancelConsumer := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelConsumer()
+	consumerDone := make(chan error, 1)
 	go func() {
 		logger.Info("analytics consumer starting", "topic", outboundkafka.AnalyticsTopic, "group", inboundkafka.AnalyticsConsumerGroup, "brokers", kafkaBrokers)
-		if err := consumer.Run(consumerCtx); err != nil {
-			logger.Error("analytics consumer stopped", "error", err)
-		}
+		consumerDone <- runConsumer(consumerCtx)
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+	var consumerErr error
+	consumerExited := false
+	select {
+	case <-ctx.Done():
+	case err := <-consumerDone:
+		consumerExited = true
+		consumerErr = fmt.Errorf("analytics consumer stopped: %w", errors.Join(err, errConsumerStopped))
+		logger.Error("analytics consumer stopped", "error", err)
+	}
 
+	readiness.SetNotReady()
 	cancelConsumer()
+	if !consumerExited {
+		select {
+		case err := <-consumerDone:
+			logger.Debug("analytics consumer stopped after the shutdown signal", "error", err)
+		case <-time.After(drainTimeout):
+			logger.Warn("analytics consumer did not stop before the shutdown drain deadline")
+		}
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
-	return srv.Shutdown(ctx)
+	return errors.Join(consumerErr, srv.Shutdown(shutdownCtx))
 }
+
+// errConsumerStopped marks a consumer that returned before any shutdown signal.
+var errConsumerStopped = errors.New("consumer returned without a shutdown signal")
 
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level

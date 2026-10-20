@@ -40,14 +40,15 @@ internal/
     kafka/cloudevents/       CloudEvents 1.0 structured-mode envelope helpers
     inbound/mcp/             MCP tools, resources and prompts
     outbound/postgres/       pgxpool repos + golang-migrate migrations
-    outbound/memory/         thread-safe in-memory repos (tests, local dev)
-    outbound/events/         log, buffered and multi (fan-out) publishers
+    outbound/memory/         thread-safe in-memory repos: unit/BDD test doubles only
+    outbound/events/         log, buffered and multi (fan-out) publishers: test doubles only (events leave through the outbox)
     outbound/kafka/          integration + analytics publishers (kafka-go)
     outbound/analyticsstore/ analytical Postgres projection + reader
     outbound/facilitycache/  Kafka-fed facility-layout location cache (ADR 0013)
-    outbound/facilitylayout/ sync HTTP + permissive location lookups
+    outbound/facilitylayout/ sync HTTP location lookup (LOCATION_LOOKUP_MODE=http, rollback for kafka)
     outbound/telemetry/      OTel setup, trace-aware slog, metrics
     outbound/bootretry/      boot-time dial retry (ADR 0028)
+    outbound/system/         wall-clock Clock
   resilience/                circuit breaker policy + call deadlines (ADR 0020)
   pgtx/                      transaction-on-context helper (idempotency middleware)
   architecture/              arch-go fitness tests encoding the rule above
@@ -66,9 +67,9 @@ the default entrypoint is `./inventory`). Each is its own composition root.
 
 | Binary | Role | Listens on (default) | Data store | Kafka |
 | --- | --- | --- | --- | --- |
-| `cmd/inventory` | OLTP REST API: every route in `apis/openapi.yaml` except `/reports/*`, plus `/healthz` and `/readyz`; runs the outbox relay, the housekeeping sweeper and every inbound consumer; `republish-product-classifications` subcommand | `HTTP_ADDR` `:8080` | OLTP Postgres (`DATABASE_URL`), or in-memory when unset | produces `warehouse.inventory.events` + `warehouse.inventory.analytics`; consumes facility, transfer, product-master, inbound-receiving and fulfillment topics (each behind a switch) |
-| `cmd/mcp` | MCP server (Streamable HTTP): 4–5 tools, 1 resource template, 1 prompt over the same use cases | `MCP_ADDR` `:8090` | same OLTP Postgres (writes outbox rows, runs no relay) | direct publish only when it has no database |
-| `cmd/inventory-projector` | Analytics writer: projects `warehouse.inventory.analytics` into the rollup | `ADMIN_ADDR` `:8091` (`/healthz` only) | analytical Postgres (`ANALYTICS_DATABASE_URL`, read-write; applies `migrations/analytics`) | consumes `warehouse.inventory.analytics` (group `inventory-analytics`) |
+| `cmd/inventory` | OLTP REST API: every route in `apis/openapi.yaml` except `/reports/*`, plus `/healthz` (liveness) and `/readyz` (drain gate + Postgres + Kafka); always runs the outbox relay, the housekeeping sweeper and all four inbound consumers; `republish-product-classifications` subcommand | `HTTP_ADDR` `:8080` | OLTP Postgres (`DATABASE_URL`, mandatory) | produces `warehouse.inventory.events` + `warehouse.inventory.analytics` (outbox relay); consumes the transfer, product-master, inbound-receiving and fulfillment topics (always on) and, with `LOCATION_LOOKUP_MODE=kafka`, the facility topic; `KAFKA_BROKERS` mandatory |
+| `cmd/mcp` | MCP server (Streamable HTTP): 4–5 tools, 1 resource template, 1 prompt over the same use cases | `MCP_ADDR` `:8090` | same OLTP Postgres (`DATABASE_URL`, mandatory; always writes outbox rows, runs no relay) | none: never dials Kafka, no `/readyz` |
+| `cmd/inventory-projector` | Analytics writer: projects `warehouse.inventory.analytics` into the rollup | `ADMIN_ADDR` `:8091` (`/healthz`, `/readyz`) | analytical Postgres (`ANALYTICS_DATABASE_URL`, read-write; applies `migrations/analytics`) | consumes `warehouse.inventory.analytics` (group `inventory-analytics`); `KAFKA_BROKERS` mandatory; exits non-zero if the consumer dies |
 | `cmd/inventory-reports` | Analytics reader: `GET /reports/flow-accuracy`, `GET /reports/flow-accuracy/freshness`, `/healthz` | `HTTP_ADDR` `:8092` | analytical Postgres, read-only pool | — |
 
 ```mermaid
@@ -183,11 +184,11 @@ red. See [ADR 0006](/docs/adr/0006-arch-go-fitness-tests).
 | `LocationRepo` | Persist/retrieve `Bin` | `postgres`, `memory` |
 | `ReservationRepo` | Persist/retrieve `Reservation`; mint IDs | `postgres`, `memory` |
 | `ProductClassificationRepo` | Persist/retrieve `ProductClassification` by SKU | `postgres`, `memory` |
-| `LocationClassificationLookup` | Zone attributes (hazmat, temperature class) for a bin, for stow placement rules | `facilitycache` (Kafka-fed cache), `facilitylayout` (sync HTTP client, permissive stub) |
-| `EventPublisher` | Publish a `shared.DomainEvent` | `events` (log/buffered/multi fan-out), `postgres.OutboxPublisher` (one `outbox_events` row per event × topic inside the caller's transaction, ADR 0017), `kafka` (integration + analytics, direct publish when there is no database) |
-| `UnitOfWork` | Bracket a use case's `Save`(s) and `Publish`(es) in one atomic scope | `postgres.UnitOfWork` (joins a transaction already on the context, e.g. the idempotency middleware's); `nil` in in-memory mode |
+| `LocationClassificationLookup` | Zone attributes (hazmat, temperature class) for a bin, for stow placement rules | `facilitycache` (Kafka-fed cache, `LOCATION_LOOKUP_MODE=kafka`), `facilitylayout` (sync HTTP client, `LOCATION_LOOKUP_MODE=http`, the rollback) |
+| `EventPublisher` | Publish a `shared.DomainEvent` | `postgres.OutboxPublisher` (one `outbox_events` row per event × topic inside the caller's transaction, ADR 0017; the only implementation the binaries wire, [ADR 0042](../adr/0042-postgres-and-kafka-are-the-only-runtime.md)); the relay then publishes through `kafka` (integration + analytics); `events` (log/buffered/multi) exist as test doubles only |
+| `UnitOfWork` | Bracket a use case's `Save`(s) and `Publish`(es) in one atomic scope | `postgres.UnitOfWork` (joins a transaction already on the context, e.g. the idempotency middleware's) |
 | `ReservationMetrics` | Count reservations created/revoked (`inventory.reservations`) | `telemetry` |
-| `Clock` | `Now()` — makes reservation timeouts deterministic in tests | `memory.SystemClock`, fixed clocks in tests |
+| `Clock` | `Now()` — makes reservation timeouts deterministic in tests | `system.Clock` (the binaries), `memory` fixed clocks (tests) |
 | `PickConfirmationMetrics` / `InboundReceiptMetrics` | Count `inventory.pick_confirmations` / `inventory.inbound_receipt_units` by outcome | `telemetry` |
 | `ProductClassificationLocalCopy` / `ProductClassificationCatalogue` | Apply product-master's classification to the local copy (ADR 0034) / list it for the re-publish command | `postgres`, `memory` |
 | `ProcessedEventRepo` | Claim an inbound event id once (dedupe for product-master, inbound-receipt and TaskCompleted consumers) | `postgres` (`processed_events`), `memory` |
@@ -210,15 +211,19 @@ pool, `lookup.go` location lookup, `transfer.go` / `productmaster.go` /
 `cmd/`: `CORS_ALLOWED_ORIGINS` by the HTTP adapter and `ENVIRONMENT` by the
 telemetry adapter.
 
-The startup order is fixed: telemetry → migrations + pool (under boot retry) →
-publisher (log, direct Kafka, or outbox + relay) → location lookup (blocks on
-the facility cache replay in `kafka` mode) → consumers → HTTP listener. Every
-variable, default and requirement per binary is on
-[Configuration](../operations/configuration.md).
+The startup order is fixed: config validated (`loadConfig`, before any dial) →
+telemetry → migrations + pool (under boot retry) → outbox publisher + relay →
+location lookup (blocks on the facility cache replay in `kafka` mode) → the four
+consumers → HTTP listener. Every variable, default and requirement per binary is
+on [Configuration](../operations/configuration.md).
 
-The in-memory fallback is deliberate: `go run ./cmd/inventory` with no
-environment at all starts a fully functional service, which is what makes the
-`httptest` suite and the godog acceptance suite cheap to run.
+There is no in-memory fallback in any binary
+([ADR 0042](../adr/0042-postgres-and-kafka-are-the-only-runtime.md)): a missing
+`DATABASE_URL` or `KAFKA_BROKERS` is a boot error, and the sensor
+`TestRuntimeBinaryHasNoInMemoryAdapters` fails the build if a `cmd/` binary
+imports `internal/adapters/outbound/memory`. The `httptest` and godog acceptance
+suites stay cheap by using those adapters as test doubles; anything that needs
+real behaviour runs on testcontainers (`TestRunOnRealPostgresAndKafka`).
 
 ## Quality gates
 
@@ -232,7 +237,7 @@ request:
 | `complexity` | `golangci-lint` with `gocyclo,gocognit,cyclop,funlen,nestif` only; informational `gocyclo` report in the job summary |
 | `test` | Unit tests with `-race`; coverage gate on domain + application |
 | `bdd` | godog acceptance suite over the Gherkin specs in `features/` |
-| `contract` | Schemathesis property-based contract tests driven from `apis/openapi.yaml` |
+| `contract` | Schemathesis property-based contract tests driven from `apis/openapi.yaml`, run against a `postgres:16` and a `confluentinc/confluent-local` service container (the real runtime) |
 | `evals-tests` | The MCP eval gate (E1 schema, E2 wire conformance, E3 behavioral) as its own named check — the same suites also run inside `test` |
 | `integration` | The whole `-tags=integration` tree: every Postgres and Kafka test boots its own container via testcontainers (no service container, no `DATABASE_URL`; the Ryuk reaper is disabled on the ephemeral runner) |
 | `mutation-fast` | `gremlins` on `internal/domain/stock` — blocking |
