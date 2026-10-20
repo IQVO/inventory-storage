@@ -23,6 +23,6 @@ data:
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}
   OTEL_SERVICE_NAME: {{ .Values.otel.serviceName | quote }}
   {{- end }}
-  {{- if .Values.kafka.enabled }}
+  # KAFKA_BROKERS is required (the api Deployment's guard fails the render
+  # without it), so it is always rendered.
   KAFKA_BROKERS: {{ .Values.kafka.brokers | quote }}
-  {{- end }}

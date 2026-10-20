@@ -28,6 +28,14 @@ from pathlib import Path
 
 CHART = Path(__file__).resolve().parents[1]
 
+# Postgres and Kafka are mandatory (the chart refuses to render without them),
+# and analytics needs its own DSN: dummy values, no password.
+REAL_RUNTIME = [
+    "--set", "database.url=postgres://u@example.invalid:5432/db",
+    "--set", "kafka.brokers=kafka.invalid:9092",
+    "--set", "analytics.database.projectorUrl=postgres://a@example.invalid:5432/analytics",
+]
+
 FORBIDDEN_PLUGINS = {
     "basic-auth", "key-auth", "jwt", "oauth2", "oidc", "acl",
     "hmac-auth", "ldap-auth", "mtls", "session", "request-termination",
@@ -54,7 +62,7 @@ ENABLE_KONG = [
 
 def render(extra_args: list[str]) -> list[dict]:
     out = subprocess.run(
-        ["helm", "template", "inventory-storage", str(CHART), *extra_args],
+        ["helm", "template", "inventory-storage", str(CHART), *REAL_RUNTIME, *extra_args],
         capture_output=True, text=True, check=True,
     ).stdout
     try:
