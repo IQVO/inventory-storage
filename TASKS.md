@@ -1,5 +1,13 @@
 # Build Tasks — Inventory & Storage
 
+> **Historical build brief.** Tasks 3, 5 and 7 describe the first build, when
+> the service could run in memory and publish through a log or a direct Kafka
+> writer. That is gone: Postgres and Kafka are the only runtime
+> ([ADR 0042](docs/docs/adr/0042-postgres-and-kafka-are-the-only-runtime.md));
+> the `memory` and log adapters remain as unit/BDD test doubles only. See the
+> [README](README.md) and [Configuration](docs/docs/operations/configuration.md)
+> for how the service runs today.
+
 Build the full bounded context described in CLAUDE.md, in order. Keep
 `go build ./...` and `go test ./...` green throughout. Read
 /Users/claudioed/docs/amazon-fulfillment-ddd.md for the domain model first.

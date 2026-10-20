@@ -31,46 +31,47 @@ func migrationsDirForTest(t *testing.T) string {
 	return dir
 }
 
-// TestMigrationsDatabaseURLFallback proves the fallback wiring
-// cmd/inventory/main.go's run() applies before calling buildAdapters:
-// getenv("MIGRATIONS_DATABASE_URL", databaseURL) must return
-// MIGRATIONS_DATABASE_URL's own value when it is set, and databaseURL
-// itself (DATABASE_URL) when it is unset. This is the exact env-lookup
-// line the fix for the PgBouncer/pg_advisory_lock incompatibility (ADR
+// TestMigrationsDatabaseURLFallback proves the fallback wiring loadConfig
+// applies before main calls buildAdapters: MIGRATIONS_DATABASE_URL's own
+// value when it is set, and DATABASE_URL when it is unset. This is the exact
+// lookup the fix for the PgBouncer/pg_advisory_lock incompatibility (ADR
 // 0023-migrations-direct-postgres-connection.md, mirroring
-// order-management's ADR-0029) depends on: any environment that doesn't
-// provision the split (local dev, CI integration tests, a cluster whose
-// Terraform predates this fix) must keep working exactly as before, using
-// DATABASE_URL for everything including migrations.
+// order-management's ADR-0029) depends on: an environment that doesn't
+// provision the split (CI integration tests, a cluster whose Terraform
+// predates this fix) keeps using DATABASE_URL for everything including
+// migrations.
 func TestMigrationsDatabaseURLFallback(t *testing.T) {
 	const databaseURL = "postgres://u:***@pgbouncer.example:6432/inventory_storage?sslmode=disable"
 
 	t.Run("falls back to DATABASE_URL when MIGRATIONS_DATABASE_URL is unset", func(t *testing.T) {
-		t.Setenv("MIGRATIONS_DATABASE_URL", "")
-		os.Unsetenv("MIGRATIONS_DATABASE_URL")
-
-		got := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
-		if got != databaseURL {
-			t.Fatalf("getenv fallback = %q, want the DATABASE_URL value %q", got, databaseURL)
+		env := validEnv()
+		env["DATABASE_URL"] = databaseURL
+		cfg, err := loadConfig(mapEnv(env))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if cfg.migrationsDatabaseURL != databaseURL {
+			t.Fatalf("migrationsDatabaseURL = %q, want the DATABASE_URL value %q", cfg.migrationsDatabaseURL, databaseURL)
 		}
 	})
 
 	t.Run("uses MIGRATIONS_DATABASE_URL when set, not DATABASE_URL", func(t *testing.T) {
 		const direct = "postgres://u:***@postgres-postgresql.example:5432/inventory_storage?sslmode=disable"
-		t.Setenv("MIGRATIONS_DATABASE_URL", direct)
-
-		got := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
-		if got != direct {
-			t.Fatalf("getenv = %q, want the direct MIGRATIONS_DATABASE_URL value %q (must NOT silently keep using DATABASE_URL/PgBouncer)", got, direct)
+		env := validEnv()
+		env["DATABASE_URL"] = databaseURL
+		env["MIGRATIONS_DATABASE_URL"] = direct
+		cfg, err := loadConfig(mapEnv(env))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
 		}
-		if got == databaseURL {
-			t.Fatal("MIGRATIONS_DATABASE_URL and DATABASE_URL collapsed to the same value — the whole point of this env var is that it differs")
+		if cfg.migrationsDatabaseURL != direct {
+			t.Fatalf("migrationsDatabaseURL = %q, want the direct value %q (must NOT silently keep using DATABASE_URL/PgBouncer)", cfg.migrationsDatabaseURL, direct)
 		}
 	})
 }
 
 // TestBuildAdapters_UsesMigrationsDatabaseURLNotDatabaseURLForMigrations
-// proves buildAdapters itself — not just the env-var read above — actually
+// proves buildAdapters itself — not just the lookup above — actually
 // threads migrationsDatabaseURL into the migration step (via
 // openPostgresPool) and databaseURL into the pgxpool, rather than the two
 // ever being conflated. Gives DATABASE_URL an address nothing listens on
@@ -87,7 +88,7 @@ func TestBuildAdapters_UsesMigrationsDatabaseURLNotDatabaseURLForMigrations(t *t
 		unreachableAppURL  = "postgres://u:***@127.0.0.1:1/inventory_storage?sslmode=disable&connect_timeout=1"
 	)
 
-	_, err := buildAdapters(context.Background(), unreachableAppURL, bogusMigrationsURL, migrationsDirForTest(t), "log", nil, quietLogger())
+	_, err := buildAdapters(context.Background(), unreachableAppURL, bogusMigrationsURL, migrationsDirForTest(t), []string{"127.0.0.1:1"}, quietLogger())
 	if err == nil {
 		t.Fatal("a malformed MIGRATIONS_DATABASE_URL must fail boot")
 	}

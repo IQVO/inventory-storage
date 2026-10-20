@@ -184,15 +184,15 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | `facility-layout` | LocationSlotDecommissioned | Event | Kafka `warehouse.facility.events`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | Conformist |
 | Inventory control (operator, `e2e-tests` simulator) | RegisterBin | Command | REST `PUT /bins/{binId}` | OHS |
 | Inbound dock (operator, simulator) | ReceiveStock | Command | REST `POST /stock/receive` (header `Idempotency-Key`) | OHS |
-| inbound-receiving | ReceiptLineReceived (`Good` lines, ADR 0037) | Event | Kafka `warehouse.inbound-receiving.events` → `BookInboundReceiptLine` → `ReceiveStock` (`INBOUND_RECEIPT_CONSUMER_GROUP`, default off); `Damaged` lines are not booked | Conformist (inbound-receiving's Published Language); the REST route above is unchanged |
+| inbound-receiving | ReceiptLineReceived (`Good` lines, ADR 0037) | Event | Kafka `warehouse.inbound-receiving.events` → `BookInboundReceiptLine` → `ReceiveStock` (`INBOUND_RECEIPT_CONSUMER_GROUP`, mandatory, always on); `Damaged` lines are not booked | Conformist (inbound-receiving's Published Language); the REST route above is unchanged |
 | Inbound dock (operator, simulator) | StowStock | Command | REST `POST /stock/stow` | OHS |
 | Inventory control (operator, simulator) | RunCycleCount | Command | REST `POST /bins/{binId}/cycle-count` | OHS |
 | product-master | ProductClassified (local copy, ADR 0034) | Event | Kafka `warehouse.product-master.events` → `ApplyProductClassification` | Conformist (product-master's Published Language) |
 | Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/confirm-pick` | OHS — no sibling context calls it; **decided 2026-10-06: event-driven** — production confirmation comes from fulfillment-execution's `TaskCompleted` (next row), consumed here ([ADR 0035](/docs/adr/0035)) |
-| fulfillment-execution | TaskCompleted (PICK, `order_ref`, `line_no`) | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` → `ConfirmPicksForOrder` → with `line_no`, `ConfirmPick` for exactly that line's ACTIVE reservation; without it, counts the order's picks and confirms on the order's last pick (`TASK_COMPLETED_CONSUMER_MODE=kafka`, default off) | Conformist (fulfillment-execution's Published Language); per-line confirm, counting fallback, short picks not modelled ([ADR 0036](/docs/adr/0036), [ADR 0035](/docs/adr/0035)) |
+| fulfillment-execution | TaskCompleted (PICK, `order_ref`, `line_no`) | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` → `ConfirmPicksForOrder` → with `line_no`, `ConfirmPick` for exactly that line's ACTIVE reservation; without it, counts the order's picks and confirms on the order's last pick (`TASK_COMPLETED_CONSUMER_GROUP`, mandatory, always on) | Conformist (fulfillment-execution's Published Language); per-line confirm, counting fallback, short picks not modelled ([ADR 0036](/docs/adr/0036), [ADR 0035](/docs/adr/0035)) |
 | Operator, `inventory-mfe` | GetBin, GetUsable | Query | REST `GET /bins/{binId}`, `GET /inventory/{sku}/usable` | OHS |
 | Kubernetes | liveness / readiness | Query | REST `GET /healthz`, `GET /readyz` | — |
-| network-inventory-planning | TransferAllocationRequested | Command | Kafka `warehouse.network-inventory-planning.events`, `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` → `transfer_consumer.go` (`TRANSFER_ALLOCATION_CONSUMER_MODE=kafka`, default off; [ADR 0030](/docs/adr/0030)) | Conformist to NIP's Published Language; reply by event |
+| network-inventory-planning | TransferAllocationRequested | Command | Kafka `warehouse.network-inventory-planning.events`, `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` → `transfer_consumer.go` (`TRANSFER_ALLOCATION_CONSUMER_GROUP`, mandatory, always on; [ADR 0030](/docs/adr/0030)) | Conformist to NIP's Published Language; reply by event |
 
 ## Outbound Communication
 
@@ -205,9 +205,9 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | `facility-layout` | location classification | Query | REST `GET /locations/{locationCode}/classification` — only with `LOCATION_LOOKUP_MODE=http`, behind a circuit breaker | ACL; wired but unused (rollback) |
 | `facility-layout` (DLQ) | invalid facility message | Event | Kafka `warehouse.facility.events.dlq` (raw payload + `x-dlq-*` headers) | — |
 
-All Kafka messages are CloudEvents 1.0 structured mode. With Postgres and
-`EVENT_PUBLISHER=kafka` they leave through the transactional outbox and the
-relay in `cmd/inventory` (ADR 0017).
+All Kafka messages are CloudEvents 1.0 structured mode. They always leave through
+the transactional outbox and the relay in `cmd/inventory` (ADR 0017,
+[ADR 0042](/docs/adr/0042)).
 
 ## Ubiquitous Language
 
@@ -302,7 +302,9 @@ The terms that carry the model:
   the pick counter remains only as the backward-compatible fallback.
 - ~~Should the default `LOCATION_LOOKUP_MODE` stay `permissive`?~~
   **Decided 2026-10-06: kept** (ADR 0013/0020) — a cold facility cache would
-  reject every receipt; the cluster already injects `kafka`.
+  reject every receipt; the cluster already injects `kafka`. **Overtaken by
+  [ADR 0042](/docs/adr/0042)**: `permissive` and the unset default were removed; the
+  mode must be `kafka` or `http`.
 - Should the reservation replay guard become a database constraint, closing
   the concurrent first-attempt race?
 - Placement rules for `Fragile`, `Oversized` and `HighValue` are unbuilt —

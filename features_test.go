@@ -1,6 +1,7 @@
 // Package main_test hosts the godog (Cucumber for Go) acceptance suite. It
 // drives the REAL chi router over HTTP — same wiring the service uses in
-// production, but with the in-memory outbound adapters — so every scenario in
+// production, but with the in-memory outbound adapters (unit/BDD test doubles:
+// no cmd/ binary uses them, ADR 0042) — so every scenario in
 // features/*.feature is a true black-box test of the REST API.
 package main_test
 

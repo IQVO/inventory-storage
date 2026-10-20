@@ -110,6 +110,10 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	r := chi.NewRouter()
 	metricCfg := otelchimetric.NewBaseConfig(serviceName)
 
+	// rejectNUL is first: a NUL (U+0000) in the path, query or body is a
+	// client error before any other middleware (including the
+	// Idempotency-Key reservation) or Postgres text parameter sees it.
+	r.Use(rejectNUL)
 	r.Use(middleware.RequestID)
 	r.Use(otelchi.Middleware(serviceName, otelchi.WithChiRoutes(r)))
 	// Emits http.server.request.duration (seconds) per OTel HTTP semantic

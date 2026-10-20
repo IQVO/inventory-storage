@@ -48,7 +48,7 @@ func TestMCPRevokeReservation_WritesOutboxRowsOnBothTopics(t *testing.T) {
 		t.Fatalf("connection string: %v", err)
 	}
 
-	ad, err := buildAdapters(ctx, url, url, migrationsDirForTest(t), "kafka", nil, quietLogger())
+	ad, err := buildAdapters(ctx, url, url, migrationsDirForTest(t), quietLogger())
 	if err != nil {
 		t.Fatalf("buildAdapters: %v", err)
 	}

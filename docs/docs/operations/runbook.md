@@ -22,7 +22,7 @@ carries all four binaries; each Deployment picks its binary with `command:`.
 | Deployment (component label) | Binary | Enabled by | Container port | Service | Probes |
 | --- | --- | --- | --- | --- | --- |
 | `<release>` (`api`) | `cmd/inventory` (image default) | always | `8080` (`http`) | `<release>`, ClusterIP `80 → http` | startup `GET /healthz` (2 s × 30), liveness `GET /healthz` (10 s), readiness `GET /readyz` (5 s) |
-| `<release>-projector` (`analytics-projector`) | `/app/inventory-projector` | `analytics.enabled` | `8091` (`admin`) | none (it serves no traffic) | startup, liveness and readiness all `GET /healthz` on `admin` |
+| `<release>-projector` (`analytics-projector`) | `/app/inventory-projector` | `analytics.enabled` | `8091` (`admin`) | none (it serves no traffic) | startup, liveness and readiness all `GET /healthz` on `admin` (the binary also serves `GET /readyz`, which the chart does not probe) |
 | `<release>-reports` (`analytics-reports`) | `/app/inventory-reports` | `analytics.enabled` | `8092` (`http`) | `<release>-reports`, ClusterIP `80 → http` | all three `GET /healthz` |
 | `<release>-mcp` (`mcp`) | `/app/mcp` | `mcp.enabled` | `8090` (`http`) | `<release>-mcp`, ClusterIP `8090 → 8090` | all three `GET /healthz` |
 | `<release>-frontend` | nginx serving `web/` | `frontend.enabled` | `8080` | ClusterIP `80` | — (static assets; reached through warehouse-infra's Nginx gateway at `/mfes/inventory-storage/`, never through Kong) |
@@ -40,18 +40,24 @@ readiness probe to observe the flip.
 
 | Endpoint | Binary | Answers |
 | --- | --- | --- |
-| `GET /healthz` | all four | `200 {"status":"ok"}` as soon as the listener is up. |
-| `GET /readyz` | `cmd/inventory` only | `200 {"status":"ready"}` until SIGTERM; `503 {"status":"not_ready"}` from the first step of graceful shutdown (`internal/adapters/inbound/http/readiness.go`). |
+| `GET /healthz` | all four | `200 {"status":"ok"}` as soon as the listener is up (liveness only). |
+| `GET /readyz` | `cmd/inventory`, `cmd/inventory-projector` | `200 {"status":"ready"}` while the process is not draining **and** Postgres answers a ping **and** the Kafka broker answers a metadata request (topics are never checked; the verdict is cached for 3 s). `503 {"status":"not_ready"}` from the first step of graceful shutdown; `503` problem type `dependency-unavailable` (naming `postgres` and/or `kafka`) while a dependency is down (`internal/adapters/inbound/http/readiness.go`; the projector answers the same condition with a JSON body). |
 
-Readiness does **not** check Postgres or Kafka at request time. Everything the
-API depends on is verified *before* the listener opens, in this order
-(`cmd/inventory/main.go`): telemetry, migrations + pool ping (under boot retry),
-the location lookup (with `LOCATION_LOOKUP_MODE=kafka` it blocks until the
-facility cache has replayed `warehouse.facility.events`, up to 60 s), then every
-enabled consumer. A pod that cannot reach its database or broker therefore
-never answers `/healthz` and is restarted once the startup probe's 60 s budget
-runs out. The startup probe exists for this fleet's ~10 s first-dial reset
-(Istio native sidecars), which `bootretry` absorbs.
+The chart's default readiness probe for the API is `/readyz`, so a pod whose
+Postgres or broker is unreachable leaves the Service while `/healthz` (liveness)
+stays `200` and the pod is not restarted. `warehouse-infra`'s values may
+override the probe; check them before relying on this. Everything the API
+depends on is also verified *before* the listener opens, in this order
+(`cmd/inventory/main.go`): configuration (`loadConfig` exits naming the first
+missing mandatory variable), telemetry, migrations + pool ping (under boot
+retry), the location lookup (with `LOCATION_LOOKUP_MODE=kafka` it blocks until
+the facility cache has replayed `warehouse.facility.events`, up to 60 s), then
+the four consumers and the outbox relay. A pod that cannot reach its database or
+broker at boot therefore never answers `/healthz` and is restarted once the
+startup probe's 60 s budget runs out. The startup probe exists for this fleet's
+~10 s first-dial reset (Istio native sidecars), which `bootretry` absorbs. Once
+running, a consumer that stops without a shutdown signal ends the
+process non-zero (ADR 0042), so the orchestrator restarts it.
 
 ### Graceful shutdown (`cmd/inventory`)
 
@@ -110,7 +116,7 @@ topics and route by key hash ([ADR 0021](../adr/0021-kafka-producer-partition-ke
 
 | Topic | Producer | Event `type`s (`com.warehouse.wms.inventory-storage.` …) | Key |
 | --- | --- | --- | --- |
-| `warehouse.inventory.events` | `cmd/inventory` (relay or direct), `cmd/mcp` (outbox or direct) | `reservation.StockReserved`, `reservation.ReservationRevoked`, `reservation.TransferStockAllocated`, `reservation.TransferStockAllocationRejected`, `stock.TransferReceiptStaged`, `stock.TransferStockStowed`, `stock.StockRelocated` (ADR 0039), `stock.BinStockLevelChanged` (ADR 0040), `product.ProductClassified` (only from the re-publish command since ADR 0034) | reservation id, transfer line id, relocation id, `<bin>:<sku>`, or SKU |
+| `warehouse.inventory.events` | `cmd/inventory` (outbox relay), `cmd/mcp` (outbox rows, delivered by the `cmd/inventory` relay) | `reservation.StockReserved`, `reservation.ReservationRevoked`, `reservation.TransferStockAllocated`, `reservation.TransferStockAllocationRejected`, `stock.TransferReceiptStaged`, `stock.TransferStockStowed`, `stock.StockRelocated` (ADR 0039), `stock.BinStockLevelChanged` (ADR 0040), `product.ProductClassified` (only from the re-publish command since ADR 0034) | reservation id, transfer line id, relocation id, `<bin>:<sku>`, or SKU |
 | `warehouse.inventory.analytics` | same | `stock.StockReceived`, `stock.ItemStowed`, `stock.ItemUnlocated`, `reservation.StockReserved`, `reservation.StockPicked`, `reservation.ReservationExpired`, `reservation.ReservationRevoked`, `bin.CycleCountCompleted`, `bin.DiscrepancyDetected`, `product.ProductClassified` | reservation id, SKU or bin id |
 | `warehouse.fulfillment.events.dlq` | `cmd/inventory` TaskCompleted consumer | the original message, raw, plus `x-dlq-source-topic`, `x-dlq-error`, `x-dlq-failed-at` headers | original key |
 | `warehouse.facility.events.dlq` | `cmd/inventory` facility cache consumer | the original message, raw, plus `x-dlq-*` headers | original key |
@@ -122,10 +128,10 @@ Payloads are on [Integration events](../api-reference/events.md).
 | Topic | Event `type` handled | Binary / switch | Consumer group | Retry and poison handling |
 | --- | --- | --- | --- | --- |
 | `warehouse.facility.events` | `com.warehouse.wms.facility-layout.zone.ZoneRegistered`, `...locationslot.LocationSlotRegistered`, `...locationslot.LocationSlotDecommissioned` | `cmd/inventory`, `LOCATION_LOOKUP_MODE=kafka` | **unique per process**: `inventory-storage-facility-location-cache-<host>-<pid>-<nanos>`, full replay on every start | malformed messages go to `warehouse.facility.events.dlq` |
-| `warehouse.network-inventory-planning.events` | `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` | `cmd/inventory`, `TRANSFER_ALLOCATION_CONSUMER_MODE=kafka` | `inventory-storage-transfer-allocation` (override `TRANSFER_ALLOCATION_CONSUMER_GROUP`) | transient errors retry the same message forever (200 ms → 5 s); poison is logged and committed past; no DLQ |
-| `warehouse.product-master.events` | `com.warehouse.wms.product-master.product.ProductClassified` | `cmd/inventory`, `PRODUCT_MASTER_CONSUMER_GROUP` set | the configured value (no default) | same as transfer; dedupe through `processed_events` |
-| `warehouse.inbound-receiving.events` | `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` | `cmd/inventory`, `INBOUND_RECEIPT_CONSUMER_GROUP` set | the configured value (no default) | same as transfer; dedupe through `processed_events` |
-| `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` (`task_type` `PICK` → confirm-pick, `RELOCATE` → relocation, ADR 0039; `REPLENISH` → `REPLENISHMENT` relocation, ADR 0041) | `cmd/inventory`, `TASK_COMPLETED_CONSUMER_MODE=kafka` | `inventory-storage-confirm-pick` (override `TASK_COMPLETED_CONSUMER_GROUP`) | 5 attempts then DLQ; poison (incl. a RELOCATE or REPLENISH the ledger can never apply, or a REPLENISH without `request_ref`) straight to `warehouse.fulfillment.events.dlq`; offset committed only after the DLQ write; dedupe through `processed_events` (`task-completed-confirm-pick` / `task-completed-relocate` / `task-completed-replenish`) |
+| `warehouse.network-inventory-planning.events` | `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` | `cmd/inventory`, `TRANSFER_ALLOCATION_CONSUMER_GROUP` (mandatory, always on) | the configured value (chart default `inventory-storage-transfer-allocation`) | transient errors retry the same message forever (200 ms → 5 s); poison is logged and committed past; no DLQ |
+| `warehouse.product-master.events` | `com.warehouse.wms.product-master.product.ProductClassified` | `cmd/inventory`, `PRODUCT_MASTER_CONSUMER_GROUP` (mandatory, always on) | the configured value (chart default `inventory-storage-product-master`) | same as transfer; dedupe through `processed_events` |
+| `warehouse.inbound-receiving.events` | `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` | `cmd/inventory`, `INBOUND_RECEIPT_CONSUMER_GROUP` (mandatory, always on) | the configured value (chart default `inventory-storage-inbound-receipts`) | same as transfer; dedupe through `processed_events` |
+| `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` (`task_type` `PICK` → confirm-pick, `RELOCATE` → relocation, ADR 0039; `REPLENISH` → `REPLENISHMENT` relocation, ADR 0041) | `cmd/inventory`, `TASK_COMPLETED_CONSUMER_GROUP` (mandatory, always on) | the configured value (chart default `inventory-storage-confirm-pick`) | 5 attempts then DLQ; poison (incl. a RELOCATE or REPLENISH the ledger can never apply, or a REPLENISH without `request_ref`) straight to `warehouse.fulfillment.events.dlq`; offset committed only after the DLQ write; dedupe through `processed_events` (`task-completed-confirm-pick` / `task-completed-relocate` / `task-completed-replenish`) |
 | `warehouse.inventory.analytics` | the analytics types above | `cmd/inventory-projector` | `inventory-analytics` | invalid CloudEvents are logged at WARN and skipped (no DLQ); dedupe through `analytics_consumed_events` |
 
 Every group-based consumer starts a **new** group at the earliest offset
@@ -134,9 +140,9 @@ Messages whose `type` the consumer does not handle are committed past.
 
 ## Outbox relay
 
-With `EVENT_PUBLISHER=kafka` and `DATABASE_URL`, use cases write one
+The outbox is the only publishing path: use cases write one
 `outbox_events` row per (event, topic) inside their own transaction, and a
-single relay goroutine in `cmd/inventory` drains them
+single relay goroutine in `cmd/inventory` (always on) drains them
 (`internal/adapters/outbound/postgres/outbox_relay.go`):
 
 - every `OUTBOX_RELAY_INTERVAL` (default 1 s) it claims up to 100 unpublished
@@ -186,12 +192,12 @@ for the same key may already have been delivered.
    part of this procedure.
 
 `cmd/mcp` writes outbox rows but runs no relay: MCP-initiated revocations reach
-Kafka only while a `cmd/inventory` pod with `EVENT_PUBLISHER=kafka` is running
+Kafka only while a `cmd/inventory` pod (which runs the relay) is running
 against the same database.
 
 ## Housekeeping
 
-`cmd/inventory` (Postgres mode only) runs one sweeper goroutine
+`cmd/inventory` runs one sweeper goroutine
 (`internal/adapters/outbound/postgres/sweeper.go`,
 [ADR 0026](../adr/0026-housekeeping-sweeper-idempotency-keys-and-outbox.md))
 every `HOUSEKEEPING_INTERVAL` (1 h). It deletes `idempotency_keys` older than
@@ -246,10 +252,11 @@ for the projector; the transfer ledger for allocation commands). To replay:
 
 - **Facility cache** — restart the `api` pods; each start replays the topic
   from the beginning under a new group.
-- **Group consumers** — stop the consumer (scale `api` to 0 or switch its mode
-  `off` / unset its group), reset the group with the Kafka CLI
+- **Group consumers** — stop the consumer (scale `api` to 0; the consumers
+  cannot be switched off any more), reset the group with the Kafka CLI
   (`kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group <group> --topic <topic> --reset-offsets --to-earliest --execute`),
-  then restart. Alternatively point the switch at a fresh group id.
+  then restart. Alternatively point the `*_CONSUMER_GROUP` variable at a fresh
+  group id.
 - **Analytics read model** — reset group `inventory-analytics`. Event ids
   already in `analytics_consumed_events` (consumer gate) and
   `analytics_processed_events` (projection claim) are skipped, so a full
