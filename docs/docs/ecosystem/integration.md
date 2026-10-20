@@ -22,10 +22,10 @@ each edge behaves when the other side fails, as implemented here.
 | --- | --- | --- | --- |
 | facility-layout | Kafka `warehouse.facility.events` (`ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned`) → in-process location cache | `LOCATION_LOOKUP_MODE=kafka` | Startup blocks up to 60 s for the replay and fails if it does not finish; malformed facts go to `warehouse.facility.events.dlq`; an empty cache answers `Known=false` (stow allowed, fail-open). |
 | facility-layout | REST `GET /locations/{locationCode}/classification` | `LOCATION_LOOKUP_MODE=http` + `FACILITY_LAYOUT_BASE_URL` | 3 attempts per call inside a circuit breaker; an open breaker falls back to permissive (fail-open); a plain error blocks only hazmat / temperature-sensitive SKUs (`409 location-classification-unavailable`). |
-| product-master | Kafka `warehouse.product-master.events`, `ProductClassified` → `product_classifications` | `PRODUCT_MASTER_CONSUMER_GROUP` | Transient errors retry the same message without limit; poison is logged and skipped. While it is off or behind, stows use the last local copy (or none). |
-| network-inventory-planning | Kafka `warehouse.network-inventory-planning.events`, `TransferAllocationRequested` (command) | `TRANSFER_ALLOCATION_CONSUMER_MODE=kafka` | Same retry rule; replies (`TransferStockAllocated` / `...Rejected`) are only sent once the command is handled. |
-| inbound-receiving | Kafka `warehouse.inbound-receiving.events`, `ReceiptLineReceived` → `ReceiveStock` | `INBOUND_RECEIPT_CONSUMER_GROUP` | Same retry rule; dedupe through `processed_events`. |
-| fulfillment-execution | Kafka `warehouse.fulfillment.events`, `TaskCompleted` (PICK, `order_ref`, optional `line_no`) → confirm picks | `TASK_COMPLETED_CONSUMER_MODE=kafka` | 5 attempts, then `warehouse.fulfillment.events.dlq`; poison straight to the DLQ. While off, reservations stay `ACTIVE` until confirmed over REST or expired. |
+| product-master | Kafka `warehouse.product-master.events`, `ProductClassified` → `product_classifications` | `PRODUCT_MASTER_CONSUMER_GROUP` (mandatory) | Transient errors retry the same message without limit; poison is logged and skipped. While the consumer is behind, stows use the last local copy (or none). |
+| network-inventory-planning | Kafka `warehouse.network-inventory-planning.events`, `TransferAllocationRequested` (command) | `TRANSFER_ALLOCATION_CONSUMER_GROUP` (mandatory) | Same retry rule; replies (`TransferStockAllocated` / `...Rejected`) are only sent once the command is handled. |
+| inbound-receiving | Kafka `warehouse.inbound-receiving.events`, `ReceiptLineReceived` → `ReceiveStock` | `INBOUND_RECEIPT_CONSUMER_GROUP` (mandatory) | Same retry rule; dedupe through `processed_events`. |
+| fulfillment-execution | Kafka `warehouse.fulfillment.events`, `TaskCompleted` (PICK, `order_ref`, optional `line_no`) → confirm picks | `TASK_COMPLETED_CONSUMER_GROUP` (mandatory) | 5 attempts, then `warehouse.fulfillment.events.dlq`; poison straight to the DLQ. A consumer that dies ends the process non-zero (ADR 0042). |
 
 ### Downstream (others consume or call this service)
 
@@ -87,16 +87,17 @@ and the replay — and the readiness gate — moves past it.
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `LOCATION_LOOKUP_MODE` | `permissive` | `kafka`: Kafka-fed local cache (what the `warehouse-infra` cluster runs). `http`: synchronous `GET /locations/{locationCode}/classification` on facility-layout per stow — the rollback for `kafka`. `permissive` (default): no lookup; every location reports `Known=false`, so placement rules never block a stow — **decided 2026-10-06: kept** (ADR 0013/0020): a cold facility cache would reject every receipt, and the cluster already injects `kafka`. |
-| `FACILITY_LAYOUT_BASE_URL` | *(unset)* | Base URL for the `http` mode client, e.g. `http://facility-layout:80`. |
-| `KAFKA_BROKERS` | *(unset)* | Required by `kafka` mode — startup fails if it is missing. |
+| `LOCATION_LOOKUP_MODE` | *(none, required)* | `kafka`: Kafka-fed local cache (what the `warehouse-infra` cluster runs). `http`: synchronous `GET /locations/{locationCode}/classification` on facility-layout per stow — the rollback for `kafka`. Unset and `permissive` are boot errors since [ADR 0042](/docs/adr/0042-postgres-and-kafka-are-the-only-runtime): a lookup that answers `Known=false` for every location validates nothing (this supersedes the 2026-10-06 "kept permissive" decision of ADR 0013/0020). |
+| `FACILITY_LAYOUT_BASE_URL` | *(unset)* | Base URL for the `http` mode client, e.g. `http://facility-layout:80`; required in that mode. |
+| `KAFKA_BROKERS` | *(none, required)* | Required by every mode and every binary except `cmd/mcp`; the process exits at boot if it is missing. |
 
 **A second Kafka topic, picks confirmed from an event (ADR 0035, per line ADR 0036).** The
 physical decrement of reserved stock is not an HTTP command in production:
-with `TASK_COMPLETED_CONSUMER_MODE=kafka` (default `off`) this service consumes
+this service always consumes
 `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` from
-`warehouse.fulfillment.events` under the fixed group
-`TASK_COMPLETED_CONSUMER_GROUP` (default `inventory-storage-confirm-pick`). For
+`warehouse.fulfillment.events` under the stable group
+`TASK_COMPLETED_CONSUMER_GROUP` (mandatory; the chart default is
+`inventory-storage-confirm-pick`). For
 a `PICK` task (one per order line) with the additive optional `order_ref` and `line_no`
 it confirms exactly the ACTIVE reservation of (`order_ref`, `line_no`) through the
 existing `ConfirmPick` use case, in one transaction with the CloudEvents-id claim
@@ -111,12 +112,12 @@ exhausted messages go to `warehouse.fulfillment.events.dlq`. See
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `TASK_COMPLETED_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`; `EVENT_PUBLISHER=kafka` for `StockPicked` to leave the service). |
-| `TASK_COMPLETED_CONSUMER_GROUP` | `inventory-storage-confirm-pick` | Consumer group id. |
+| `TASK_COMPLETED_CONSUMER_GROUP` | *(none, required)* | Stable consumer group id (chart default `inventory-storage-confirm-pick`). The consumer always runs; `StockPicked` leaves through the outbox. |
+| `TASK_COMPLETED_CONSUMER_MODE` | *(unset)* | Legacy guard: unset or `kafka`; `off` or anything else is a boot error. |
 
 **A third Kafka topic, product-master's classifications (ADR 0034).**
-product-master owns SKU product classification. With
-`PRODUCT_MASTER_CONSUMER_GROUP` set, this service consumes
+product-master owns SKU product classification. This service always consumes
+(under the mandatory `PRODUCT_MASTER_CONSUMER_GROUP`)
 `com.warehouse.wms.product-master.product.ProductClassified` from
 `warehouse.product-master.events` (key = SKU) and keeps a version-guarded
 local copy in `product_classifications`: `ApplyProductClassification` claims
@@ -131,11 +132,11 @@ deprecated and served from the copy. See [ADR 0034](/docs/adr/0034).
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `PRODUCT_MASTER_CONSUMER_GROUP` | *(unset — consumer off)* | Stable consumer group id (the cluster uses `inventory-storage-product-master`). When set, `DATABASE_URL` and `KAFKA_BROKERS` are required. |
+| `PRODUCT_MASTER_CONSUMER_GROUP` | *(none, required)* | Stable consumer group id (chart default `inventory-storage-product-master`). The consumer always runs. |
 
 **A fourth Kafka topic, inbound-receiving's receipts (ADR 0037).**
-inbound-receiving owns ASNs, dock appointments and receipts. With
-`INBOUND_RECEIPT_CONSUMER_GROUP` set, this service consumes
+inbound-receiving owns ASNs, dock appointments and receipts. This service always
+consumes (under the mandatory `INBOUND_RECEIPT_CONSUMER_GROUP`)
 `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` from
 `warehouse.inbound-receiving.events` (key = ASN number). A `condition=Good`
 line runs the existing `ReceiveStock` use case, in one transaction with the
@@ -150,23 +151,28 @@ See [ADR 0037](/docs/adr/0037).
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `INBOUND_RECEIPT_CONSUMER_GROUP` | *(unset — consumer off)* | Stable consumer group id (chart value `config.inboundReceiptConsumerGroup`). When set, `DATABASE_URL` and `KAFKA_BROKERS` are required, and `EVENT_PUBLISHER=kafka` for `StockReceived` to leave the service. |
+| `INBOUND_RECEIPT_CONSUMER_GROUP` | *(none, required)* | Stable consumer group id (chart value `config.inboundReceiptConsumerGroup`). The consumer always runs; `StockReceived` leaves through the outbox like every other event. |
 
 ## Configuration
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `EVENT_PUBLISHER` | `log` | `kafka` swaps `ports.EventPublisher` for the Kafka adapters. With `DATABASE_URL` set, use cases write `outbox_events` rows inside their own transaction and a background relay in `cmd/inventory` drains them onto the topics (ADR 0017, `OUTBOX_RELAY_INTERVAL`, default `1s`); without a database the adapters publish directly. The default is `log` so tests and local runs need no broker. |
-| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated broker list |
+| `KAFKA_BROKERS` | *(none, required)* | Comma-separated broker list. No `localhost:9092` default: the process exits at boot without it. |
+| `EVENT_PUBLISHER` | *(unset)* | Guard only: unset or `kafka`. Use cases write `outbox_events` rows inside their own transaction and a background relay in `cmd/inventory` drains them onto the topics (ADR 0017, `OUTBOX_RELAY_INTERVAL`, default `1s`). There is no log publisher and no direct publishing (ADR 0042). |
 
 There is one Kafka broker platform-wide: the in-cluster broker deployed by
 `warehouse-infra`, whose external listener is published on the host at
-`localhost:9092`. This repository's own `docker-compose.yml` deliberately
-does **not** define a Kafka service.
+`localhost:9092`. This repository's `docker-compose.yml` defines its own
+disposable Kafka on `localhost:19092` (`KAFKA_HOST_PORT`) so local runs never
+collide with it.
 
 ```bash
-# with the warehouse-infra kind cluster running
-EVENT_PUBLISHER=kafka KAFKA_BROKERS=localhost:9092 go run ./cmd/inventory
+# local Postgres and Kafka from the compose file; the other required variables
+# (LOCATION_LOOKUP_MODE and the four *_CONSUMER_GROUP ids) are listed in the
+# quickstart
+docker compose up -d --wait postgres kafka
+DATABASE_URL=postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable \
+  KAFKA_BROKERS=localhost:19092 go run ./cmd/inventory
 ```
 
 ## Message shapes
@@ -280,19 +286,22 @@ The integration was smoke-tested for real against the shared broker, not just
 unit-tested. To repeat it:
 
 ```bash
-# 1. shared broker up: the warehouse-infra kind cluster, host port 9092
+# 1. Postgres and Kafka up (compose Kafka: host port 19092)
+docker compose up -d --wait postgres kafka
 
-# 2. service up, publishing to Kafka
-EVENT_PUBLISHER=kafka go run ./cmd/inventory &
+# 2. service up (DATABASE_URL, KAFKA_BROKERS, LOCATION_LOOKUP_MODE and the four
+#    *_CONSUMER_GROUP variables exactly as in the quickstart)
+go run ./cmd/inventory &
 
-# 3. seed a bin + stow, then reserve
+# 3. seed a bin + stow, then reserve (the Idempotency-Key header is mandatory)
 curl -s -X POST localhost:8080/reservations \
   -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: smoke-1' \
   -d '{"sku":"SKU-1","quantity":5,"demandRef":"order-42"}'
 
 # 4. confirm it landed
-kubectl --context kind-warehouse -n warehouse-systems exec -it kafka-controller-0 -c kafka -- \
-  kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+docker compose exec kafka kafka-console-consumer \
+  --bootstrap-server localhost:29092 \
   --topic warehouse.inventory.events --from-beginning
 ```
 
@@ -308,6 +317,6 @@ GHCR by the `docker-publish` CI job on `main`) and as a Helm chart
 (`charts/inventory-storage`, linted by the `helm-lint` job). In the local
 Kubernetes stack its REST API is reached through Kong at
 `http://localhost:8000/api/inventory-storage`, and it runs inside the Istio
-mesh for east-west traffic; `EVENT_PUBLISHER` and `KAFKA_BROKERS` are
-ordinary chart values, while `LOCATION_LOOKUP_MODE=kafka` is injected by
-`warehouse-infra` as extra env.
+mesh for east-west traffic; `KAFKA_BROKERS` and the consumer-group ids are
+ordinary (mandatory) chart values, while `LOCATION_LOOKUP_MODE=kafka` is the
+chart default and `warehouse-infra` also sets it explicitly as extra env.

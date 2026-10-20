@@ -17,8 +17,8 @@ this page is drawn from that document.
 | --- | --- |
 | **Topic** | `warehouse.inventory.events` |
 | **Protocol** | Kafka |
-| **Broker** | `KAFKA_BROKERS`, default `localhost:9092` (the single platform broker deployed by `warehouse-infra`, exposed on the host at that address) |
-| **Selected by** | `EVENT_PUBLISHER=kafka` (default is `log`) |
+| **Broker** | `KAFKA_BROKERS`, required (no default; the single platform broker deployed by `warehouse-infra` is exposed on the host at `localhost:9092`, the compose broker of this repository at `localhost:19092`) |
+| **Selected by** | Nothing: events always leave through the transactional outbox and its relay ([ADR-0042](../adr/0042-postgres-and-kafka-are-the-only-runtime.md)); `EVENT_PUBLISHER` is only a guard (unset or `kafka`) |
 | **Envelope** | CloudEvents 1.0 structured mode, mandatory ([ADR-0024](../adr/0024-cloudevents-mandatory-envelope.md)) |
 | **Direction** | Publish only on this channel. (This service separately *consumes* `facility-layout`'s `warehouse.facility.events` for a local location cache — see [Integration](/docs/ecosystem/integration#what-this-service-consumes).) |
 | **Primary consumer** | `wes-work-planning`, projecting into `UsableInventoryObserved` by SKU |

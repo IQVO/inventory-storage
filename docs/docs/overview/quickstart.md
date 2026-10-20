@@ -12,10 +12,10 @@ description: Run the service locally and walk every endpoint with curl.
 | Tool | Why |
 | --- | --- |
 | Go (version from `go.mod`) | build and run the four binaries |
-| Docker | `docker compose up -d postgres` (Option B) and the testcontainers integration suite |
+| Docker | `docker compose up -d --wait postgres kafka` (the local runtime) and the testcontainers integration suite |
 | `make` | the local quality gate (`make help`) |
-| golangci-lint v2.13.1, gremlins v0.6.0, govulncheck, `schemathesis==4.28.0` | optional: `make lint`, `make mutation`, `make vuln`, `make contract` |
-| The warehouse-infra kind cluster | only for Kafka: the platform's single broker is published on `localhost:9092`; this repo has no Kafka in `docker-compose.yml` |
+| golangci-lint v2.13.1, gremlins v0.6.0, govulncheck, `schemathesis==4.28.0` | optional: `make lint`, `make mutation`, `make vuln`, `make contract` (the contract run also needs `DATABASE_URL` and `KAFKA_BROKERS`, see `scripts/contract-test.sh`) |
+| The warehouse-infra kind cluster | optional: it owns `localhost:9092` (the platform's single broker), which is why this repo's `docker-compose.yml` publishes its own Kafka on `localhost:19092` instead |
 
 ## Build and check
 
@@ -27,68 +27,74 @@ make check-all    # check + coverage gate + arch-test + bdd
 
 ## Run it
 
-### Option A — in-memory, no database
+Postgres and Kafka are the only runtime
+([ADR 0042](../adr/0042-postgres-and-kafka-are-the-only-runtime.md)): there is
+no in-memory mode and no log-only publisher, and every binary exits at boot
+naming the first missing variable. The repository's `docker-compose.yml`
+provides both services for local runs.
+
+### Start the API
 
 ```bash
-go run ./cmd/inventory
-```
+# Postgres on :5432 and a disposable Kafka on :19092 (KAFKA_HOST_PORT overrides
+# it; keep KAFKA_BROKERS in step)
+docker compose up -d --wait postgres kafka
 
-With `DATABASE_URL` unset the composition root wires the in-memory adapters
-and logs domain events to stdout. It listens on `:8080` (override with
-`HTTP_ADDR`). This is the fastest way to poke at the API.
-
-### Option B — Postgres
-
-```bash
-docker compose up -d postgres
 export DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable'
+export KAFKA_BROKERS=localhost:19092
+export LOCATION_LOOKUP_MODE=kafka
+export TRANSFER_ALLOCATION_CONSUMER_GROUP=inventory-storage-transfer-allocation
+export PRODUCT_MASTER_CONSUMER_GROUP=inventory-storage-product-master
+export INBOUND_RECEIPT_CONSUMER_GROUP=inventory-storage-inbound-receipts
+export TASK_COMPLETED_CONSUMER_GROUP=inventory-storage-confirm-pick
 go run ./cmd/inventory
 ```
 
-Migrations under `migrations/` (golang-migrate) run automatically at startup;
-`MIGRATIONS_PATH` defaults to `migrations`.
+It listens on `:8080` (override with `HTTP_ADDR`). Migrations under
+`migrations/` (golang-migrate) run automatically at startup; `MIGRATIONS_PATH`
+defaults to `migrations`. The outbox relay and the four consumers start with
+the process; with `LOCATION_LOOKUP_MODE=kafka` startup also waits for the
+replay of `warehouse.facility.events` to finish (use `http` plus
+`FACILITY_LAYOUT_BASE_URL` to call facility-layout instead). See
+[Configuration](../operations/configuration.md) for every variable and
+[Integration](/docs/ecosystem/integration) for what lands on the wire and what
+is consumed.
 
-:::note[Idempotency-Key in Postgres mode]
-With `DATABASE_URL` set, `POST /stock/receive` and `POST /reservations` sit
-behind the transactional `Idempotency-Key` middleware (ADR 0018): add
-`-H 'Idempotency-Key: <any-unique-string>'` to those two calls in the walk
-below, or they answer `400 idempotency-key-required`. In-memory mode
-(Option A) does not apply the middleware.
+:::note[The kind cluster owns localhost:9092]
+The shared broker deployed by `warehouse-infra` is published on the host at
+`localhost:9092`. This repository's compose Kafka therefore uses `19092`, so
+both can run side by side. Point `KAFKA_BROKERS` at `localhost:9092` instead to
+use the cluster's broker (and pick consumer-group ids that differ from the
+deployed ones, so a local process never steals their partitions).
 :::
 
-### Option C — publishing integration events to Kafka
-
-The shared broker lives outside this repository: it is the single in-cluster
-Kafka deployed by `warehouse-infra`, whose external listener is published on
-the host at `localhost:9092`. With that cluster running:
-
-```bash
-EVENT_PUBLISHER=kafka KAFKA_BROKERS=localhost:9092 go run ./cmd/inventory
-```
-
-Add `LOCATION_LOOKUP_MODE=kafka` to also build the facility-layout location
-cache from `warehouse.facility.events` (startup then waits for the replay to
-finish). See [Integration](/docs/ecosystem/integration) for what lands on the
-wire and what is consumed.
+:::note[Idempotency-Key]
+`POST /stock/receive`, `POST /reservations`, `POST /transfers/{transferLineId}/receipt`,
+`.../stow` and `POST /relocations` sit behind the transactional
+`Idempotency-Key` middleware (ADR 0018) in every deployment: add
+`-H 'Idempotency-Key: <any-unique-string>'` to those calls in the walk below,
+or they answer `400 idempotency-key-required`.
+:::
 
 ### The other three binaries
 
 ```bash
-# MCP server on :8090 (own in-memory store unless DATABASE_URL is set)
+# MCP server on :8090 (needs DATABASE_URL only: it writes outbox rows that the
+# cmd/inventory relay delivers, so it never dials Kafka)
 go run ./cmd/mcp
 
 # Analytics: needs a second Postgres database for the read model
-export ANALYTICS_DATABASE_URL='postgres://inventory:***@localhost:5432/inventory_analytics?sslmode=disable'
-KAFKA_BROKERS=localhost:9092 go run ./cmd/inventory-projector   # admin /healthz on :8091
-go run ./cmd/inventory-reports                                  # reports REST on :8092
+export ANALYTICS_DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory_analytics?sslmode=disable'
+KAFKA_BROKERS=localhost:19092 go run ./cmd/inventory-projector   # admin /healthz and /readyz on :8091
+go run ./cmd/inventory-reports                                    # reports REST on :8092
 curl -s 'localhost:8092/reports/flow-accuracy?from=2026-10-01T00:00:00Z&to=2026-10-02T00:00:00Z'
 # {"rows":[...]}
 ```
 
-The projector only sees events when `cmd/inventory` runs with
-`EVENT_PUBLISHER=kafka` against the same broker. Create the analytical database
-first (`createdb`, or `CREATE DATABASE inventory_analytics;` in the compose
-Postgres); the projector applies `migrations/analytics` itself.
+The projector only sees events once `cmd/inventory` (whose relay publishes to
+the analytics topic) runs against the same broker. Create the analytical
+database first (`createdb`, or `CREATE DATABASE inventory_analytics;` in the
+compose Postgres); the projector applies `migrations/analytics` itself.
 
 ### Through the cluster gateway
 
@@ -101,9 +107,9 @@ With warehouse-infra running, the deployed API is behind Kong at
 There is no seed script: the walk below *is* the seed. Register bins with
 `PUT /bins/{binId}`, then receive and stow stock. Product classifications
 cannot be written here any more (`PUT /products/{sku}/classification` answers
-`410 classification-moved`); they arrive from product-master when
-`PRODUCT_MASTER_CONSUMER_GROUP` is set, so a SKU without one is stowed without
-hazmat/temperature checks.
+`410 classification-moved`); they arrive from product-master through the
+always-on `PRODUCT_MASTER_CONSUMER_GROUP` consumer, so a SKU product-master has
+not classified yet is stowed without hazmat/temperature checks.
 
 ## Walk the API
 
@@ -119,7 +125,8 @@ resized), `409 capacity-below-occupancy` if you ask for less than it holds.
 curl -s localhost:8080/healthz
 # {"status":"ok"}
 curl -s localhost:8080/readyz
-# {"status":"ready"}   (503 {"status":"not_ready"} once shutdown has begun)
+# {"status":"ready"}   (503 {"status":"not_ready"} once shutdown has begun,
+#                        503 dependency-unavailable while Postgres or Kafka is down)
 
 # 0. Register the bin (inventory control).
 curl -s -i -X PUT localhost:8080/bins/A-1-1 \
