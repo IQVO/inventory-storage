@@ -1,5 +1,12 @@
 # Quality Engineering — Task 10 (linting, coverage, integration tests, mutation tests, CI)
 
+> **Historical build brief.** The runtime and the tests have moved on: Postgres
+> and Kafka are the only runtime ([ADR 0042](docs/docs/adr/0042-postgres-and-kafka-are-the-only-runtime.md)),
+> so the `memory` adapters named below are unit/BDD test doubles only, and the
+> integration suites boot their own Postgres/Kafka with testcontainers instead
+> of being skippable on `DATABASE_URL`. See
+> [Testing](docs/docs/development/testing.md) for the current setup.
+
 This is a large, multi-stage task. Work through the stages IN ORDER below and
 do not skip ahead — each stage's Definition of Done gates the next. This is
 STRICTLY ADDITIVE to the existing bounded context: do not modify any existing

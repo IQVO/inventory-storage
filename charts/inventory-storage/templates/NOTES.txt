@@ -15,14 +15,6 @@ To reach it locally:
   curl http://localhost:8080/healthz
 {{- end }}
 
-{{- if not (or .Values.database.url .Values.database.existingSecret) }}
-
-NOTE: no database.url / database.existingSecret was set — running with
-IN-MEMORY adapters (state is lost on pod restart).
-{{- end }}
-
-{{- if not .Values.kafka.enabled }}
-NOTE: kafka.enabled is false — this service publishes StockReserved /
-ReservationRevoked to its own log only and does not join the cross-service
-Kafka bus (wes-work-planning's usable-inventory projection will not update).
-{{- end }}
+Runtime: Postgres ({{ if .Values.database.existingSecret }}Secret {{ .Values.database.existingSecret }}{{ else }}database.url{{ end }}) and Kafka ({{ .Values.kafka.brokers }}).
+The chart renders only with both; the transfer-allocation, product-master,
+inbound-receipt and TaskCompleted consumers always run.

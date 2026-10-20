@@ -96,15 +96,16 @@ the record is written with a span on the context
 | Message | Fields | Source |
 | --- | --- | --- |
 | `http request` (INFO; ERROR for 5xx) | `method`, `path`, `status`, `duration_ms`, `bytes`, `request_id` (chi `X-Request-Id`) | `internal/adapters/inbound/http/logging.go` (API and reports) |
-| `domain event published` | `event_name`, `payload` | `internal/adapters/outbound/events/log_publisher.go` (`EVENT_PUBLISHER=log`) |
-| `event publisher configured` | `publisher`, `integration_topic`, `analytics_topic`, `brokers` | startup |
+| `event publisher configured` | `publisher`, `integration_topic`, `analytics_topic`, `brokers` | startup (`publisher` is always the transactional outbox + relay) |
 | `outbox relay: send failed, stopping this pass at the failed row` (WARN) | `outbox_id`, `topic`, `attempts`, `error` | relay |
 | `outbox relay: row reached the attempt cap and is excluded from future claims; ...` (ERROR) | `outbox_id`, `topic`, `event_type`, `key`, `attempts`, `max_attempts`, `error` | relay, once per row when it reaches `OUTBOX_MAX_ATTEMPTS` ([ADR 0038](../adr/0038-outbox-relay-attempt-cap.md)) |
 | `outbox relay started` | `interval`, `max_attempts` | `cmd/inventory/adapters.go` |
 | `retrying` (WARN) / `succeeded after retry` | `op`, `attempt`, `in`, `err` | `bootretry` |
-| `... consumer configured` / `... not started` | `topic`, `consumer_group`, `reason` | each consumer at startup |
+| `... consumer configured` | `topic`, `consumer_group`, `reason` | each consumer at startup (all four always start) |
 | `... retrying same message` (WARN), `... dead-lettering ...` (ERROR), `skipping ... not a valid CloudEvent` (WARN, sampled for TaskCompleted) | `error`, `attempt`, `partition`, `offset` | Kafka consumers |
 | `facility location cache is ready` / `... ready but EMPTY ...` (WARN) | `slots`, `zones`, `topic` | `cmd/inventory/lookup.go` |
+| `... consumer stopped` (ERROR) | `error` | a consumer returned without a shutdown signal; the process then exits non-zero ([ADR 0042](../adr/0042-postgres-and-kafka-are-the-only-runtime.md)) |
+| `readiness: dependency is not ready` (WARN) | `dependency` (`postgres` / `kafka`), `error` | `/readyz` check |
 | `housekeeping sweeper started` | `interval`, `idempotency_key_ttl`, `outbox_retention`, `order_pick_progress_retention` | `cmd/inventory/housekeeping.go` |
 
 ## Dashboards

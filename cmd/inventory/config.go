@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -39,82 +41,119 @@ type config struct {
 	// this fix).
 	migrationsDatabaseURL string
 	migrationsPath        string
-	eventPublisher        string
 
+	// locationLookupMode is LOCATION_LOOKUP_MODE: "kafka" or "http" (the
+	// real-wiring ADR removed "permissive" and the unset default).
 	locationLookupMode    string
 	facilityLayoutBaseURL string
-	kafkaBrokers          []string // KAFKA_BROKERS split on ","; nil when unset (publishers: see publisherBrokers)
+	kafkaBrokers          []string // KAFKA_BROKERS split on ","; never empty after loadConfig
 
-	// transferConsumerMode is TRANSFER_ALLOCATION_CONSUMER_MODE: "off"
-	// (default) or "kafka" — see buildTransferAllocationConsumer.
-	transferConsumerMode string
-	// transferConsumerGroup is TRANSFER_ALLOCATION_CONSUMER_GROUP; empty
-	// means inboundkafka.DefaultConsumerGroup.
+	// The four consumer-group ids are mandatory: every consumer always runs
+	// under a stable group so a restarted pod resumes from its offsets.
+	// transferConsumerGroup is TRANSFER_ALLOCATION_CONSUMER_GROUP.
 	transferConsumerGroup string
 
 	// productMasterConsumerGroup is PRODUCT_MASTER_CONSUMER_GROUP: the
 	// stable consumer group of the product-master classification consumer
-	// (ADR 0034). Empty means the consumer is not started.
+	// (ADR 0034).
 	productMasterConsumerGroup string
 
 	// inboundReceiptConsumerGroup is INBOUND_RECEIPT_CONSUMER_GROUP: the
 	// stable consumer group of the inbound-receiving receipt consumer
-	// (ADR 0037). Empty means the consumer is not started.
+	// (ADR 0037).
 	inboundReceiptConsumerGroup string
 
-	// taskCompletedConsumerMode is TASK_COMPLETED_CONSUMER_MODE: "off"
-	// (default) or "kafka" — see buildTaskCompletedConsumer (ADR 0035).
-	taskCompletedConsumerMode string
-	// taskCompletedConsumerGroup is TASK_COMPLETED_CONSUMER_GROUP; empty
-	// means inboundkafka.DefaultTaskCompletedConsumerGroup.
+	// taskCompletedConsumerGroup is TASK_COMPLETED_CONSUMER_GROUP: the
+	// stable consumer group of the TaskCompleted confirm-pick consumer
+	// (ADR 0035).
 	taskCompletedConsumerGroup string
 }
 
-// loadConfig reads the process environment.
-func loadConfig() config {
-	databaseURL := os.Getenv("DATABASE_URL")
+// loadConfig reads and validates the process environment through get
+// (os.Getenv in production, a map lookup in the tests). Postgres and Kafka
+// are the only runtime (the real-wiring ADR): DATABASE_URL, KAFKA_BROKERS,
+// LOCATION_LOOKUP_MODE and the four consumer-group ids are mandatory, and
+// every problem is an error that names the variable, so the process exits
+// before telemetry, the listener or any dial. EVENT_PUBLISHER and the two
+// *_CONSUMER_MODE variables stay accepted (warehouse-infra sets them) but only
+// as unset or kafka.
+func loadConfig(get func(string) string) (config, error) {
+	or := func(key, fallback string) string {
+		if v := get(key); v != "" {
+			return v
+		}
+		return fallback
+	}
+	databaseURL := strings.TrimSpace(get("DATABASE_URL"))
 	cfg := config{
-		logLevel:              getenv("LOG_LEVEL", "info"),
-		serviceName:           getenv("OTEL_SERVICE_NAME", inboundhttp.DefaultServiceName),
-		serviceVersion:        getenv("SERVICE_VERSION", telemetry.DefaultServiceVersion),
-		otlpEndpoint:          getenv("OTEL_EXPORTER_OTLP_ENDPOINT", telemetry.DefaultEndpoint),
-		httpAddr:              getenv("HTTP_ADDR", ":8080"),
+		logLevel:              or("LOG_LEVEL", "info"),
+		serviceName:           or("OTEL_SERVICE_NAME", inboundhttp.DefaultServiceName),
+		serviceVersion:        or("SERVICE_VERSION", telemetry.DefaultServiceVersion),
+		otlpEndpoint:          or("OTEL_EXPORTER_OTLP_ENDPOINT", telemetry.DefaultEndpoint),
+		httpAddr:              or("HTTP_ADDR", ":8080"),
 		databaseURL:           databaseURL,
-		migrationsDatabaseURL: getenv("MIGRATIONS_DATABASE_URL", databaseURL),
-		migrationsPath:        getenv("MIGRATIONS_PATH", "migrations"),
-		eventPublisher:        getenv("EVENT_PUBLISHER", "log"),
-		locationLookupMode:    getenv("LOCATION_LOOKUP_MODE", "permissive"),
-		facilityLayoutBaseURL: os.Getenv("FACILITY_LAYOUT_BASE_URL"),
-		transferConsumerMode:  getenv("TRANSFER_ALLOCATION_CONSUMER_MODE", "off"),
-		transferConsumerGroup: os.Getenv("TRANSFER_ALLOCATION_CONSUMER_GROUP"),
-
-		productMasterConsumerGroup: os.Getenv("PRODUCT_MASTER_CONSUMER_GROUP"),
-
-		inboundReceiptConsumerGroup: os.Getenv("INBOUND_RECEIPT_CONSUMER_GROUP"),
-
-		taskCompletedConsumerMode:  getenv("TASK_COMPLETED_CONSUMER_MODE", "off"),
-		taskCompletedConsumerGroup: os.Getenv("TASK_COMPLETED_CONSUMER_GROUP"),
+		migrationsDatabaseURL: or("MIGRATIONS_DATABASE_URL", databaseURL),
+		migrationsPath:        or("MIGRATIONS_PATH", "migrations"),
+		facilityLayoutBaseURL: get("FACILITY_LAYOUT_BASE_URL"),
 	}
-	if raw := os.Getenv("KAFKA_BROKERS"); raw != "" {
-		cfg.kafkaBrokers = strings.Split(raw, ",")
+	if databaseURL == "" {
+		return config{}, errors.New("DATABASE_URL is required: this context runs on a real Postgres, there is no in-memory mode")
 	}
-	return cfg
+	cfg.kafkaBrokers = splitBrokers(get("KAFKA_BROKERS"))
+	if len(cfg.kafkaBrokers) == 0 {
+		return config{}, errors.New("KAFKA_BROKERS is required: this context runs on a real Kafka (comma-separated host:port list), there is no localhost default")
+	}
+	if err := onlyUnsetOrKafka("EVENT_PUBLISHER", get("EVENT_PUBLISHER"), "events always leave through the transactional outbox"); err != nil {
+		return config{}, err
+	}
+	if err := onlyUnsetOrKafka("TRANSFER_ALLOCATION_CONSUMER_MODE", get("TRANSFER_ALLOCATION_CONSUMER_MODE"), "the transfer allocation consumer always runs"); err != nil {
+		return config{}, err
+	}
+	if err := onlyUnsetOrKafka("TASK_COMPLETED_CONSUMER_MODE", get("TASK_COMPLETED_CONSUMER_MODE"), "the TaskCompleted confirm-pick consumer always runs"); err != nil {
+		return config{}, err
+	}
+	mode := strings.ToLower(strings.TrimSpace(get("LOCATION_LOOKUP_MODE")))
+	if mode != "kafka" && mode != "http" {
+		return config{}, fmt.Errorf("LOCATION_LOOKUP_MODE=%q is not supported: set kafka (facility-events cache) or http (facility-layout REST); permissive and unset were removed because they validate no location at all", get("LOCATION_LOOKUP_MODE"))
+	}
+	cfg.locationLookupMode = mode
+	for _, g := range []struct {
+		env string
+		dst *string
+	}{
+		{"TRANSFER_ALLOCATION_CONSUMER_GROUP", &cfg.transferConsumerGroup},
+		{"PRODUCT_MASTER_CONSUMER_GROUP", &cfg.productMasterConsumerGroup},
+		{"INBOUND_RECEIPT_CONSUMER_GROUP", &cfg.inboundReceiptConsumerGroup},
+		{"TASK_COMPLETED_CONSUMER_GROUP", &cfg.taskCompletedConsumerGroup},
+	} {
+		v := strings.TrimSpace(get(g.env))
+		if v == "" {
+			return config{}, fmt.Errorf("%s is required: the consumer always runs and needs a STABLE consumer group id (a restarted pod resumes from its committed offsets)", g.env)
+		}
+		*g.dst = v
+	}
+	return cfg, nil
 }
 
-// defaultPublisherBroker is the one KAFKA_BROKERS fallback in this binary:
-// the Kafka publishers and the outbox relay dial it when KAFKA_BROKERS is
-// unset (local runs). The consumers have no fallback on purpose.
-const defaultPublisherBroker = "localhost:9092"
-
-// publisherBrokers is the broker list of the Kafka publishers and the outbox
-// relay (EVENT_PUBLISHER=kafka): KAFKA_BROKERS as read by loadConfig, or
-// defaultPublisherBroker when it is unset. Consumers use kafkaBrokers
-// directly, which stays nil when unset so their boot checks fail loudly.
-func (c config) publisherBrokers() []string {
-	if len(c.kafkaBrokers) == 0 {
-		return []string{defaultPublisherBroker}
+// splitBrokers splits a comma-separated broker list, dropping blanks.
+func splitBrokers(raw string) []string {
+	var brokers []string
+	for _, b := range strings.Split(raw, ",") {
+		if b = strings.TrimSpace(b); b != "" {
+			brokers = append(brokers, b)
+		}
 	}
-	return c.kafkaBrokers
+	return brokers
+}
+
+// onlyUnsetOrKafka keeps a legacy variable accepted (warehouse-infra still
+// sets it) but only with the value it can have now: unset or kafka.
+func onlyUnsetOrKafka(env, raw, why string) error {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	if v == "" || v == "kafka" {
+		return nil
+	}
+	return fmt.Errorf("%s=%s is not supported: %s (unset it or use kafka)", env, raw, why)
 }
 
 // newLogger builds the process-wide structured logger. LOG_LEVEL maps

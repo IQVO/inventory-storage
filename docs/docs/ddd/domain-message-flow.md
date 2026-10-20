@@ -181,8 +181,8 @@ sequenceDiagram
 Source: this repo's `internal/adapters/inbound/kafka/task_completed_consumer.go`,
 `internal/application/usecases/confirm_picks_for_order.go`, `confirm_pick.go`;
 `fulfillment-execution`'s `TaskCompleted` publisher (it adds the optional
-`order_ref` and `line_no`). The consumer is off by default
-(`TASK_COMPLETED_CONSUMER_MODE`). A `Reservation` stores the order line it was
+`order_ref` and `line_no`). The consumer is always on
+(`TASK_COMPLETED_CONSUMER_GROUP`, ADR 0042). A `Reservation` stores the order line it was
 made for (`line_no`, sent by order-management as `lineNo`), so lines 1 and 3 being
 picked confirms exactly lines 1 and 3 and leaves line 2 `ACTIVE`. Reservations
 created before `line_no` existed, and `TaskCompleted` events from a producer that

@@ -23,26 +23,40 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
-	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
+	kafkaadapter "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/system"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/telemetry"
 )
 
 func main() {
-	if err := run(); err != nil {
+	// ctx is cancelled by SIGINT/SIGTERM: the start of the graceful drain.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	err := run(ctx)
+	stop()
+	if err != nil {
 		slog.Error("service exited with error", "error", err)
 		os.Exit(1)
 	}
 }
 
 // run is the startup sequence. Order matters and mirrors the shutdown
-// order in reverse (defers run LIFO): telemetry first (so every adapter is
-// built against the real providers) and flushed last; adapters next and
-// closed after the HTTP server and the inbound consumers have stopped.
-func run() error {
-	cfg := loadConfig()
+// order in reverse (defers run LIFO): the mandatory configuration first (a
+// missing DATABASE_URL or KAFKA_BROKERS fails the boot before anything is
+// dialled), then telemetry (so every adapter is built against the real
+// providers) flushed last; adapters next and closed after the HTTP server
+// and the inbound consumers have stopped. ctx is the signal context: its
+// cancellation starts the drain, and a background worker's death does too
+// (run then returns that error, so the process exits non-zero).
+func run(ctx context.Context) error {
+	cfg, err := loadConfig(os.Getenv)
+	if err != nil {
+		return err
+	}
 	logger := newLogger(cfg.logLevel)
 	slog.SetDefault(logger)
 
@@ -57,7 +71,7 @@ func run() error {
 	}
 	defer flushTelemetry()
 
-	adapters, err := buildAdapters(context.Background(), cfg.databaseURL, cfg.migrationsDatabaseURL, cfg.migrationsPath, cfg.eventPublisher, cfg.publisherBrokers(), logger)
+	adapters, err := buildAdapters(context.Background(), cfg.databaseURL, cfg.migrationsDatabaseURL, cfg.migrationsPath, cfg.kafkaBrokers, logger)
 	if err != nil {
 		return err
 	}
@@ -68,19 +82,25 @@ func run() error {
 		return err
 	}
 
-	// readiness gates GET /readyz (ADR-0020 §graceful shutdown). The
-	// zero value is ready; SetNotReady is called as the FIRST step of
-	// the shutdown sequence (see shutdown.go), before the HTTP server
-	// itself stops accepting connections.
-	readiness := &inboundhttp.Readiness{}
+	// readiness gates GET /readyz (ADR-0020 §graceful shutdown): the drain
+	// gate (SetNotReady is called as the FIRST step of the shutdown
+	// sequence, see shutdown.go, before the HTTP server stops accepting
+	// connections) AND Postgres and Kafka answering. /healthz stays liveness.
+	readiness := inboundhttp.NewReadiness(inboundhttp.DefaultReadinessTTL, inboundhttp.DefaultReadinessTimeout,
+		inboundhttp.Dependency{Name: "postgres", Check: adapters.pool.Ping},
+		inboundhttp.Dependency{Name: "kafka", Check: kafkaadapter.NewBrokerCheck(cfg.kafkaBrokers).Check},
+	)
 
 	// The inbound consumers' Kafka loops (facility location cache when
-	// LOCATION_LOOKUP_MODE=kafka, transfer allocation commands when
-	// TRANSFER_ALLOCATION_CONSUMER_MODE=kafka) must outlive this call
-	// and stop on shutdown, so they share one cancellable context
-	// rather than the signal context established in
-	// serveHTTPUntilSignal — which does not exist yet at this point.
-	lookupCtx, stopLookup := context.WithCancel(context.Background())
+	// LOCATION_LOOKUP_MODE=kafka, transfer allocation commands, product
+	// classification, receipts, task completions) must outlive this call
+	// and stop on shutdown, so they share one cancellable context.
+	// The consumers' loops must outlive the signal and stop only in the
+	// shutdown sequence (after readiness flips and the HTTP drain), so their
+	// context is detached from ctx's cancellation; it keeps ctx's values and
+	// carries the deaths channel on which a dead consumer reports.
+	workerCtx, deaths := withDeaths(context.WithoutCancel(ctx))
+	lookupCtx, stopLookup := context.WithCancel(workerCtx)
 	lookup, err := buildLocationLookup(lookupCtx, cfg.locationLookupMode, cfg.facilityLayoutBaseURL, cfg.kafkaBrokers, circuitBreakerMetrics(logger), logger)
 	if err != nil {
 		stopLookup()
@@ -91,8 +111,7 @@ func run() error {
 	// the network transfer saga): consumes network-inventory-planning's
 	// TransferAllocationRequested and runs AllocateTransferStock. Runs
 	// under the SAME lookupCtx, so shutdown's stopLookup cancel unblocks
-	// both consumer loops. Default "off"; see buildTransferAllocationConsumer
-	// for the fail-closed guards.
+	// both consumer loops. Always on.
 	transfer, err := buildTransferAllocationConsumer(lookupCtx, logger, cfg, adapters)
 	if err != nil {
 		stopLookup()
@@ -103,7 +122,6 @@ func run() error {
 	// product-master classification consumer (ADR 0034): keeps the local
 	// product_classifications copy StowStock reads in step with
 	// product-master. Same lookupCtx, so shutdown drains it with the rest.
-	// Not started unless PRODUCT_MASTER_CONSUMER_GROUP is set.
 	productMaster, err := buildProductMasterConsumer(lookupCtx, logger, cfg, adapters)
 	if err != nil {
 		stopLookup()
@@ -121,12 +139,12 @@ func run() error {
 		lookup.close()
 		return err
 	}
-	server := buildServer(adapters, memory.SystemClock{}, lookup.lookup, reservationMetrics, readiness)
+	server := buildServer(adapters, system.Clock{}, lookup.lookup, reservationMetrics, readiness)
 	httpServer := &http.Server{
 		Addr:              cfg.httpAddr,
 		Handler:           inboundhttp.NewRouter(server, logger, cfg.serviceName),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	return serveHTTPUntilSignal(logger, httpServer, readiness, stopLookup, lookup.close, lookup.runDone, consumers)
+	return serveHTTPUntilSignal(ctx, logger, httpServer, readiness, deaths, stopLookup, lookup.close, lookup.runDone, consumers)
 }

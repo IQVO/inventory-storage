@@ -31,46 +31,79 @@ func migrationsDirForTest(t *testing.T) string {
 	return dir
 }
 
-// TestMigrationsDatabaseURLFallback proves the fallback wiring
-// cmd/mcp/main.go's run() applies before calling buildAdapters:
-// getenv("MIGRATIONS_DATABASE_URL", databaseURL) must return
-// MIGRATIONS_DATABASE_URL's own value when it is set, and databaseURL
-// itself (DATABASE_URL) when it is unset. This is the exact env-lookup
-// line the fix for the PgBouncer/pg_advisory_lock incompatibility (ADR
+// TestMigrationsDatabaseURLFallback proves the fallback wiring loadConfig
+// applies before run() calls buildAdapters: MIGRATIONS_DATABASE_URL's own
+// value when it is set, and DATABASE_URL when it is unset. This is the exact
+// lookup the fix for the PgBouncer/pg_advisory_lock incompatibility (ADR
 // 0023-migrations-direct-postgres-connection.md, mirroring
-// order-management's ADR-0029) depends on: any environment that doesn't
-// provision the split (local dev, CI integration tests, a cluster whose
-// Terraform predates this fix) must keep working exactly as before, using
-// DATABASE_URL for everything including migrations.
+// order-management's ADR-0029) depends on: an environment that doesn't
+// provision the split (CI integration tests, a cluster whose Terraform
+// predates this fix) keeps using DATABASE_URL for everything including
+// migrations.
 func TestMigrationsDatabaseURLFallback(t *testing.T) {
 	const databaseURL = "postgres://u:***@pgbouncer.example:6432/inventory_storage?sslmode=disable"
 
 	t.Run("falls back to DATABASE_URL when MIGRATIONS_DATABASE_URL is unset", func(t *testing.T) {
-		t.Setenv("MIGRATIONS_DATABASE_URL", "")
-		os.Unsetenv("MIGRATIONS_DATABASE_URL")
-
-		got := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
-		if got != databaseURL {
-			t.Fatalf("getenv fallback = %q, want the DATABASE_URL value %q", got, databaseURL)
+		cfg, err := loadConfig(mapEnv(map[string]string{"DATABASE_URL": databaseURL}))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if cfg.migrationsDatabaseURL != databaseURL {
+			t.Fatalf("migrationsDatabaseURL = %q, want the DATABASE_URL value %q", cfg.migrationsDatabaseURL, databaseURL)
 		}
 	})
 
 	t.Run("uses MIGRATIONS_DATABASE_URL when set, not DATABASE_URL", func(t *testing.T) {
 		const direct = "postgres://u:***@postgres-postgresql.example:5432/inventory_storage?sslmode=disable"
-		t.Setenv("MIGRATIONS_DATABASE_URL", direct)
-
-		got := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
-		if got != direct {
-			t.Fatalf("getenv = %q, want the direct MIGRATIONS_DATABASE_URL value %q (must NOT silently keep using DATABASE_URL/PgBouncer)", got, direct)
+		cfg, err := loadConfig(mapEnv(map[string]string{"DATABASE_URL": databaseURL, "MIGRATIONS_DATABASE_URL": direct}))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
 		}
-		if got == databaseURL {
-			t.Fatal("MIGRATIONS_DATABASE_URL and DATABASE_URL collapsed to the same value — the whole point of this env var is that it differs")
+		if cfg.migrationsDatabaseURL != direct {
+			t.Fatalf("migrationsDatabaseURL = %q, want the direct value %q (must NOT silently keep using DATABASE_URL/PgBouncer)", cfg.migrationsDatabaseURL, direct)
 		}
 	})
 }
 
+func mapEnv(env map[string]string) func(string) string {
+	return func(key string) string { return env[key] }
+}
+
+// Postgres is the only runtime: every refusal names the variable.
+func TestLoadConfig_RefusesAnythingButRealWiring(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"no database", map[string]string{}, "DATABASE_URL"},
+		{"blank database", map[string]string{"DATABASE_URL": "  "}, "DATABASE_URL"},
+		{"log publisher", map[string]string{"DATABASE_URL": "postgres://x", "EVENT_PUBLISHER": "log"}, "EVENT_PUBLISHER"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := loadConfig(mapEnv(tt.env))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want it to name %s", err, tt.want)
+			}
+		})
+	}
+}
+
+// warehouse-infra still sets EVENT_PUBLISHER=kafka; this binary never dials a
+// broker, so KAFKA_BROKERS is not required.
+func TestLoadConfig_AcceptsKafkaPublisherAndNeedsNoBrokers(t *testing.T) {
+	cfg, err := loadConfig(mapEnv(map[string]string{"DATABASE_URL": "postgres://x", "EVENT_PUBLISHER": "KAFKA"}))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.migrationsPath != "migrations" {
+		t.Fatalf("migrationsPath = %q, want the default", cfg.migrationsPath)
+	}
+}
+
 // TestBuildAdapters_UsesMigrationsDatabaseURLNotDatabaseURLForMigrations
-// proves buildAdapters itself — not just the env-var read above — actually
+// proves buildAdapters itself — not just the lookup above — actually
 // threads migrationsDatabaseURL into the migration step, rather than the
 // two ever being conflated. Gives DATABASE_URL an address nothing listens
 // on (so opening the pgxpool, which happens AFTER migrations succeed,
@@ -86,7 +119,7 @@ func TestBuildAdapters_UsesMigrationsDatabaseURLNotDatabaseURLForMigrations(t *t
 		unreachableAppURL  = "postgres://u:***@127.0.0.1:1/inventory_storage?sslmode=disable&connect_timeout=1"
 	)
 
-	_, err := buildAdapters(context.Background(), unreachableAppURL, bogusMigrationsURL, migrationsDirForTest(t), "log", nil, quietLogger())
+	_, err := buildAdapters(context.Background(), unreachableAppURL, bogusMigrationsURL, migrationsDirForTest(t), quietLogger())
 	if err == nil {
 		t.Fatal("a malformed MIGRATIONS_DATABASE_URL must fail boot")
 	}
