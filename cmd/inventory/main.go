@@ -23,6 +23,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
@@ -32,7 +34,11 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	// ctx is cancelled by SIGINT/SIGTERM: the start of the graceful drain.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	err := run(ctx)
+	stop()
+	if err != nil {
 		slog.Error("service exited with error", "error", err)
 		os.Exit(1)
 	}
@@ -43,8 +49,10 @@ func main() {
 // missing DATABASE_URL or KAFKA_BROKERS fails the boot before anything is
 // dialled), then telemetry (so every adapter is built against the real
 // providers) flushed last; adapters next and closed after the HTTP server
-// and the inbound consumers have stopped.
-func run() error {
+// and the inbound consumers have stopped. ctx is the signal context: its
+// cancellation starts the drain, and a background worker's death does too
+// (run then returns that error, so the process exits non-zero).
+func run(ctx context.Context) error {
 	cfg, err := loadConfig(os.Getenv)
 	if err != nil {
 		return err
@@ -86,10 +94,13 @@ func run() error {
 	// The inbound consumers' Kafka loops (facility location cache when
 	// LOCATION_LOOKUP_MODE=kafka, transfer allocation commands, product
 	// classification, receipts, task completions) must outlive this call
-	// and stop on shutdown, so they share one cancellable context
-	// rather than the signal context established in
-	// serveHTTPUntilSignal — which does not exist yet at this point.
-	lookupCtx, stopLookup := context.WithCancel(context.Background())
+	// and stop on shutdown, so they share one cancellable context.
+	// The consumers' loops must outlive the signal and stop only in the
+	// shutdown sequence (after readiness flips and the HTTP drain), so their
+	// context is detached from ctx's cancellation; it keeps ctx's values and
+	// carries the deaths channel on which a dead consumer reports.
+	workerCtx, deaths := withDeaths(context.WithoutCancel(ctx))
+	lookupCtx, stopLookup := context.WithCancel(workerCtx)
 	lookup, err := buildLocationLookup(lookupCtx, cfg.locationLookupMode, cfg.facilityLayoutBaseURL, cfg.kafkaBrokers, circuitBreakerMetrics(logger), logger)
 	if err != nil {
 		stopLookup()
@@ -135,5 +146,5 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	return serveHTTPUntilSignal(logger, httpServer, readiness, stopLookup, lookup.close, lookup.runDone, consumers)
+	return serveHTTPUntilSignal(ctx, logger, httpServer, readiness, deaths, stopLookup, lookup.close, lookup.runDone, consumers)
 }

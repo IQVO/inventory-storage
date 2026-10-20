@@ -95,7 +95,7 @@ func buildTaskCompletedConsumer(
 	go func() {
 		defer close(runDone)
 		if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("task-completed confirm-pick consumer stopped", "error", err)
+			workerDied(ctx, logger, "task-completed confirm-pick consumer", err)
 		}
 	}()
 

@@ -52,7 +52,7 @@ func buildInboundReceiptConsumer(
 	go func() {
 		defer close(runDone)
 		if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("inbound-receiving receipt consumer stopped", "error", err)
+			workerDied(ctx, logger, "inbound-receiving receipt consumer", err)
 		}
 	}()
 

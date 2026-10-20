@@ -79,7 +79,7 @@ func buildTransferAllocationConsumer(
 		defer close(runDone)
 		logger.Info("transfer allocation command consumer running", "topic", inboundkafka.Topic)
 		if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("transfer allocation command consumer stopped", "error", err)
+			workerDied(ctx, logger, "transfer allocation command consumer", err)
 		}
 	}()
 

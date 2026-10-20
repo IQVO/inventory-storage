@@ -44,7 +44,7 @@ func buildProductMasterConsumer(
 	go func() {
 		defer close(runDone)
 		if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("product-master classification consumer stopped", "error", err)
+			workerDied(ctx, logger, "product-master classification consumer", err)
 		}
 	}()
 

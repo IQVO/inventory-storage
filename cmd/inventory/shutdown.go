@@ -2,10 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
-	"os/signal"
-	"syscall"
 	"time"
 
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
@@ -14,11 +13,13 @@ import (
 // httpShutdownTimeout bounds the HTTP server's in-flight request drain.
 const httpShutdownTimeout = 10 * time.Second
 
-// serveHTTPUntilSignal runs the HTTP server until SIGINT/SIGTERM (or a
-// listen error), then drains it together with the facility location
-// cache consumer and the transfer allocation command consumer, bounded
-// by a grace deadline.
-func serveHTTPUntilSignal(logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness, stopLookup context.CancelFunc, closeLocationLookup func(), lookupRunDone <-chan struct{}, transfer transferConsumerHandle) error {
+// serveHTTPUntilSignal runs the HTTP server until ctx is cancelled (run()'s
+// SIGINT/SIGTERM context), a listen error, or a background worker's death
+// (deaths), then drains it together with the facility location cache consumer
+// and the inbound consumers, bounded by a grace deadline. A listen error or a
+// dead worker is returned, so the process exits non-zero and the orchestrator
+// restarts it.
+func serveHTTPUntilSignal(ctx context.Context, logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness, deaths <-chan error, stopLookup context.CancelFunc, closeLocationLookup func(), lookupRunDone <-chan struct{}, transfer transferConsumerHandle) error {
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("http server listening", "addr", httpServer.Addr)
@@ -27,15 +28,15 @@ func serveHTTPUntilSignal(logger *slog.Logger, httpServer *http.Server, readines
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	select {
 	case err := <-errCh:
 		stopLookup()
 		closeLocationLookup()
 		stopTransferConsumer(logger, transfer)
 		return err
+	case err := <-deaths:
+		shutdownErr := gracefulShutdown(logger, httpServer, readiness, stopLookup, closeLocationLookup, lookupRunDone, transfer)
+		return errors.Join(err, shutdownErr)
 	case <-ctx.Done():
 	}
 

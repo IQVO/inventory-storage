@@ -117,7 +117,7 @@ func runFacilityCache(ctx context.Context, consumer *facilitycache.Consumer, log
 		// Run only ever returns on error (including the plain
 		// context.Canceled of an orderly shutdown), never nil.
 		if err := consumer.Run(ctx); !errors.Is(err, context.Canceled) {
-			logger.Error("facility location cache consumer stopped", "error", err)
+			workerDied(ctx, logger, "facility location cache consumer", err)
 		}
 	}()
 	return runDone
