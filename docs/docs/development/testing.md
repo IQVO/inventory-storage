@@ -14,10 +14,10 @@ under `features/`, plus 1 MCP feature file with 9 scenarios.
 ```mermaid
 flowchart TB
   MUT["Mutation (gremlins)<br/>internal/domain — efficacy and mutant coverage gate 99"]
-  CON["Contract (Schemathesis 4.28.0)<br/>apis/openapi.yaml vs in-memory cmd/inventory"]
-  INT["Integration (-tags=integration)<br/>40 files, Postgres + Kafka via testcontainers"]
+  CON["Contract (Schemathesis 4.28.0)<br/>apis/openapi.yaml vs cmd/inventory on real Postgres + Kafka"]
+  INT["Integration (-tags=integration)<br/>44 files, Postgres + Kafka via testcontainers"]
   BDD["Acceptance (godog)<br/>features/ 9 files · 31 scenarios<br/>MCP E3 1 file · 9 scenarios"]
-  ARCH["Architecture fitness<br/>internal/architecture — 20 tests"]
+  ARCH["Architecture fitness<br/>internal/architecture — 27 test functions"]
   UNIT["Unit + httptest<br/>domain, use cases, adapters, cmd wiring<br/>coverage gate 90 % on domain + application"]
   MUT --> CON --> INT --> BDD --> ARCH --> UNIT
 ```
@@ -33,7 +33,7 @@ Source: `Makefile`, `.github/workflows/ci.yml`, `.gremlins.yaml`, `features/`, `
 | `make build` / `make vet` | `go build ./...` / `go vet ./...` | Go |
 | `make fmt` / `make fmt-check` | `gofmt -w .` / fail on any unformatted file | Go |
 | `make lint` | `golangci-lint run ./...` (CI pins v2.13.1) | golangci-lint |
-| `make test` | `go test ./... -race` — unit, httptest, both godog suites, MCP evals, fitness tests | Go only (in-memory adapters) |
+| `make test` | `go test ./... -race` — unit, httptest, both godog suites, MCP evals, fitness tests | Go only (unit/BDD test doubles: the in-memory adapters never run in a binary) |
 | `make coverage` | `make test` with `-coverpkg=./internal/domain/...,./internal/application/...` and the **90 %** gate | Go |
 | `make bdd` | `go test ./... -run TestFeatures -v` (the REST acceptance suite) | Go |
 | `make arch-test` | `go test ./internal/architecture/... -v` | Go |
@@ -55,7 +55,8 @@ Neither runs `integration` or `mutation`.
 
 ### Unit and handler tests
 
-Plain `go test` with the in-memory adapters and fixed clocks: aggregates and
+Plain `go test` with the in-memory adapters (test doubles only; no binary links
+them, ADR 0042) and fixed clocks: aggregates and
 value objects in `internal/domain/*`, use cases in
 `internal/application/usecases`, the HTTP handlers through `httptest`
 (`internal/adapters/inbound/http`), Kafka consumers against fake readers,
@@ -67,7 +68,8 @@ application packages.
 ### Acceptance (BDD)
 
 `features_test.go` runs every `features/*.feature` with godog against a fresh
-in-memory `cmd/inventory` router — a black-box test of the REST API
+`cmd/inventory` router wired to the in-memory test doubles — a black-box test of
+the REST API
 ([ADR 0007](../adr/0007-godog-bdd-acceptance-tests.md)).
 
 | Feature file | Scenarios |
@@ -116,6 +118,7 @@ They run in `make test` and again, by name, in the `evals-tests` CI job.
 | `TestCloudEventsOnly` | No `EVENT_ENVELOPE_MODE` toggle anywhere, and a module that talks to Kafka imports the CloudEvents SDK. |
 | `TestReplayConsumersSetCommitInterval` | A kafka-go reader on a process-unique group (the facility cache's full replay) sets `CommitInterval`. |
 | `TestDomainHasNoWireStructTags` (+ detector test) | No `json:` / `db:` tags on domain types. |
+| `TestRuntimeBinaryHasNoInMemoryAdapters` (+ `TestRuntimeBinarySensorBites`, `TestRuntimeBinarySensorCoversEveryCmd`, `runtime_no_memory_fitness_test.go`) | No non-test file under `cmd/**` imports `internal/adapters/outbound/memory`: Postgres and Kafka are the only runtime ([ADR 0042](../adr/0042-postgres-and-kafka-are-the-only-runtime.md)). The twins prove the sensor flags a bad fixture and that it covers every `cmd/` directory. |
 | `TestOutboxRelaysPassAttemptCap` (+ `TestOutboxRelayCapSensorFailsOnBadFixtures`) | Every non-test `NewOutboxRelay` call under `cmd/` passes `WithMaxAttempts` ([ADR 0038](../adr/0038-outbox-relay-attempt-cap.md)), so one poison row cannot block the relay forever. |
 | `TestMCPOptionalToolInputsCarryOmitempty` (+ `TestMCPOptionalToolInputsSensorFailsOnBadFixtures`) | An MCP tool input field whose `jsonschema` description says "optional" carries `omitempty`, or the SDK advertises it as required and calls without it fail (gap fix D16). |
 | `TestKafkaWritersSetRequiredAcks` (+ `TestKafkaWriterAcksSensorBites`) | Every kafka-go `Writer` composite literal in a non-test file under `internal/` or `cmd/` sets `RequiredAcks` (the import alias is resolved per file). kafka-go defaults it to `RequireNone` (acks=0): the broker never confirms the write, so a broker blip silently drops the message while `WriteMessages` returns nil. The twin proves the sensor flags a bad fixture under any alias. |
@@ -124,7 +127,7 @@ They run in `make test` and again, by name, in the `evals-tests` CI job.
 
 ### Integration (testcontainers)
 
-39 `*_integration_test.go` files behind `//go:build integration`. Each suite
+44 `*_integration_test.go` files behind `//go:build integration`. Each suite
 starts its own `postgres` and/or Kafka container
 (`internal/testsupport/kafkatc` waits for the group coordinator before tests
 run). Covered: every Postgres repository, migrations, optimistic concurrency,
@@ -134,15 +137,20 @@ the re-arm SQL, `outbox_relay_cap_integration_test.go`),
 the sweeper, pool limits, rehydration, the transfer, confirm-pick, inbound
 receipt and product-master hand-overs at the use-case level, the analytics
 store, the facility cache consumer, publisher partitioning, the MCP
-Streamable-HTTP transport, and the `cmd/inventory` housekeeping / republish and
-`cmd/mcp` outbox wiring. CI runs the whole tree
+Streamable-HTTP transport, the `cmd/inventory` housekeeping / republish wiring,
+`TestRunOnRealPostgresAndKafka` (boots `run(ctx)` on real Postgres and Kafka,
+`cmd/inventory/e2e_integration_test.go`) and `cmd/mcp` outbox wiring. CI runs the whole tree
 (`go test -tags=integration ./... -race -count=1`) with
 `TESTCONTAINERS_RYUK_DISABLED=true`.
 
 ### Contract
 
-`scripts/contract-test.sh` builds `cmd/inventory`, starts it in-memory on
-`127.0.0.1:18080` (`CONTRACT_PORT`), waits for `/healthz`, and runs
+`scripts/contract-test.sh` builds `cmd/inventory`, starts it on
+`127.0.0.1:18080` (`CONTRACT_PORT`) against the Postgres named by `DATABASE_URL`
+and the Kafka broker named by `KAFKA_BROKERS` (the script refuses to start
+without them; CI provides a `postgres:16` and a `confluentinc/confluent-local`
+service container, locally start disposable ones as the script header shows),
+waits for `/readyz`, and runs
 `st run apis/openapi.yaml` with up to 100 examples per operation
 (`CONTRACT_MAX_EXAMPLES`) and 4 workers. Excluded: `classifyProduct` (retired,
 always `410`), the `Reports` tag (served by `cmd/inventory-reports`), and the

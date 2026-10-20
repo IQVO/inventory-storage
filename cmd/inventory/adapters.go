@@ -3,15 +3,12 @@ package main
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	kafkago "github.com/segmentio/kafka-go"
 
-	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
 	kafkaadapter "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
-	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
@@ -34,9 +31,7 @@ const shutdownDrainTimeout = 10 * time.Second
 // uow, because the idempotency middleware needs a real *pgxpool.Pool to
 // begin its own transaction directly (see inboundhttp.Server.IdempotencyPool's
 // doc comment) and ports.UnitOfWork is an interface with no way to recover
-// the concrete pool from it. nil in the in-memory (no DATABASE_URL)
-// configuration, exactly mirroring uow's own nil-means-unconfigured
-// convention (atomically() then runs its fn directly).
+// the concrete pool from it. It is never nil: Postgres is the only runtime.
 type adapterSet struct {
 	stock           ports.StockRepo
 	locations       ports.LocationRepo
@@ -46,27 +41,24 @@ type adapterSet struct {
 	uow             ports.UnitOfWork
 	pool            *pgxpool.Pool
 	close           func()
-	// transfers is the transfer_allocations ledger repo: Postgres-backed
-	// when a pool exists, in-memory otherwise. Shared by the allocation
-	// consumer and the destination receipt path (ADR 0031).
+	// transfers is the transfer_allocations ledger repo. Shared by the
+	// allocation consumer and the destination receipt path (ADR 0031).
 	transfers ports.TransferAllocationRepo
-	// transferReceipts is the destination transfer_receipts repo (ADR
-	// 0031), same Postgres/in-memory selection as transfers.
+	// transferReceipts is the destination transfer_receipts repo (ADR 0031).
 	transferReceipts ports.TransferReceiptRepo
 	// inventoryExceptions is the quarantine repo (ADR 0031).
 	inventoryExceptions ports.InventoryExceptionRepo
-	// relocations is the intra-site relocation record repo (ADR 0039),
-	// same Postgres/in-memory selection as the other repos.
+	// relocations is the intra-site relocation record repo (ADR 0039).
 	relocations ports.RelocationRepo
 	// binLevels advances and reads the per-(bin, sku) level behind
-	// BinStockLevelChanged (ADR 0040), same Postgres/in-memory selection.
+	// BinStockLevelChanged (ADR 0040).
 	binLevels ports.BinLevelLedger
 }
 
 // levelEmitter builds the BinStockLevelChanged emitter over the adapter set's
-// FINAL publisher (the outbox publisher once Kafka publishing is wired), so
-// every level event leaves through the same path as the other domain events.
-// Call it only after buildAdapters has returned.
+// FINAL publisher (the outbox publisher), so every level event leaves through
+// the same path as the other domain events. Call it only after buildAdapters
+// has returned.
 func (a adapterSet) levelEmitter(clock ports.Clock) *usecases.BinLevelEmitter {
 	if a.binLevels == nil {
 		return nil
@@ -74,33 +66,23 @@ func (a adapterSet) levelEmitter(clock ports.Clock) *usecases.BinLevelEmitter {
 	return &usecases.BinLevelEmitter{Ledger: a.binLevels, Locations: a.locations, Events: a.publisher, Clock: clock}
 }
 
-// buildAdapters wires the Postgres adapters when DATABASE_URL is set, or
-// falls back to the in-memory adapters for local development without a
-// database. The event publisher defaults to that same memory/Postgres
-// choice ("log"), or can be switched to the Kafka integration-events
-// publisher via eventPublisher="kafka" (EVENT_PUBLISHER env), independent of
-// which repos are in use. publisherBrokers is the broker list for that Kafka
-// path (config.publisherBrokers: KAFKA_BROKERS read once in loadConfig, with
-// the single localhost:9092 fallback); it is ignored otherwise. On error the
-// returned set carries a no-op closer.
-func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migrationsPath, eventPublisher string, publisherBrokers []string, logger *slog.Logger) (adapterSet, error) {
+// buildAdapters wires the Postgres adapters and the Kafka publishing path:
+// Postgres and Kafka are the only runtime (the real-wiring ADR). Events are
+// enqueued into the transactional outbox (ADR 0017) in the same transaction
+// as the aggregate write and a background relay drains the outbox onto the
+// integration and analytics topics. On error the returned set carries a
+// no-op closer.
+func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migrationsPath string, brokers []string, logger *slog.Logger) (adapterSet, error) {
 	set, err := buildRepos(ctx, databaseURL, migrationsDatabaseURL, migrationsPath, logger)
 	if err != nil {
 		return adapterSet{close: func() {}}, err
 	}
-	if !strings.EqualFold(eventPublisher, "kafka") {
-		return set, nil
-	}
-	return withKafkaPublishing(set, publisherBrokers, logger), nil
+	return withOutboxKafka(set, newKafkaPublishers(brokers, set), logger), nil
 }
 
-// buildRepos selects the repository set: Postgres-backed when databaseURL
-// is set, in-memory otherwise. Either way the publisher is the log
-// publisher; withKafkaPublishing replaces it on request.
+// buildRepos builds the Postgres-backed repository set and unit of work.
+// The publisher is set by withOutboxKafka.
 func buildRepos(ctx context.Context, databaseURL, migrationsDatabaseURL, migrationsPath string, logger *slog.Logger) (adapterSet, error) {
-	if databaseURL == "" {
-		return memoryAdapters(logger), nil
-	}
 	pool, err := openPostgresPool(ctx, databaseURL, migrationsDatabaseURL, migrationsPath, logger)
 	if err != nil {
 		return adapterSet{}, err
@@ -110,51 +92,35 @@ func buildRepos(ctx context.Context, databaseURL, migrationsDatabaseURL, migrati
 		locations:           postgres.NewLocationRepo(pool),
 		reservations:        postgres.NewReservationRepo(pool),
 		classifications:     postgres.NewProductClassificationRepo(pool),
-		publisher:           events.NewLogPublisher(logger),
 		transfers:           postgres.NewTransferAllocationRepo(pool),
 		transferReceipts:    postgres.NewTransferReceiptRepo(pool),
 		inventoryExceptions: postgres.NewInventoryExceptionRepo(pool),
 		relocations:         postgres.NewRelocationRepo(pool),
 		binLevels:           postgres.NewBinLevelLedger(pool),
 		// UnitOfWork brackets every use case's Save(s) + Publish(es) in
-		// one Postgres transaction (ADR 0017). It is safe to hand out
-		// even when eventPublisher="log": OutboxPublisher is only ever
-		// constructed on the kafka path, so a non-kafka run's
-		// atomically() calls still just wrap the existing repo writes
-		// (still one transaction, still fine) with no outbox row involved.
+		// one Postgres transaction (ADR 0017).
 		uow:   postgres.NewUnitOfWork(pool),
 		pool:  pool,
 		close: closeWithSweeper(pool, logger),
 	}, nil
 }
 
-// memoryAdapters builds the in-memory outbound set for local runs
-// without a database.
-func memoryAdapters(logger *slog.Logger) adapterSet {
-	logger.Info("database url not configured; using in-memory adapters")
-	stockRepo := memory.NewStockRepo()
-	return adapterSet{
-		stock:               stockRepo,
-		locations:           memory.NewLocationRepo(),
-		reservations:        memory.NewReservationRepo(),
-		classifications:     memory.NewProductClassificationRepo(),
-		publisher:           events.NewLogPublisher(logger),
-		transfers:           memory.NewTransferAllocationRepo(),
-		transferReceipts:    memory.NewTransferReceiptRepo(),
-		inventoryExceptions: memory.NewInventoryExceptionRepo(),
-		relocations:         memory.NewRelocationRepo(),
-		binLevels:           memory.NewBinLevelLedger(stockRepo),
-		close:               func() {},
-	}
-}
-
-// kafkaPublishers groups the Kafka-side adapters shared by the direct and
-// outbox publishing paths.
+// kafkaPublishers groups the Kafka-side adapters of the outbox path.
 type kafkaPublishers struct {
 	brokers     []string
 	writer      *kafkago.Writer
 	integration *kafkaadapter.Publisher
 	analytics   *kafkaadapter.AnalyticsPublisher
+}
+
+func newKafkaPublishers(brokers []string, set adapterSet) kafkaPublishers {
+	writer := kafkaadapter.NewWriter(brokers...)
+	return kafkaPublishers{
+		brokers:     brokers,
+		writer:      writer,
+		integration: kafkaadapter.NewPublisher(writer, set.reservations),
+		analytics:   kafkaadapter.NewAnalyticsPublisher(brokers, set.reservations, nil),
+	}
 }
 
 func (k kafkaPublishers) closeWriters(logger *slog.Logger) {
@@ -166,41 +132,12 @@ func (k kafkaPublishers) logConfigured(logger *slog.Logger, mode string) {
 		"integration_topic", kafkaadapter.Topic, "analytics_topic", kafkaadapter.AnalyticsTopic, "brokers", k.brokers)
 }
 
-// withKafkaPublishing switches set's publisher to the Kafka integration +
-// analytics fan-out: direct when there is no Postgres, transactional outbox
-// (ADR 0017) when there is.
-func withKafkaPublishing(set adapterSet, brokers []string, logger *slog.Logger) adapterSet {
-	writer := kafkaadapter.NewWriter(brokers...)
-	k := kafkaPublishers{
-		brokers:     brokers,
-		writer:      writer,
-		integration: kafkaadapter.NewPublisher(writer, set.reservations),
-		analytics:   kafkaadapter.NewAnalyticsPublisher(brokers, set.reservations, nil),
-	}
-	if set.pool == nil {
-		return withDirectKafka(set, k, logger)
-	}
-	return withOutboxKafka(set, k, logger)
-}
-
-// withDirectKafka: in-memory repos with EVENT_PUBLISHER=kafka have no
-// Postgres, so no transactional outbox is possible — publish straight to
-// Kafka, same as before ADR 0017.
-func withDirectKafka(set adapterSet, k kafkaPublishers, logger *slog.Logger) adapterSet {
-	set.publisher = events.NewMultiPublisher(k.integration, k.analytics)
-	set.uow = nil
-	set.close = func() { k.closeWriters(logger) }
-	k.logConfigured(logger, "kafka (direct, no outbox)")
-	return set
-}
-
 // withOutboxKafka (ADR 0017): the use cases publish through
 // OutboxPublisher, which — running inside the UnitOfWork transaction —
 // inserts one outbox_events row per (event, topic) instead of calling Kafka
 // directly, so the aggregate write and the enqueued event(s) commit
 // atomically. A background OutboxRelay then drains outbox_events onto both
-// topics via a single RelaySink, preserving the same dual-topic fan-out the
-// direct MultiPublisher performed.
+// topics via a single RelaySink.
 func withOutboxKafka(set adapterSet, k kafkaPublishers, logger *slog.Logger) adapterSet {
 	set.publisher = postgres.NewOutboxPublisher(set.pool, k.integration, k.analytics)
 	k.logConfigured(logger, "kafka (transactional outbox)")

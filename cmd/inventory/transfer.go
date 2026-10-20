@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 
 	inboundkafka "github.com/claudioed/inventory-storage/internal/adapters/inbound/kafka"
-	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/system"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 )
 
@@ -44,14 +43,11 @@ func noopTransferConsumer() transferConsumerHandle {
 // TransferStockRejected reply's outbox row all commit in ONE UnitOfWork
 // transaction, idempotent on transfer_line_id at the database level.
 //
-// mode is TRANSFER_ALLOCATION_CONSUMER_MODE: "off" (default — the
-// feature stays dark until an operator opts a deployment in) or "kafka".
-// "kafka" additionally requires KAFKA_BROKERS and a DATABASE_URL: the
-// use case's writes are only atomic through the Postgres
-// UnitOfWork/outbox, so an in-memory run must not consume real transfer
-// commands (that would decide lines against volatile state). A
-// misconfiguration returns an error so boot fails with the real cause
-// rather than silently skipping the consumer.
+// The consumer ALWAYS runs: Postgres and Kafka are the only runtime (the
+// real-wiring ADR). loadConfig already refused a missing DATABASE_URL,
+// KAFKA_BROKERS or TRANSFER_ALLOCATION_CONSUMER_GROUP, and
+// TRANSFER_ALLOCATION_CONSUMER_MODE is accepted only as unset or kafka. The
+// use case's writes are atomic through the Postgres UnitOfWork/outbox.
 //
 // ctx is the lookup's own cancellable context (see run()): both inbound
 // consumers' loops must stop on shutdown, so they share one cancel
@@ -62,18 +58,8 @@ func buildTransferAllocationConsumer(
 	cfg config,
 	set adapterSet,
 ) (transferConsumerHandle, error) {
-	if !strings.EqualFold(cfg.transferConsumerMode, "kafka") {
-		return noopTransferConsumer(), nil
-	}
-	if cfg.databaseURL == "" {
-		return noopTransferConsumer(), errors.New("TRANSFER_ALLOCATION_CONSUMER_MODE=kafka requires DATABASE_URL (in-memory runs must not consume real transfer commands)")
-	}
-	if len(cfg.kafkaBrokers) == 0 {
-		return noopTransferConsumer(), errors.New("TRANSFER_ALLOCATION_CONSUMER_MODE=kafka requires KAFKA_BROKERS to be set")
-	}
-
 	transfers := postgres.NewTransferAllocationRepo(set.pool)
-	clock := memory.SystemClock{}
+	clock := system.Clock{}
 	allocate := &usecases.AllocateTransferStock{
 		Stock:        set.stock,
 		Reservations: set.reservations,
@@ -86,15 +72,14 @@ func buildTransferAllocationConsumer(
 
 	consumer := inboundkafka.NewConsumer(cfg.kafkaBrokers, cfg.transferConsumerGroup, allocate, logger)
 	logger.Info("transfer allocation command consumer configured",
-		"mode", "kafka", "topic", inboundkafka.Topic,
-		"consumer_group", inboundkafka.DefaultConsumerGroup, "overridden", cfg.transferConsumerGroup != "")
+		"topic", inboundkafka.Topic, "consumer_group", cfg.transferConsumerGroup)
 
 	runDone := make(chan struct{})
 	go func() {
 		defer close(runDone)
 		logger.Info("transfer allocation command consumer running", "topic", inboundkafka.Topic)
 		if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("transfer allocation command consumer stopped", "error", err)
+			workerDied(ctx, logger, "transfer allocation command consumer", err)
 		}
 	}()
 

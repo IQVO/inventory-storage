@@ -13,6 +13,7 @@ import (
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/system"
 )
 
 type nopUnitOfWork struct{}
@@ -61,43 +62,6 @@ func TestNewRouter_EmitsStandardHTTPServerMetrics(t *testing.T) {
 	}
 }
 
-// With no DATABASE_URL and EVENT_PUBLISHER unset/log, the MCP server logs
-// events and has no UnitOfWork (in-memory mode).
-func TestBuildAdapters_InMemoryDefaultsToLogPublisherWithoutUnitOfWork(t *testing.T) {
-	ad, err := buildAdapters(context.Background(), "", "", "", "log", nil, quietLogger())
-	if err != nil {
-		t.Fatalf("buildAdapters: %v", err)
-	}
-	defer ad.close()
-	if _, ok := ad.publisher.(*events.LogPublisher); !ok {
-		t.Errorf("publisher = %T, want *events.LogPublisher", ad.publisher)
-	}
-	if ad.uow != nil {
-		t.Errorf("uow = %T, want nil in in-memory mode", ad.uow)
-	}
-}
-
-// EVENT_PUBLISHER=kafka without a database publishes directly to both
-// topics (mirrors cmd/inventory) and therefore needs KAFKA_BROKERS.
-func TestBuildAdapters_InMemoryKafkaRequiresBrokers(t *testing.T) {
-	if _, err := buildAdapters(context.Background(), "", "", "", "kafka", nil, quietLogger()); err == nil {
-		t.Fatal("EVENT_PUBLISHER=kafka without DATABASE_URL and KAFKA_BROKERS must fail boot")
-	}
-}
-
-func TestBuildAdapters_InMemoryKafkaPublishesToBothTopicsDirectly(t *testing.T) {
-	// Writers are lazy: constructing them dials nothing, so a bogus
-	// address is fine for asserting the wiring shape.
-	ad, err := buildAdapters(context.Background(), "", "", "", "KAFKA", []string{"127.0.0.1:1"}, quietLogger())
-	if err != nil {
-		t.Fatalf("buildAdapters: %v", err)
-	}
-	defer ad.close()
-	if _, ok := ad.publisher.(*events.MultiPublisher); !ok {
-		t.Errorf("publisher = %T, want *events.MultiPublisher (integration + analytics)", ad.publisher)
-	}
-}
-
 // The regression this guards: cmd/mcp used to build RevokeReservation with
 // no UnitOfWork, no Metrics and a log-only publisher, so MCP-initiated
 // revocations never reached Kafka (ADR-0008/0017).
@@ -106,7 +70,7 @@ func TestBuildDeps_RevokeReservationSharesPublisherUnitOfWorkAndMetrics(t *testi
 	uow := nopUnitOfWork{}
 	ad := adapters{stock: memory.NewStockRepo(), reservations: memory.NewReservationRepo(), publisher: pub, uow: uow, close: func() {}}
 
-	deps := buildDeps(ad, memory.SystemClock{}, nopMetrics{})
+	deps := buildDeps(ad, system.Clock{}, nopMetrics{})
 
 	rr := deps.RevokeReservation
 	if rr == nil {

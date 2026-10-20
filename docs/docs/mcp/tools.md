@@ -49,9 +49,9 @@ text (for example `reservation not found`), not as a JSON-RPC error. An empty
 with `from and to are required (RFC3339)`.
 
 `get_bin_occupancy` cannot tell an unknown bin from an empty one: both return
-zero units. With `DATABASE_URL` unset the binary uses its **own** in-memory
-repositories, so it sees nothing written through a separately running
-`cmd/inventory`.
+zero units. `cmd/mcp` reads the same Postgres as `cmd/inventory`
+(`DATABASE_URL` is required; there is no in-memory store), so it sees exactly
+what the REST API wrote.
 
 ## Resources and prompts
 
@@ -62,8 +62,9 @@ repositories, so it sees nothing written through a separately running
 
 ## Captured `tools/list`
 
-Taken from a local run of this branch's binary (in-memory, `MCP_ADDR=:18190`,
-`REPORTS_BASE_URL` set so the report tool registers):
+Taken from a local run of the binary made while it still had an in-memory mode
+(`MCP_ADDR=:18190`, `REPORTS_BASE_URL` set so the report tool registers); the
+tool list does not depend on the data store:
 
 ```json
 {"name": "check_availability",

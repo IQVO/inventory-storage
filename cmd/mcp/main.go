@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,14 +20,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/riandyrn/otelchi"
 	otelchimetric "github.com/riandyrn/otelchi/metric"
-	kafkago "github.com/segmentio/kafka-go"
 
 	inboundmcp "github.com/claudioed/inventory-storage/internal/adapters/inbound/mcp"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/bootretry"
-	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
 	kafkaadapter "github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
-	"github.com/claudioed/inventory-storage/internal/adapters/outbound/memory"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/system"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/telemetry"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
@@ -37,6 +36,45 @@ import (
 // unreachable Collector well past what an orchestrator will wait for.
 const telemetryFlushTimeout = 5 * time.Second
 
+// mcpConfig is the mandatory part of the process environment.
+type mcpConfig struct {
+	databaseURL           string
+	migrationsDatabaseURL string
+	migrationsPath        string
+}
+
+// loadConfig reads and validates the mandatory environment through get
+// (os.Getenv in production, a map lookup in the tests). Postgres is the only
+// runtime (the real-wiring ADR): DATABASE_URL is required and the error names
+// it, so the process exits before telemetry, the listener or any dial.
+// EVENT_PUBLISHER stays accepted (warehouse-infra sets it) but only as unset
+// or kafka: MCP-initiated events always enqueue outbox rows, which
+// cmd/inventory's relay delivers, so this binary never dials a broker and
+// does not need KAFKA_BROKERS.
+func loadConfig(get func(string) string) (mcpConfig, error) {
+	databaseURL := strings.TrimSpace(get("DATABASE_URL"))
+	if databaseURL == "" {
+		return mcpConfig{}, errors.New("DATABASE_URL is required: this server runs on a real Postgres, there is no in-memory mode")
+	}
+	if v := strings.ToLower(strings.TrimSpace(get("EVENT_PUBLISHER"))); v != "" && v != "kafka" {
+		return mcpConfig{}, fmt.Errorf("EVENT_PUBLISHER=%s is not supported: events always leave through the transactional outbox (unset it or use kafka)", get("EVENT_PUBLISHER"))
+	}
+	cfg := mcpConfig{databaseURL: databaseURL, migrationsDatabaseURL: databaseURL, migrationsPath: "migrations"}
+	// See cmd/inventory's identical fallback and buildAdapters' doc comment
+	// for the full "why" (session-scoped pg_advisory_lock vs PgBouncer
+	// transaction-pooling incompatibility, ADR
+	// 0023-migrations-direct-postgres-connection.md, mirroring
+	// order-management's ADR-0029). This binary also runs migrations on
+	// start, so it needs the same direct-connection split.
+	if v := get("MIGRATIONS_DATABASE_URL"); v != "" {
+		cfg.migrationsDatabaseURL = v
+	}
+	if v := get("MIGRATIONS_PATH"); v != "" {
+		cfg.migrationsPath = v
+	}
+	return cfg, nil
+}
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("mcp server exited with error", "error", err)
@@ -45,6 +83,10 @@ func main() {
 }
 
 func run() error {
+	cfg, err := loadConfig(os.Getenv)
+	if err != nil {
+		return err
+	}
 	logger := newLogger(getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(logger)
 
@@ -66,26 +108,8 @@ func run() error {
 	logger.Info("telemetry configured", "service_name", serviceName, "otlp_endpoint", otlpEndpoint)
 
 	httpAddr := getenv("MCP_ADDR", ":8090")
-	databaseURL := os.Getenv("DATABASE_URL")
-	// See cmd/inventory/main.go's identical fallback and buildAdapters'
-	// doc comment for the full "why" (session-scoped pg_advisory_lock vs
-	// PgBouncer transaction-pooling incompatibility, ADR
-	// 0023-migrations-direct-postgres-connection.md, mirroring
-	// order-management's ADR-0029). This binary also runs migrations on
-	// start (buildAdapters below), so it needs the same direct-connection
-	// split.
-	migrationsDatabaseURL := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
-	migrationsPath := getenv("MIGRATIONS_PATH", "migrations")
-	// EVENT_PUBLISHER / KAFKA_BROKERS select the SAME event publishing
-	// wiring cmd/inventory uses (ADR-0017): with DATABASE_URL set and
-	// EVENT_PUBLISHER=kafka, MCP-initiated writes enqueue outbox rows.
-	eventPublisher := getenv("EVENT_PUBLISHER", "log")
-	var kafkaBrokers []string
-	if raw := os.Getenv("KAFKA_BROKERS"); raw != "" {
-		kafkaBrokers = strings.Split(raw, ",")
-	}
 
-	ad, err := buildAdapters(context.Background(), databaseURL, migrationsDatabaseURL, migrationsPath, eventPublisher, kafkaBrokers, logger)
+	ad, err := buildAdapters(context.Background(), cfg.databaseURL, cfg.migrationsDatabaseURL, cfg.migrationsPath, logger)
 	if err != nil {
 		return err
 	}
@@ -96,7 +120,7 @@ func run() error {
 		return err
 	}
 
-	deps := buildDeps(ad, memory.SystemClock{}, reservationMetrics)
+	deps := buildDeps(ad, system.Clock{}, reservationMetrics)
 	// When the inventory-reports REST service is reachable, expose the curated
 	// read-only Inventory Flow & Accuracy report tool, which reads through that
 	// REST surface rather than the analytical database directly (ADR-0011).
@@ -181,8 +205,8 @@ type adapters struct {
 	// relocations backs the read-only get_relocation tool (ADR 0039).
 	relocations ports.RelocationRepo
 	publisher   ports.EventPublisher
-	// uow is nil in the in-memory (no DATABASE_URL) configuration, which
-	// the use cases' atomically() helper treats as "run fn directly".
+	// uow brackets every write use case's Save + Publish in one Postgres
+	// transaction (ADR-0017).
 	uow   ports.UnitOfWork
 	close func()
 }
@@ -212,55 +236,22 @@ func buildDeps(ad adapters, clock ports.Clock, metrics ports.ReservationMetrics)
 	}
 }
 
-// buildAdapters wires the Postgres repos when DATABASE_URL is set, or falls
-// back to the in-memory repos for local development without a database —
-// exactly the selection cmd/inventory makes — and selects the event
-// publisher the same way (EVENT_PUBLISHER):
-//
-//   - "log" (default): events are logged only.
-//   - "kafka" with DATABASE_URL: the transactional outbox (ADR-0017). A
-//     UnitOfWork brackets each use case's Save + Publish, and
-//     postgres.OutboxPublisher inserts one outbox_events row per (event,
-//     topic) — integration AND analytics — in that same transaction. This
-//     binary does NOT run the relay: cmd/inventory's OutboxRelay drains
-//     the shared outbox_events table onto Kafka, so MCP-initiated events
-//     reach warehouse.inventory.events / warehouse.inventory.analytics
-//     without a second relay (and without this process needing a broker).
-//   - "kafka" without DATABASE_URL: direct publish to both topics, as
-//     cmd/inventory does in that configuration. Requires KAFKA_BROKERS.
+// buildAdapters wires the Postgres repos: Postgres is the only runtime (the
+// real-wiring ADR). Events are enqueued by the transactional outbox
+// (ADR-0017): a UnitOfWork brackets each use case's Save + Publish, and
+// postgres.OutboxPublisher inserts one outbox_events row per (event, topic) —
+// integration AND analytics — in that same transaction. This binary does NOT
+// run the relay: cmd/inventory's OutboxRelay drains the shared outbox_events
+// table onto Kafka, so MCP-initiated events reach warehouse.inventory.events /
+// warehouse.inventory.analytics without a second relay (and without this
+// process needing a broker).
 //
 // migrationsDatabaseURL is used ONLY for the golang-migrate step below,
 // mirroring cmd/inventory/main.go's openPostgresPool exactly — see its doc
 // comment for the full "why" a direct, non-pooled connection is needed
 // here even though the pgxpool opened just after (databaseURL) stays on
 // PgBouncer.
-func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migrationsPath, eventPublisher string, brokers []string, logger *slog.Logger) (adapters, error) {
-	noop := func() {}
-	kafkaMode := strings.EqualFold(eventPublisher, "kafka")
-
-	if databaseURL == "" {
-		logger.Info("database url not configured; using in-memory adapters")
-		reservationRepo := memory.NewReservationRepo()
-		stockRepo := memory.NewStockRepo()
-		ad := adapters{
-			stock: stockRepo, reservations: reservationRepo, relocations: memory.NewRelocationRepo(),
-			locations: memory.NewLocationRepo(), binLevels: memory.NewBinLevelLedger(stockRepo),
-			publisher: events.NewLogPublisher(logger), close: noop,
-		}
-		if !kafkaMode {
-			return ad, nil
-		}
-		if len(brokers) == 0 {
-			return adapters{}, fmt.Errorf("EVENT_PUBLISHER=kafka without DATABASE_URL requires KAFKA_BROKERS to be set")
-		}
-		writer := kafkaadapter.NewWriter(brokers...)
-		analyticsPub := kafkaadapter.NewAnalyticsPublisher(brokers, reservationRepo, nil)
-		ad.publisher = events.NewMultiPublisher(kafkaadapter.NewPublisher(writer, reservationRepo), analyticsPub)
-		ad.close = func() { closeKafkaWriters(writer, analyticsPub, logger) }
-		logger.Info("event publisher configured", "publisher", "kafka (direct, no outbox)", "brokers", brokers)
-		return ad, nil
-	}
-
+func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migrationsPath string, logger *slog.Logger) (adapters, error) {
 	// Retried: this fleet's Istio native sidecars reset EVERY pod's first
 	// outbound TCP dial ~10s after the app starts
 	// (holdApplicationUntilProxyStarts is a no-op for native sidecars). A
@@ -287,37 +278,23 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migr
 
 	stockRepo := postgres.NewStockRepo(pool)
 	reservationRepo := postgres.NewReservationRepo(pool)
-	ad := adapters{
+	// The outbox only ENCODES: both encoders are built without a Kafka
+	// writer because delivery is cmd/inventory's relay's job. Their direct
+	// Publish methods are never called on this path.
+	publisher := postgres.NewOutboxPublisher(pool,
+		kafkaadapter.NewPublisher(nil, reservationRepo),
+		&kafkaadapter.AnalyticsPublisher{Reservations: reservationRepo},
+	)
+	logger.Info("event publisher configured", "publisher", "kafka (transactional outbox, relay runs in cmd/inventory)",
+		"integration_topic", kafkaadapter.Topic, "analytics_topic", kafkaadapter.AnalyticsTopic)
+	return adapters{
 		stock: stockRepo, reservations: reservationRepo,
 		locations: postgres.NewLocationRepo(pool), binLevels: postgres.NewBinLevelLedger(pool),
 		relocations: postgres.NewRelocationRepo(pool),
-		publisher:   events.NewLogPublisher(logger),
+		publisher:   publisher,
 		uow:         postgres.NewUnitOfWork(pool),
 		close:       pool.Close,
-	}
-	if kafkaMode {
-		// The outbox only ENCODES: both encoders are built without a Kafka
-		// writer because delivery is cmd/inventory's relay's job. Their
-		// direct Publish methods are never called on this path.
-		ad.publisher = postgres.NewOutboxPublisher(pool,
-			kafkaadapter.NewPublisher(nil, reservationRepo),
-			&kafkaadapter.AnalyticsPublisher{Reservations: reservationRepo},
-		)
-		logger.Info("event publisher configured", "publisher", "kafka (transactional outbox, relay runs in cmd/inventory)",
-			"integration_topic", kafkaadapter.Topic, "analytics_topic", kafkaadapter.AnalyticsTopic)
-	}
-	return ad, nil
-}
-
-// closeKafkaWriters closes the integration and analytics Kafka writers of
-// the direct (no-outbox) configuration, logging (not failing) on error.
-func closeKafkaWriters(writer *kafkago.Writer, analyticsPub *kafkaadapter.AnalyticsPublisher, logger *slog.Logger) {
-	if err := writer.Close(); err != nil {
-		logger.Error("error closing kafka integration writer", "error", err)
-	}
-	if err := analyticsPub.Close(); err != nil {
-		logger.Error("error closing kafka analytics writer", "error", err)
-	}
+	}, nil
 }
 
 // newLogger builds the process-wide structured logger, mirroring
