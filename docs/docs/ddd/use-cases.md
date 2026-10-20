@@ -124,7 +124,8 @@ before persisting. Which adapter answers is chosen by
 `LOCATION_LOOKUP_MODE`: `kafka` reads a local, in-memory cache fed by
 facility-layout's `warehouse.facility.events` (ADR 0013 — no network call on
 the stow path); `http` makes the original synchronous call to facility-layout
-(ADR 0009); `permissive` (the default) always answers `Known=false`.
+(ADR 0009). The mode is mandatory: the former `permissive` default (always
+`Known=false`) was removed by [ADR 0042](/docs/adr/0042).
 
 - A `Hazmat` SKU stowed into a bin whose zone is not hazmat-rated is rejected
   with `ErrHazmatZoneRequired` (409).
@@ -141,8 +142,9 @@ the stow path); `http` makes the original synchronous call to facility-layout
   never blocked by lookup unavailability.
 - **Nil-safe by construction:** `Classifications`/`LocationLookup` are
   optional struct fields. A `StowStock` built without them (every
-  pre-existing test in this package, and the default `permissive` deploy
-  mode) behaves exactly as before this feature existed.
+  pre-existing unit test in this package; no deployed binary does, since
+  `LOCATION_LOOKUP_MODE` is mandatory) behaves exactly as before this feature
+  existed.
 
 **Same-bin DOT segregation check (ADR 0010):** AFTER the placement check
 above passes, and only when `Classifications` is wired, `StowStock` checks
@@ -677,9 +679,11 @@ status codes. See [ADR 0005](/docs/adr/0005-rfc-7807-problem-details).
 
 **State change and events commit together.** Every writing use case brackets
 its `Save`(s) and `Publish`(es) in `ports.UnitOfWork` via the `atomically`
-helper (ADR 0017). With Postgres and `EVENT_PUBLISHER=kafka`, `Publish`
-inserts `outbox_events` rows in that same transaction; a relay delivers them
-later. A nil `UnitOfWork` (in-memory mode) simply runs the function.
+helper (ADR 0017). In every binary `Publish`
+inserts `outbox_events` rows in that same transaction (Postgres is the only
+runtime, [ADR 0042](/docs/adr/0042)); a relay delivers them
+later. A nil `UnitOfWork` exists only in unit tests, where it simply runs the
+function.
 
 **Writes are version-guarded.** `StockRepo`, `LocationRepo` and
 `ReservationRepo` `Save` only when the row's `version` still matches what was

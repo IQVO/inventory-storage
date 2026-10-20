@@ -29,16 +29,15 @@ type locationLookupHandle struct {
 }
 
 // buildLocationLookup selects the outbound LocationClassificationLookup
-// adapter via LOCATION_LOOKUP_MODE (kafka|http|permissive), defaulting to
-// "permissive" so existing tests, CI and deployments that do not set the
-// env var are unaffected — mirroring the EVENT_PUBLISHER=kafka|log
-// pattern.
+// adapter via LOCATION_LOOKUP_MODE (kafka|http). loadConfig already refused
+// anything else, including the removed "permissive" default (it answered
+// Known=false for everything, i.e. validated no location at all).
 //
 //   - "kafka"      maintains a local cache fed by facility-layout's
 //     warehouse.facility.events topic. No per-stow HTTP call, so
 //     facility-layout stops being a runtime dependency of StowStock.
-//     Requires KAFKA_BROKERS. Blocks until the initial replay completes
-//     (see the facilitycache package doc for why).
+//     Blocks until the initial replay completes (see the facilitycache
+//     package doc for why).
 //   - "http"       calls facility-layout synchronously per stow, wrapped
 //     in a per-dependency circuit breaker with jittered retry
 //     (ADR-0020): on a trip, calls fall back to the SAME fail-open
@@ -46,20 +45,23 @@ type locationLookupHandle struct {
 //     path. recorder feeds the breaker's state transitions into the
 //     circuit_breaker.state gauge; nil is fine (see
 //     resilience.RecordStateChange's doc comment). Requires
-//     FACILITY_LAYOUT_BASE_URL. Retained as the rollback for "kafka".
-//   - "permissive" (default) answers Known=false for everything.
+//     FACILITY_LAYOUT_BASE_URL. This REST edge to a sibling context is out
+//     of the real-wiring scope and is retained as the rollback for "kafka".
 func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string, brokers []string, recorder resilience.StateRecorder, logger *slog.Logger) (locationLookupHandle, error) {
 	switch {
 	case strings.EqualFold(mode, "kafka"):
 		return kafkaLocationLookup(ctx, brokers, logger)
 
 	case strings.EqualFold(mode, "http"):
+		if strings.TrimSpace(facilityLayoutBaseURL) == "" {
+			return locationLookupHandle{}, errors.New("LOCATION_LOOKUP_MODE=http requires FACILITY_LAYOUT_BASE_URL to be set")
+		}
 		logger.Info("location classification lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL, "circuit_breaker", "enabled", "retry", "enabled")
 		client := facilitylayout.NewBreakerClient(facilitylayout.NewClient(facilityLayoutBaseURL, nil), recorder)
 		return locationLookupHandle{lookup: client, close: func() {}}, nil
 
 	default:
-		return locationLookupHandle{lookup: facilitylayout.NewPermissiveLookup(), close: func() {}}, nil
+		return locationLookupHandle{}, fmt.Errorf("LOCATION_LOOKUP_MODE=%q is not supported (kafka or http)", mode)
 	}
 }
 
@@ -115,7 +117,7 @@ func runFacilityCache(ctx context.Context, consumer *facilitycache.Consumer, log
 		// Run only ever returns on error (including the plain
 		// context.Canceled of an orderly shutdown), never nil.
 		if err := consumer.Run(ctx); !errors.Is(err, context.Canceled) {
-			logger.Error("facility location cache consumer stopped", "error", err)
+			workerDied(ctx, logger, "facility location cache consumer", err)
 		}
 	}()
 	return runDone

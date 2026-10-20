@@ -139,9 +139,9 @@ servers:
     description: >
       The shared warehouse-systems Kafka broker. Locally this is the broker
       started by `~/warehouse-systems/docker-compose.kafka.yml`, addressed via
-      the `KAFKA_BROKERS` environment variable (default `localhost:9092`).
-      The Kafka publisher is selected with `EVENT_PUBLISHER=kafka`; the
-      default `log` publisher writes events to stdout instead.
+      the `KAFKA_BROKERS` environment variable (required, no default).
+      Events always leave through the transactional outbox and its relay
+      (ADR 0042); there is no log publisher.
 
 defaultContentType: application/cloudevents+json
 
@@ -228,9 +228,9 @@ channels:
       `com.warehouse.wms.product-master.product.ProductClassified` is acted
       on; `ProductRegistered`, `ProductDescriptionChanged`,
       `ProductDimensionsDeclared` and `ProductMeasured` share the topic and
-      are committed past untouched. The consumer runs only when
-      `PRODUCT_MASTER_CONSUMER_GROUP` is set (stable group id; also requires
-      `DATABASE_URL` and `KAFKA_BROKERS`).
+      are committed past untouched. The consumer always runs, under the stable group id
+      `PRODUCT_MASTER_CONSUMER_GROUP` (mandatory, as are `DATABASE_URL` and
+      `KAFKA_BROKERS`).
     publish:
       operationId: applyProductMasterClassification
       summary: Apply product-master's ProductClassified to the local copy.
@@ -261,10 +261,9 @@ channels:
       `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` is acted on
       (task_type `PICK`, ADR 0035/0036, and `RELOCATE`, ADR 0039);
       `TaskCPTMissed`, `PackageManifested` and the `Transfer*` facts share the
-      topic and are committed past untouched. The consumer runs only when
-      `TASK_COMPLETED_CONSUMER_MODE=kafka` (default `off`; also requires
-      `DATABASE_URL` and `KAFKA_BROKERS`), under the fixed group
-      `TASK_COMPLETED_CONSUMER_GROUP` (default `inventory-storage-confirm-pick`).
+      topic and are committed past untouched. The consumer always runs (ADR 0042), under the stable group
+      `TASK_COMPLETED_CONSUMER_GROUP` (mandatory, as are `DATABASE_URL` and
+      `KAFKA_BROKERS`; chart default `inventory-storage-confirm-pick`).
       Poison messages and messages whose handling kept failing are written to
       `warehouse.fulfillment.events.dlq`.
     publish:
@@ -368,8 +367,9 @@ channels:
       `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` is acted
       on; `ASNRegistered`, `ASNCancelled`, `DockAppointment*`, `ReceiptOpened`
       and `ReceiptClosed` share the topic and are committed past untouched. The
-      consumer runs only when `INBOUND_RECEIPT_CONSUMER_GROUP` is set (stable
-      group id; also requires `DATABASE_URL` and `KAFKA_BROKERS`).
+      consumer always runs, under the stable group id
+      `INBOUND_RECEIPT_CONSUMER_GROUP` (mandatory, as are `DATABASE_URL` and
+      `KAFKA_BROKERS`).
     publish:
       operationId: bookInboundReceiptLine
       summary: Book a received Good line as a staged receipt.
@@ -404,10 +404,10 @@ channels:
       Only
       `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested`
       is acted on; every other CloudEvents `type` on the topic is ignored.
-      The consumer runs only when `TRANSFER_ALLOCATION_CONSUMER_MODE=kafka`
-      (default `off`; also requires `DATABASE_URL` and `KAFKA_BROKERS`),
-      under the fixed group `inventory-storage-transfer-allocation`
-      (override `TRANSFER_ALLOCATION_CONSUMER_GROUP`).
+      The consumer always runs (ADR 0042), under the stable group
+      `TRANSFER_ALLOCATION_CONSUMER_GROUP` (mandatory, as are `DATABASE_URL`
+      and `KAFKA_BROKERS`; chart default
+      `inventory-storage-transfer-allocation`).
     publish:
       operationId: allocateTransferStock
       summary: Apply the transfer-allocation command and reply through the outbox.
