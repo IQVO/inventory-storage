@@ -60,7 +60,7 @@ flowchart LR
     LR["LocationRecorded<br/>in-process only, no consumer"]:::event
     H1["Bin id never checked against<br/>facility-layout slot catalogue"]:::hotspot
     H2["Fragile, Oversized, HighValue<br/>have no placement rule"]:::hotspot
-    H3["Decided 2026-10-06: default LOCATION_LOOKUP_MODE<br/>kept permissive (ADR 0013/0020)<br/>cold-cache safety, cluster injects kafka"]:::decided
+    H3["Decided 2026-10-06: default LOCATION_LOOKUP_MODE<br/>kept permissive (ADR 0013/0020)<br/>removed by ADR 0042: kafka or http only"]:::decided
 
     FL --> ZE --> CACHE
     IC --> RB --> BIN
@@ -236,7 +236,7 @@ Omitted: the clean-count branch (only `CycleCountCompleted` with
 | --- | --- | --- |
 | H1 | A bin id is never validated against facility-layout's slot catalogue | [Context Map](/docs/ecosystem/context-map), "What is still not built" |
 | H2 | `Fragile`, `Oversized`, `HighValue` carry no placement rule | [Context Map](/docs/ecosystem/context-map); ADR 0009 |
-| H3 | **Decided 2026-10-06: kept permissive** (ADR 0013/0020) — the binary default `LOCATION_LOOKUP_MODE=permissive` stays: a cold facility cache would reject every receipt, and the cluster already injects `kafka` | `cmd/inventory/main.go` `buildLocationLookup`; ADR 0013, ADR 0020 |
+| H3 | **Decided 2026-10-06: kept permissive** (ADR 0013/0020) — the binary default `LOCATION_LOOKUP_MODE=permissive` stayed: a cold facility cache would reject every receipt, and the cluster already injects `kafka`. **Overtaken by [ADR 0042](/docs/adr/0042)**: `permissive` and the unset default were removed, the mode is `kafka` or `http` | `cmd/inventory/lookup.go`, `cmd/inventory/config.go`; ADR 0013, ADR 0020, ADR 0042 |
 | H4 | ~~`ProductClassified` is raised but never published~~ **Resolved 2026-10-06**: published through the outbox on both topics (ADR 0031); `LocationRecorded` stays in-process (no consumer). **Superseded by ADR 0034**: product-master owns classification; this service's `ProductClassified` is now emitted only by the one-shot backfill | [ADR 0031](/docs/adr/0031), [ADR 0034](/docs/adr/0034), [Domain Events](./domain-events.md) |
 | H5 | **Decided 2026-10-06: kept** (ADR 0003) — no background sweeper for timed-out reservations; expiry stays lazy | [Domain Events](./domain-events.md#lazy-expiry-no-sweeper-resolved-at-the-next-read); ADR 0003 |
 | H6 | The `ReserveStock` replay guard is best-effort under concurrency | code comment on `activeReservationFor` in `reserve_stock.go` |

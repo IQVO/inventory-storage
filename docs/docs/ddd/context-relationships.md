@@ -67,8 +67,8 @@ flowchart TB
     FL -->|"OHS + PL · U → D<br/>INV is Conformist<br/><b>wired: Kafka</b> (ADR 0013)"| INV
     PM -->|"OHS + PL · U → D<br/>INV is Conformist<br/><b>wired: Kafka</b> ProductClassified (ADR 0034)"| INV
     INV -->|"OHS · U → D · C/S<br/><b>wired: sync REST</b>"| OM
-    FE -->|"OHS + PL · U → D · CF<br/><b>wired: Kafka</b> TaskCompleted (ADR 0035, per-line ADR 0036)<br/>consumer off by default"| INV
-    IR -->|"OHS + PL · U → D · CF<br/><b>wired: Kafka</b> ReceiptLineReceived (ADR 0037)<br/>Good lines → staged stock · consumer off by default"| INV
+    FE -->|"OHS + PL · U → D · CF<br/><b>wired: Kafka</b> TaskCompleted (ADR 0035, per-line ADR 0036)<br/>consumer always on (ADR 0042)"| INV
+    IR -->|"OHS + PL · U → D · CF<br/><b>wired: Kafka</b> ReceiptLineReceived (ADR 0037)<br/>Good lines → staged stock · consumer always on (ADR 0042)"| INV
 
     classDef this fill:#0f766e,stroke:#134e4a,color:#fff,stroke-width:3px;
     classDef other fill:#1e293b,stroke:#475569,color:#fff;
@@ -142,7 +142,7 @@ Neither `fulfillment-execution` nor
 `order_ref` and `line_no` are additive optional fields of `TaskCompleted` v1 that
 fulfillment-execution adds; a message without `order_ref` is a no-op, and the
 consumer is
-off by default (`TASK_COMPLETED_CONSUMER_MODE`). A Task carries no SKU or quantity,
+always on (`TASK_COMPLETED_CONSUMER_GROUP`, ADR 0042). A Task carries no SKU or quantity,
 so **short picks are not modelled**. The
 `e2e-tests` warehouse-day simulator and operators still use the REST route.
 

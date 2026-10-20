@@ -11,11 +11,10 @@ One diagram per command use case (REST and MCP), plus the background flows
 (outbox relay, facility location cache, analytics projector) and the one
 read with side effects (lazy expiry). Each follows the actual function body:
 the order of calls, the `UnitOfWork` transaction boundary (shaded), and the
-error branches as `alt`. Unless stated otherwise the diagrams show the
-deployed configuration: Postgres (`DATABASE_URL` set) and
-`EVENT_PUBLISHER=kafka`, so `Publish` means "insert an `outbox_events` row
-in the current transaction". In-memory mode skips the idempotency middleware
-and the transaction and logs events instead.
+error branches as `alt`. The diagrams show the only runtime
+([ADR 0042](/docs/adr/0042)): Postgres and Kafka, so `Publish` means
+"insert an `outbox_events` row in the current transaction" and the idempotency
+middleware always applies.
 
 Participants: **Client**, the inbound adapter (**HTTP**, **MCP** or a Kafka
 consumer), the **use case**, the **aggregate**, the **repository** port,
@@ -125,7 +124,7 @@ sequenceDiagram
 
 Source: `internal/application/usecases/stow_stock.go`,
 `internal/adapters/outbound/postgres/location_repo.go`, `stock_repo.go`.
-Omitted: the 400 and 422 validation in the handler, and the in-memory
+Omitted: the 400 and 422 validation in the handler, and the in-process
 `facilitycache` versus HTTP lookup detail (the cache never errors).
 
 ## 3. ReserveStock — `POST /reservations`

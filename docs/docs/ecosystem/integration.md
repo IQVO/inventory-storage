@@ -87,7 +87,7 @@ and the replay — and the readiness gate — moves past it.
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `LOCATION_LOOKUP_MODE` | *(none, required)* | `kafka`: Kafka-fed local cache (what the `warehouse-infra` cluster runs). `http`: synchronous `GET /locations/{locationCode}/classification` on facility-layout per stow — the rollback for `kafka`. Unset and `permissive` are boot errors since [ADR 0042](/docs/adr/0042-postgres-and-kafka-are-the-only-runtime): a lookup that answers `Known=false` for every location validates nothing (this supersedes the 2026-10-06 "kept permissive" decision of ADR 0013/0020). |
+| `LOCATION_LOOKUP_MODE` | *(none, required)* | `kafka`: Kafka-fed local cache (what the `warehouse-infra` cluster runs). `http`: synchronous `GET /locations/{locationCode}/classification` on facility-layout per stow — the rollback for `kafka`. Unset and `permissive` are boot errors since [ADR 0042](/docs/adr/0042): a lookup that answers `Known=false` for every location validates nothing (the 2026-10-06 "kept permissive" decision of ADR 0013/0020 no longer applies). |
 | `FACILITY_LAYOUT_BASE_URL` | *(unset)* | Base URL for the `http` mode client, e.g. `http://facility-layout:80`; required in that mode. |
 | `KAFKA_BROKERS` | *(none, required)* | Required by every mode and every binary except `cmd/mcp`; the process exits at boot if it is missing. |
 
@@ -318,5 +318,6 @@ GHCR by the `docker-publish` CI job on `main`) and as a Helm chart
 Kubernetes stack its REST API is reached through Kong at
 `http://localhost:8000/api/inventory-storage`, and it runs inside the Istio
 mesh for east-west traffic; `KAFKA_BROKERS` and the consumer-group ids are
-ordinary (mandatory) chart values, while `LOCATION_LOOKUP_MODE=kafka` is the
-chart default and `warehouse-infra` also sets it explicitly as extra env.
+ordinary (mandatory) chart values (`kafka.brokers` comes from `warehouse-infra`'s
+`_platform.yaml`); `LOCATION_LOOKUP_MODE=kafka` is the chart default
+(`config.locationLookupMode`), which `warehouse-infra` also sets explicitly.
