@@ -1,5 +1,7 @@
 # Project: Inventory & Storage (Core Bounded Context)
 
+<!-- harness-template: v4 -->
+
 The WMS-tier authoritative record of **what is held where, and what portion is
 usable**. Implements chaotic (random) stow: no fixed product location, the
 system records the exact bin. Supplies "stock reality" to Work Planning and
