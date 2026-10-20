@@ -38,7 +38,7 @@ Page index (source paths under `docs/docs/`):
 | Ecosystem | [Context map](docs/docs/ecosystem/context-map.md), [Integration](docs/docs/ecosystem/integration.md) |
 | DDD | [Use cases](docs/docs/ddd/use-cases.md), [Subdomain classification](docs/docs/ddd/subdomain-classification.md), and the artifact pack under [`docs/docs/ddd/`](docs/docs/ddd/) |
 | APIs | [REST reference](docs/docs/api-reference/overview.md), [Integration events](docs/docs/api-reference/events.md), [MCP tools](docs/docs/mcp/tools.md), [MCP governance charter](docs/docs/mcp/governance-charter.md), [Flow & Accuracy report](docs/docs/analytics/inventory-flow-accuracy-report.md) |
-| Decisions | [ADR index](docs/docs/adr/about.md) (37 ADRs) |
+| Decisions | [ADR index](docs/docs/adr/about.md) (42 ADRs; [ADR-0042](docs/docs/adr/0042-postgres-and-kafka-are-the-only-runtime.md): Postgres and Kafka are the only runtime) |
 
 ## Layering (hexagonal / ports & adapters)
 
@@ -66,12 +66,12 @@ internal/
     inbound/kafka/           analytics consumer (projector)
     inbound/mcp/             MCP tools incl. the read-only report tool
     outbound/postgres/       pgxpool repos + golang-migrate migrations
-    outbound/memory/         thread-safe in-memory repos (tests, local dev)
-    outbound/events/         log publisher + buffered + multi (fan-out) publisher
+    outbound/memory/         thread-safe in-memory repos: unit/BDD test doubles ONLY (no cmd/ binary imports them, ADR-0042)
+    outbound/events/         log publisher + buffered + multi (fan-out) publisher: test doubles ONLY (events leave through the outbox)
     outbound/kafka/          Kafka integration + analytics publishers (see below)
     outbound/analyticsstore/ analytical Postgres projection + read-only reader
     outbound/facilitycache/  Kafka-fed local cache of facility-layout zone/slot data (ADR-0013)
-    outbound/facilitylayout/ sync HTTP + permissive location-classification lookups (fallbacks)
+    outbound/facilitylayout/ sync HTTP location-classification lookup (LOCATION_LOOKUP_MODE=http, the rollback for kafka)
     outbound/telemetry/      OTel setup, trace-aware slog, reservation metrics
   architecture/              arch-go fitness tests for the dependency rule
 migrations/                  golang-migrate SQL files (OLTP)
@@ -112,25 +112,30 @@ response is a DTO.
 
 ## Run it
 
-### Option A — in-memory (no database)
+Postgres and Kafka are the only runtime ([ADR-0042](docs/docs/adr/0042-postgres-and-kafka-are-the-only-runtime.md)):
+there is no in-memory mode and no log-only publisher, and `cmd/inventory` exits
+at boot naming the first missing variable. Start both services, then the app:
 
 ```sh
-go run ./cmd/inventory
-```
+# the local kind cluster owns localhost:9092, so compose publishes Kafka on 19092
+# (override with KAFKA_HOST_PORT and keep KAFKA_BROKERS in step)
+docker compose up -d --wait postgres kafka
 
-Without `DATABASE_URL` set, the app wires the in-memory adapters and logs
-events to stdout. Listens on `:8080` (override with `HTTP_ADDR`).
-
-### Option B — Postgres
-
-```sh
-docker compose up -d postgres
 export DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable'
+export KAFKA_BROKERS=localhost:19092
+export LOCATION_LOOKUP_MODE=kafka
+export TRANSFER_ALLOCATION_CONSUMER_GROUP=inventory-storage-transfer-allocation
+export PRODUCT_MASTER_CONSUMER_GROUP=inventory-storage-product-master
+export INBOUND_RECEIPT_CONSUMER_GROUP=inventory-storage-inbound-receipt
+export TASK_COMPLETED_CONSUMER_GROUP=inventory-storage-confirm-pick
 go run ./cmd/inventory
 ```
 
 Migrations in `migrations/` run automatically on startup (via
-`MIGRATIONS_PATH`, default `migrations`).
+`MIGRATIONS_PATH`, default `migrations`). Listens on `:8080` (override with
+`HTTP_ADDR`); `GET /readyz` is `200` only while Postgres and the Kafka broker
+both answer. Every variable is documented in
+[Configuration](docs/docs/operations/configuration.md).
 
 ### Running the MCP server in Kubernetes
 
@@ -170,7 +175,7 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | PUT    | `/products/{sku}/classification` | 410 `classification-moved` (ADR-0034: classify in product-master) |
 | GET    | `/products/{sku}/classification` | deprecated: local copy of product-master's classification |
 | GET    | `/healthz` | liveness |
-| GET    | `/readyz` | readiness — `503 {"status":"not_ready"}` once graceful shutdown has begun (ADR-0020) |
+| GET    | `/readyz` | readiness — 503 `dependency-unavailable` while Postgres or the Kafka broker is down, and 503 `{"status":"not_ready"}` once graceful shutdown has begun (ADR-0020, ADR-0042) |
 
 `POST /stock/receive` and `POST /reservations` are the two true
 resource-creation endpoints (server-generated id, no caller-supplied
@@ -180,10 +185,9 @@ identity), so they are route-scoped behind a transactional
 header is a 400, a reused key with a different request body is a 422, and
 a retried identical request returns the exact same cached response
 without re-executing the handler — a client-side retry after a dropped
-response can never double-create a resource. The middleware only applies
-when the service is Postgres-backed (`DATABASE_URL` set); in-memory dev
-mode leaves these two routes unprotected, matching this repo's existing
-"nil = no transactional backing" convention.
+response can never double-create a resource. The middleware is backed by
+Postgres (`idempotency_keys`) in every deployment: there is no mode in which
+these two routes are unprotected.
 
 None of these routes is authenticated: the static-bearer-key layer added by
 ADR-0014 was removed again by
@@ -259,28 +263,29 @@ curl -s -i -X DELETE localhost:8080/reservations/does-not-exist
 
 This service publishes integration events to the shared warehouse-systems
 Kafka broker so other bounded contexts (e.g. `wes-work-planning`) can project
-their own read models from inventory reality. It also consumes two topics:
+their own read models from inventory reality. It also consumes five topics
+(four consumers always run, each under a mandatory stable consumer group; the
+facility cache is the fifth, with `LOCATION_LOOKUP_MODE=kafka`):
 `warehouse.facility.events`, to keep a local read model of facility-layout's
 zone classifications (see [Consumed](#consumed-facility-layouts-location-classifications)
-below), and `warehouse.network-inventory-planning.events`, the command side
-of the site-scoped transfer allocation exchange (ADR-0030).
+below), `warehouse.network-inventory-planning.events`, the command side
+of the site-scoped transfer allocation exchange (ADR-0030),
+`warehouse.product-master.events` and `warehouse.inbound-receiving.events`,
+and `warehouse.fulfillment.events` (the sections below).
 
 - **Topic**: `warehouse.inventory.events`
-- **Publisher selection**: `EVENT_PUBLISHER` env var — `log` (default:
-  stdout logging with in-memory adapters, or, with `DATABASE_URL` set, the
-  same stdout logging — the transactional outbox only activates under
-  `kafka`, see below) or `kafka`. With `DATABASE_URL` set AND
-  `EVENT_PUBLISHER=kafka`, publishing goes through a transactional outbox
-  (ADR 0017): each use case's aggregate save(s) and its domain event(s)
-  commit together in one Postgres transaction as `outbox_events` rows, and
-  a background relay (`OUTBOX_RELAY_INTERVAL`, default `1s`) drains them
-  onto Kafka. A row that fails `OUTBOX_MAX_ATTEMPTS` sends (default `20`,
+- **Publishing**: always through the transactional outbox (ADR 0017,
+  [ADR 0042](docs/docs/adr/0042-postgres-and-kafka-are-the-only-runtime.md)):
+  each use case's aggregate save(s) and its domain event(s) commit together in
+  one Postgres transaction as `outbox_events` rows, and a background relay
+  (always on in `cmd/inventory`; `OUTBOX_RELAY_INTERVAL`, default `1s`) drains
+  them onto Kafka. There is no log-only publisher and no direct publishing.
+  `EVENT_PUBLISHER` is only a guard: unset or `kafka`, any other value is a boot
+  error. A row that fails `OUTBOX_MAX_ATTEMPTS` sends (default `20`,
   `0` = unlimited; ADR 0038) is logged at ERROR and excluded from the relay
-  until re-armed, so one poison row cannot block it forever. Without `DATABASE_URL`, `EVENT_PUBLISHER=kafka` publishes
-  directly (no outbox, no transactional guarantee) — the in-memory repos
-  have nothing to commit atomically with. `cmd/mcp` reads the same
-  `EVENT_PUBLISHER`/`DATABASE_URL`, so an MCP `revoke_reservation` writes the
-  same outbox rows (the relay runs only in `cmd/inventory`).
+  until re-armed, so one poison row cannot block it forever. `cmd/mcp`
+  reads `DATABASE_URL` only and always writes the same outbox rows, so an MCP
+  `revoke_reservation` is published by the relay in `cmd/inventory`.
 - **Housekeeping** (ADR 0026): a background sweeper in `cmd/inventory` deletes
   `idempotency_keys` older than `IDEMPOTENCY_KEY_TTL` (default `24h`) and
   *published* `outbox_events` older than `OUTBOX_RETENTION` (default `168h`),
@@ -289,10 +294,12 @@ of the site-scoped transfer allocation exchange (ADR-0030).
   never deleted. The same sweeper deletes `order_pick_progress` rows (the
   confirm-pick consumer's per-order counter, ADR 0035) not updated for
   `ORDER_PICK_PROGRESS_RETENTION` (default `720h` = 30 days).
-- **Broker**: `KAFKA_BROKERS` env var, comma-separated, default
-  `localhost:9092`. There is one broker platform-wide: the in-cluster Kafka
-  deployed by `warehouse-infra`, whose external listener is reachable from
-  the host at `localhost:9092`.
+- **Broker**: `KAFKA_BROKERS`, comma-separated, **required** (no default; the
+  process exits at boot without it). There is one broker platform-wide: the
+  in-cluster Kafka deployed by `warehouse-infra`, whose external listener is
+  reachable from the host at `localhost:9092`. The repo's `docker-compose.yml`
+  starts a disposable one on `localhost:19092` (`KAFKA_HOST_PORT`) for local
+  runs, so it never collides with the kind cluster.
 - **Envelope: CloudEvents 1.0, mandatory** (structured mode, fleet-wide —
   [ADR-0024](docs/docs/adr/0024-cloudevents-mandatory-envelope.md)). Every
   message carries the Kafka header
@@ -360,15 +367,14 @@ of the site-scoped transfer allocation exchange (ADR-0030).
   analytics data product on `warehouse.inventory.analytics` — see
   [Analytics](#analytics-data-product) below.)
 
-Run it against the real broker:
+Watch the topic while the app from [Run it](#run-it) is up (compose broker):
 
 ```sh
-export EVENT_PUBLISHER=kafka
-export KAFKA_BROKERS=localhost:9092
-export DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable'
-go run ./cmd/inventory
+docker compose exec kafka kafka-console-consumer \
+  --bootstrap-server localhost:29092 \
+  --topic warehouse.inventory.events --from-beginning
 
-# in another shell, tail the topic on the in-cluster broker:
+# or, against the in-cluster broker (point KAFKA_BROKERS at it instead):
 kubectl --context kind-warehouse -n warehouse-systems exec -it kafka-controller-0 -c kafka -- \
   kafka-console-consumer.sh --bootstrap-server localhost:9092 \
   --topic warehouse.inventory.events --from-beginning
@@ -395,10 +401,10 @@ Stock without a recorded site (rows persisted before migration 0030) is
 **never transfer-allocatable** — such commands answer `ORIGIN_SITE_UNKNOWN`
 while continuing to serve ordinary demand unchanged.
 
-| Env var | Default | Meaning |
+| Env var | Required | Meaning |
 | --- | --- | --- |
-| `TRANSFER_ALLOCATION_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`) |
-| `TRANSFER_ALLOCATION_CONSUMER_GROUP` | `inventory-storage-transfer-allocation` | Consumer group id |
+| `TRANSFER_ALLOCATION_CONSUMER_GROUP` | yes | Stable consumer group id, e.g. `inventory-storage-transfer-allocation`. The consumer always runs; a missing value is a boot error. |
+| `TRANSFER_ALLOCATION_CONSUMER_MODE` | no | Legacy guard: unset or `kafka`. Any other value (`off`) is a boot error. |
 
 ### Consumed: product-master's product classifications (ADR-0034)
 
@@ -411,9 +417,9 @@ reads for the ADR-0009/0010 placement rules (unchanged). It is fed by
 applies only when its `version` is newer than the stored one. Other
 product-master event types are ignored.
 
-| Env var | Default | Meaning |
+| Env var | Required | Meaning |
 | --- | --- | --- |
-| `PRODUCT_MASTER_CONSUMER_GROUP` | unset (consumer off) | Stable consumer group id, e.g. `inventory-storage-product-master`. When set, `DATABASE_URL` and `KAFKA_BROKERS` are required. |
+| `PRODUCT_MASTER_CONSUMER_GROUP` | yes | Stable consumer group id, e.g. `inventory-storage-product-master`. The consumer always runs; a missing value is a boot error. |
 
 `PUT /products/{sku}/classification` answers `410 classification-moved`;
 `GET /products/{sku}/classification` is deprecated (served from the local
@@ -435,9 +441,9 @@ booked** in v1 (INFO log and
 and skipped. Other inbound-receiving event types are ignored. `POST /stock/receive`
 is unchanged and keeps serving ad-hoc receipts.
 
-| Env var | Default | Meaning |
+| Env var | Required | Meaning |
 | --- | --- | --- |
-| `INBOUND_RECEIPT_CONSUMER_GROUP` | unset (consumer off) | Stable consumer group id, e.g. `inventory-storage-inbound-receipt`. When set, `DATABASE_URL` and `KAFKA_BROKERS` are required, and `EVENT_PUBLISHER=kafka` for `StockReceived` to leave the service. Chart value `config.inboundReceiptConsumerGroup`. |
+| `INBOUND_RECEIPT_CONSUMER_GROUP` | yes | Stable consumer group id, e.g. `inventory-storage-inbound-receipt`. The consumer always runs; a missing value is a boot error. `StockReceived` leaves through the outbox like every other event. Chart value `config.inboundReceiptConsumerGroup`. |
 
 One-shot backfill (product-master ADR 0003 stage B) — re-emits every stored
 classification as the legacy `ProductClassified` through the outbox, which the
@@ -485,13 +491,12 @@ fulfillment-execution's Task and a business rule for the remainder.
 
 A transient failure retries the same message (capped backoff, 5 attempts), then
 dead-letters it to `warehouse.fulfillment.events.dlq`; a malformed payload is
-dead-lettered at once. Needs `EVENT_PUBLISHER=kafka` for `StockPicked` to leave
-the service.
+dead-lettered at once. `StockPicked` leaves through the outbox.
 
-| Env var | Default | Meaning |
+| Env var | Required | Meaning |
 | --- | --- | --- |
-| `TASK_COMPLETED_CONSUMER_MODE` | `off` | `kafka` enables the consumer (requires `DATABASE_URL` and `KAFKA_BROKERS`) |
-| `TASK_COMPLETED_CONSUMER_GROUP` | `inventory-storage-confirm-pick` | Consumer group id |
+| `TASK_COMPLETED_CONSUMER_GROUP` | yes | Stable consumer group id, e.g. `inventory-storage-confirm-pick`. The consumer always runs; a missing value is a boot error. |
+| `TASK_COMPLETED_CONSUMER_MODE` | no | Legacy guard: unset or `kafka`. Any other value (`off`) is a boot error. |
 
 ### Destination transfer receiving: stage → quarantine → stow (ADR-0033)
 
@@ -537,13 +542,14 @@ physical count behind a scan. See ADR-0033.
 `StowStock` enforces hazmat-zone and temperature-class placement for SKUs
 classified `Hazmat` or `TemperatureSensitive` (ADR-0009), which needs the
 target bin's zone attributes. Where they come from is selected by
-`LOCATION_LOOKUP_MODE`:
+`LOCATION_LOOKUP_MODE`, which is **required** and is `kafka` or `http` (unset
+and `permissive` are boot errors: a lookup that answers "unknown" for every bin
+validates no location at all):
 
 | Mode | Behaviour |
 | --- | --- |
-| `permissive` (default) | No lookup; every location reports `Known=false`, so placement rules never block a stow. |
-| `kafka` | `internal/adapters/outbound/facilitycache` replays `warehouse.facility.events` (`ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned`) from the earliest offset into an in-memory cache, under a per-process consumer group, and startup blocks until that replay completes (60s timeout). Requires `KAFKA_BROKERS`. This is what the `warehouse-infra` cluster runs (ADR-0013). |
-| `http` | Synchronous `GET /locations/{code}/classification` on facility-layout per stow, via `FACILITY_LAYOUT_BASE_URL`. Kept as the rollback for `kafka`. |
+| `kafka` | `internal/adapters/outbound/facilitycache` replays `warehouse.facility.events` (`ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned`) from the earliest offset into an in-process cache, under a per-process consumer group, and startup blocks until that replay completes (60s timeout). Uses `KAFKA_BROKERS`. This is what the `warehouse-infra` cluster runs (ADR-0013). |
+| `http` | Synchronous `GET /locations/{code}/classification` on facility-layout per stow, via `FACILITY_LAYOUT_BASE_URL` (required in this mode). Kept as the rollback for `kafka`; this REST edge to a sibling context is deliberately out of scope of ADR-0042. |
 
 The same-bin DOT hazard-class segregation check (ADR-0010) needs no lookup —
 it reads only this service's own stock and classification repositories.
@@ -570,7 +576,7 @@ and the [report contract](docs/docs/analytics/inventory-flow-accuracy-report.md)
 
 - **Analytics topic**: `warehouse.inventory.analytics` (separate from the
   integration topic; published by a NEW outbound adapter, fanned out alongside
-  the integration publisher when `EVENT_PUBLISHER=kafka`). Same CloudEvents
+  the integration publisher). Same CloudEvents
   envelope and `type` strings, with `dataschema`
   `urn:warehouse:inventory-storage:analytics:<EventName>:v1` (the old
   `schema_version` field is gone).
@@ -578,7 +584,7 @@ and the [report contract](docs/docs/analytics/inventory-flow-accuracy-report.md)
   (`migrations/analytics/`), and a read-only role for the reader.
 - **Three processes, one writer**:
   - `cmd/inventory` — the OLTP binary (unchanged; additionally fans events onto
-    the analytics topic under `EVENT_PUBLISHER=kafka`).
+    the analytics topic through the outbox relay).
   - `cmd/inventory-projector` — the ONLY writer. Consumes the analytics topic
     (`StartOffset = FirstOffset`, so a fresh group replays history), applies
     idempotent projections, and runs the analytical migrations on start.
@@ -587,19 +593,20 @@ and the [report contract](docs/docs/analytics/inventory-flow-accuracy-report.md)
   read-only tool `get_inventory_flow_accuracy_report`, which reads through the
   reports REST rather than the analytical database directly.
 
-Run the analytics side locally (requires Kafka and the analytical database):
+Run the analytics side locally (requires Postgres, Kafka and the analytical
+database; `docker compose up -d --wait postgres kafka` provides the first two):
 
 ```sh
-# 1. OLTP service, fanning events onto both topics
-export EVENT_PUBLISHER=kafka
-export KAFKA_BROKERS=localhost:9092
-export DATABASE_URL='postgres://inventory:***@localhost:5432/inventory?sslmode=disable'
+# 1. OLTP service, fanning events onto both topics through the outbox relay
+#    (DATABASE_URL, KAFKA_BROKERS, LOCATION_LOOKUP_MODE and the four *_CONSUMER_GROUP
+#    variables exactly as in "Run it" above)
 go run ./cmd/inventory
 
-# 2. Projector (the only writer of the analytical DB)
-export ANALYTICS_DATABASE_URL='postgres://inventory:***@localhost:5432/inventory_analytics?sslmode=disable'
-export KAFKA_BROKERS=localhost:9092
-go run ./cmd/inventory-projector       # admin/health on :8091
+# 2. Projector (the only writer of the analytical DB): ANALYTICS_DATABASE_URL and
+#    KAFKA_BROKERS are both mandatory
+export ANALYTICS_DATABASE_URL='postgres://inventory:inventory@localhost:5432/inventory_analytics?sslmode=disable'
+export KAFKA_BROKERS=localhost:19092
+go run ./cmd/inventory-projector       # admin: /healthz and /readyz on :8091
 
 # 3. Reports reader (read-only)
 export ANALYTICS_DATABASE_URL='postgres://inventory_ro:***@localhost:5432/inventory_analytics?sslmode=disable'
@@ -692,7 +699,7 @@ docker run --rm -p 4317:4317 -v /tmp/otelcol.yaml:/etc/otelcol-contrib/config.ya
   otel/opentelemetry-collector-contrib:latest
 
 # in another shell
-go run ./cmd/inventory        # then drive the curl walkthrough above
+go run ./cmd/inventory        # with the environment from "Run it"; then drive the curl walkthrough above
 ```
 
 ## Local development / quality gate
@@ -808,7 +815,8 @@ aggregate/bounded concept, using the ubiquitous language from `CLAUDE.md`
 
 The step definitions live in [`features_test.go`](features_test.go) at the repo
 root. They are true black-box acceptance tests: the real chi router is wired to
-the in-memory outbound adapters, served over `httptest.NewServer`, and driven
+the in-memory outbound adapters (unit/BDD test doubles — the production
+binaries never use them, ADR-0042), served over `httptest.NewServer`, and driven
 with plain `net/http` requests — no use case is called directly. Every scenario
 gets a fresh server and fresh state via a godog `Before` hook.
 

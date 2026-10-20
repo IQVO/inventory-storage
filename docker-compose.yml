@@ -1,3 +1,13 @@
+# Local infrastructure for `go run ./cmd/inventory`. Postgres and Kafka are the
+# only runtime (ADR 0042): there is no in-memory mode, so BOTH must be up.
+#
+#   docker compose up -d --wait postgres kafka
+#
+# The Kafka host port defaults to 19092, NOT 9092: the local kind cluster
+# (warehouse-infra) already owns localhost:9092. Override it with
+# KAFKA_HOST_PORT and point KAFKA_BROKERS at the same port, e.g.
+#   KAFKA_HOST_PORT=19092  ->  KAFKA_BROKERS=localhost:19092
+# (the broker advertises localhost:${KAFKA_HOST_PORT} to clients on the host).
 services:
   postgres:
     image: postgres:16
@@ -15,6 +25,19 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  kafka:
+    image: confluentinc/confluent-local:7.6.1
+    restart: unless-stopped
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:29092,PLAINTEXT_HOST://localhost:${KAFKA_HOST_PORT:-19092}"
+    ports:
+      - "${KAFKA_HOST_PORT:-19092}:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
 
 volumes:
   inventory_pg_data:
