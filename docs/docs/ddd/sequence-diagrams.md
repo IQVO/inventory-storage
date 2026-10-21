@@ -341,13 +341,11 @@ sequenceDiagram
     end
 ```
 
-`PUT /products/{sku}/classification` answers `410 classification-moved`
-without reading the body. Source:
+`PUT` and `GET /products/{sku}/classification` no longer exist (stage E,
+2026-10-17). Source:
 `internal/adapters/inbound/kafka/product_master_consumer.go`,
 `internal/application/usecases/apply_product_classification.go`,
 `internal/adapters/outbound/postgres/product_classification_repo.go`.
-Omitted: the deprecated read `GET /products/{sku}/classification`, a direct
-repository lookup on the local copy with no use case.
 
 ## 8. RegisterBin — `PUT /bins/{binId}`
 

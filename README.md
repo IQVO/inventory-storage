@@ -160,20 +160,18 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 
 | Method | Path | Use case |
 |--------|------|----------|
-| POST   | `/stock/receive` | ReceiveStock — requires `Idempotency-Key` (ADR-0018) |
+| POST   | `/stock/receive` | ReceiveStock — **deprecated** in `apis/openapi.yaml` (K24): inbound-receiving's `ReceiptLineReceived` is the production path (ADR-0037); still serves ad-hoc receipts. Requires `Idempotency-Key` (ADR-0018) |
 | POST   | `/stock/stow` | StowStock |
 | POST   | `/reservations` | ReserveStock — requires `Idempotency-Key` (ADR-0018) |
 | GET    | `/reservations?demandRef=` | GetReservationsByDemandRef |
 | DELETE | `/reservations/{id}` | RevokeReservation |
-| POST   | `/reservations/{id}/confirm-pick` | ConfirmPick |
+| POST   | `/reservations/{id}/confirm-pick` | ConfirmPick — **deprecated** in `apis/openapi.yaml` (K37): fulfillment-execution's `TaskCompleted` consumer confirms picks (ADR-0035, ADR-0036); removal planned with the next breaking window |
 | GET    | `/inventory/{sku}/usable` | GetUsable |
 | PUT    | `/bins/{binId}` | RegisterBin — idempotent: 201 created / 200 unchanged or resized / 409 below occupancy (ADR-0025) |
 | GET    | `/bins/{binId}` | GetBin — capacity, occupied, available |
 | POST   | `/bins/{binId}/cycle-count` | RunCycleCount |
 | POST   | `/transfers/{transferLineId}/receipt` | StageTransferReceipt — requires `Idempotency-Key`; 201 staged / 200 replay / 422 quarantined / 409 conflicting scan (ADR-0033) |
 | POST   | `/transfers/{transferLineId}/stow` | StowTransferStock — requires `Idempotency-Key`; 200 stowed with allocations / 409 not staged, wrong-site bin, or quantity mismatch (ADR-0033) |
-| PUT    | `/products/{sku}/classification` | 410 `classification-moved` (ADR-0034: classify in product-master) |
-| GET    | `/products/{sku}/classification` | deprecated: local copy of product-master's classification |
 | GET    | `/healthz` | liveness |
 | GET    | `/readyz` | readiness — 503 `dependency-unavailable` while Postgres or the Kafka broker is down, and 503 `{"status":"not_ready"}` once graceful shutdown has begun (ADR-0020, ADR-0042) |
 
@@ -349,15 +347,11 @@ and `warehouse.fulfillment.events` (the sections below).
   ```
   `reason` is the closed set `ORIGIN_SITE_UNKNOWN | INSUFFICIENT_USABLE |
   IDEMPOTENCY_CONFLICT`.
-  And the legacy `com.warehouse.wms.inventory-storage.product.ProductClassified`
-  (key/subject = SKU; a full-state replacement), which since ADR-0034 no
-  write path raises: only the one-shot `republish-product-classifications`
-  backfill (below) emits it, through the outbox, for product-master's legacy
-  importer. `data`:
-  ```json
-  {"sku": "SKU-9", "handling_tags": ["Hazmat", "TemperatureSensitive"], "temperature_class": "Frozen", "dot_hazard_class": 3}
-  ```
-  (`temperature_class` / `dot_hazard_class` are omitted when unset.)
+  The legacy `com.warehouse.wms.inventory-storage.product.ProductClassified`
+  is **no longer published**: ADR-0034 stage E (2026-10-17) removed the type,
+  the `republish-product-classifications` backfill and both
+  `/products/{sku}/classification` routes. Classification is product-master's
+  (see "Consumed: product-master's product classifications" below).
   (`ReservationRevoked`'s domain event only carries the reservation id; the
   Kafka adapter looks the reservation back up via `ReservationRepo` to fill in
   `sku`/`quantity`/`demand_ref`.) Every other domain event (`StockReceived`,
@@ -421,9 +415,10 @@ product-master event types are ignored.
 | --- | --- | --- |
 | `PRODUCT_MASTER_CONSUMER_GROUP` | yes | Stable consumer group id, e.g. `inventory-storage-product-master`. The consumer always runs; a missing value is a boot error. |
 
-`PUT /products/{sku}/classification` answers `410 classification-moved`;
-`GET /products/{sku}/classification` is deprecated (served from the local
-copy until product-master ADR 0003 stage E).
+Stage E (2026-10-17) removed `PUT` and `GET /products/{sku}/classification`:
+the router registers neither, so both answer `404`
+(`features/product_classification.feature`). The local copy is read only by
+`StowStock`; classify products in product-master.
 
 ### Consumed: inbound-receiving's ReceiptLineReceived → staged stock (ADR-0037)
 
@@ -445,13 +440,8 @@ is unchanged and keeps serving ad-hoc receipts.
 | --- | --- | --- |
 | `INBOUND_RECEIPT_CONSUMER_GROUP` | yes | Stable consumer group id, e.g. `inventory-storage-inbound-receipt`. The consumer always runs; a missing value is a boot error. `StockReceived` leaves through the outbox like every other event. Chart value `config.inboundReceiptConsumerGroup`. |
 
-One-shot backfill (product-master ADR 0003 stage B) — re-emits every stored
-classification as the legacy `ProductClassified` through the outbox, which the
-running pod's relay publishes; safe to re-run:
-
-```sh
-kubectl -n warehouse-systems exec deploy/inventory-storage -- ./inventory republish-product-classifications
-```
+The one-shot `republish-product-classifications` backfill (product-master ADR
+0003 stage B) was retired with stage E: `cmd/inventory` has no subcommands.
 
 ### Consumed: fulfillment-execution's TaskCompleted → confirm exactly the picked line (ADR-0036; counting fallback ADR-0035)
 

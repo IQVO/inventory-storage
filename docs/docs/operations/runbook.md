@@ -116,8 +116,8 @@ topics and route by key hash ([ADR 0021](../adr/0021-kafka-producer-partition-ke
 
 | Topic | Producer | Event `type`s (`com.warehouse.wms.inventory-storage.` …) | Key |
 | --- | --- | --- | --- |
-| `warehouse.inventory.events` | `cmd/inventory` (outbox relay), `cmd/mcp` (outbox rows, delivered by the `cmd/inventory` relay) | `reservation.StockReserved`, `reservation.ReservationRevoked`, `reservation.TransferStockAllocated`, `reservation.TransferStockAllocationRejected`, `stock.TransferReceiptStaged`, `stock.TransferStockStowed`, `stock.StockRelocated` (ADR 0039), `stock.BinStockLevelChanged` (ADR 0040), `product.ProductClassified` (only from the re-publish command since ADR 0034) | reservation id, transfer line id, relocation id, `<bin>:<sku>`, or SKU |
-| `warehouse.inventory.analytics` | same | `stock.StockReceived`, `stock.ItemStowed`, `stock.ItemUnlocated`, `reservation.StockReserved`, `reservation.StockPicked`, `reservation.ReservationExpired`, `reservation.ReservationRevoked`, `bin.CycleCountCompleted`, `bin.DiscrepancyDetected`, `product.ProductClassified` | reservation id, SKU or bin id |
+| `warehouse.inventory.events` | `cmd/inventory` (outbox relay), `cmd/mcp` (outbox rows, delivered by the `cmd/inventory` relay) | `reservation.StockReserved`, `reservation.ReservationRevoked`, `reservation.TransferStockAllocated`, `reservation.TransferStockAllocationRejected`, `stock.TransferReceiptStaged`, `stock.TransferStockStowed`, `stock.StockRelocated` (ADR 0039), `stock.BinStockLevelChanged` (ADR 0040) | reservation id, transfer line id, relocation id, `<bin>:<sku>`, or SKU |
+| `warehouse.inventory.analytics` | same | `stock.StockReceived`, `stock.ItemStowed`, `stock.ItemUnlocated`, `reservation.StockReserved`, `reservation.StockPicked`, `reservation.ReservationExpired`, `reservation.ReservationRevoked`, `bin.CycleCountCompleted`, `bin.DiscrepancyDetected` | reservation id, SKU or bin id |
 | `warehouse.fulfillment.events.dlq` | `cmd/inventory` TaskCompleted consumer | the original message, raw, plus `x-dlq-source-topic`, `x-dlq-error`, `x-dlq-failed-at` headers | original key |
 | `warehouse.facility.events.dlq` | `cmd/inventory` facility cache consumer | the original message, raw, plus `x-dlq-*` headers | original key |
 
@@ -230,18 +230,12 @@ the next time it is read, which raises `ReservationExpired`
 
 ### Re-publish product classifications
 
-The one-shot subcommand re-emits `ProductClassified` for every row of the local
-`product_classifications` copy, through the outbox (ADR 0034 backfill):
-
-```bash
-DATABASE_URL=postgres://... go run ./cmd/inventory republish-product-classifications
-# republished 42 product classifications
-```
-
-In the cluster run it with the same image (`/app/inventory` is the default
-entrypoint) and the API's `DATABASE_URL`. It exits `0` on success, `1` on error
-(printing how many rows were enqueued before the failure) and `2` for an
-unknown subcommand. The rows reach Kafka only through a running relay.
+Removed. The `republish-product-classifications` subcommand and the legacy
+`ProductClassified` it emitted were retired at stage E (2026-10-17,
+[ADR 0034](../adr/0034-product-master-owns-classification.md)):
+`cmd/inventory` takes no arguments. To reload the local classification copy,
+reset the offsets of the `PRODUCT_MASTER_CONSUMER_GROUP` group (see "Replay a
+consumer" below).
 
 ### Replay a consumer
 

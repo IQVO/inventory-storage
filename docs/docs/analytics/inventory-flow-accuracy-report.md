@@ -72,7 +72,8 @@ returns "not part of the contract" for it, so no outbox row or Kafka message
 is produced. `ProductClassified` (SKU master data) was published to this
 topic from 2026-10-06 ([ADR 0031](/docs/adr/0031)) until
 [ADR 0034](/docs/adr/0034); it no longer reaches this topic (the one-shot
-backfill writes the integration topic only). The projector still acknowledges
+backfill that wrote the integration topic was removed at stage E, 2026-10-17).
+The projector still acknowledges
 and ignores it if one arrives: it moves no Flow & Accuracy metric.
 
 ## Interface
