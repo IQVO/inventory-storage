@@ -80,15 +80,17 @@ NO envelope toggle.
   `log`).
 - Topic: `warehouse.inventory.events`.
 
-## Published today: 5 of 13 catalog events
+## Published today: 11 of 13 catalog events
 
-**`StockReserved`, `ReservationRevoked`, `TransferStockAllocated`,
-`TransferStockAllocationRejected` and the legacy `ProductClassified` cross
-the service boundary.** Since ADR-0034 `ProductClassified` is raised by no
-write path: only the one-shot `republish-product-classifications` backfill
-re-emits it (integration topic only, through the outbox); its encoder
-mapping and goldens are kept for that command and removed at product-master
-ADR 0003 stage E.
+**`StockReserved`, `ReservationRevoked`, the four transfer replies/facts,
+`StockRelocated`, `BinStockLevelChanged`, and the promoted exception facts
+`DiscrepancyDetected`, `ItemUnlocated`, `ItemStowed` cross the service
+boundary.** The promoted three (ADR-0043) are byte-identical copies of the
+analytics feed — same `type`, `subject`, Kafka key and `data`, only the
+`dataschema` stream differs (`...:events:<Event>:v1`) — consumed by
+exception-management (`DiscrepancyDetected`, `ItemUnlocated`) and
+returns-processing (`ItemStowed`); a change to their payload is a `.v2`
+type, never an edit.
 The Kafka adapter's `switch` has a `default: return nil` branch that
 silently drops every other domain event — deliberate, not an oversight.
 `apis/asyncapi.yaml` documents the full 13-message catalog (all four

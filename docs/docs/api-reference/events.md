@@ -119,8 +119,8 @@ This service also **consumes** product-master's
 | Event | `type` | Integration topic `data` | Analytics topic `data` |
 | --- | --- | --- | --- |
 | StockReceived | `com.warehouse.wms.inventory-storage.stock.StockReceived` | — | `sku`, `quantity` |
-| ItemStowed | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | — | `sku`, `bin_id`, `quantity` |
-| ItemUnlocated | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | — | `sku`, `bin_id`, `stock_unit_id`, `quantity` |
+| **ItemStowed** | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | `sku`, `bin_id`, `quantity` (promoted 2026-10-21, [ADR-0043](/docs/adr/0043); byte-identical to the analytics copy; key = subject = SKU; returns-processing closes its restock loop on it) | `sku`, `bin_id`, `quantity` |
+| **ItemUnlocated** | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | `sku`, `bin_id`, `stock_unit_id`, `quantity` (promoted 2026-10-21, [ADR-0043](/docs/adr/0043); byte-identical to the analytics copy; key = SKU, subject = stock unit id; exception-management opens cases from it) | `sku`, `bin_id`, `stock_unit_id`, `quantity` |
 | **StockRelocated** | `com.warehouse.wms.inventory-storage.stock.StockRelocated` | `relocation_id`, `site_code`, `sku`, `from_bin`, `to_bin`, `quantity`, `reason` (`SLOTTING`/`CONSOLIDATION`/`MANUAL`/`REPLENISHMENT`; `REPLENISHMENT` is set only by a completed REPLENISH task, ADR-0041, with `source_ref` = the replenishment request id), `source_ref` (always present, `""` when none), `occurred_at` (ADR-0039; key = relocation id; one per applied relocation, from `POST /relocations` or a completed RELOCATE or REPLENISH task) | — (integration only) |
 | LocationRecorded | `com.warehouse.wms.inventory-storage.stock.LocationRecorded` | — (in-process only) | — |
 | **BinStockLevelChanged** | `com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged` | `site_code`, `bin`, `sku`, `on_hand`, `reserved` (absolute levels after the change), `version` (per bin and SKU, strictly increasing), `reason` (`STOW`/`PICK`/`RELOCATE`/`REPLENISHMENT`/`COUNT`/`RESERVE`/`REVOKE`/`UNLOCATED`), `occurred_at` (ADR-0040; key = `<bin>:<sku>`; one per changed bin and SKU per transaction, from the same transaction as the ledger change) | — (integration only) |
@@ -130,7 +130,7 @@ This service also **consumes** product-master's
 | Event | `type` | Integration topic `data` | Analytics topic `data` |
 | --- | --- | --- | --- |
 | CycleCountCompleted | `com.warehouse.wms.inventory-storage.bin.CycleCountCompleted` | — | `bin_id`, `counted`, `system`, `discrepancy` |
-| DiscrepancyDetected | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | — | `bin_id`, `counted`, `system` |
+| **DiscrepancyDetected** | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | `bin_id`, `counted`, `system` (promoted 2026-10-21, [ADR-0043](/docs/adr/0043); byte-identical to the analytics copy; key = subject = bin id; exception-management opens cases from it) | `bin_id`, `counted`, `system` |
 
 ### Product entity
 
