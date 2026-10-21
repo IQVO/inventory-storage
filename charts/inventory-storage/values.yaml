@@ -229,6 +229,12 @@ config:
   # condition=Good line as a staged receipt (ReceiveStock; Damaged is counted,
   # not booked); StockReceived leaves through the outbox (EVENT_PUBLISHER=kafka).
   inboundReceiptConsumerGroup: "inventory-storage-inbound-receipts"
+  # returns-processing return-line consumer (ADR 0044): consumes
+  # returns-processing's ReturnLineStaged (the RESTOCK disposition's handover)
+  # from warehouse.returns-processing.events and books every line as a staged
+  # receipt through the same ReceiveStock seam as an inbound receipt line;
+  # StockReceived leaves through the outbox (EVENT_PUBLISHER=kafka).
+  returnLineConsumerGroup: "inventory-storage-return-lines"
   # TaskCompleted confirm-pick consumer (ADR-0035): consumes
   # fulfillment-execution's TaskCompleted from warehouse.fulfillment.events,
   # counting each PICK task per order (order_ref) and confirming every ACTIVE

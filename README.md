@@ -261,15 +261,16 @@ curl -s -i -X DELETE localhost:8080/reservations/does-not-exist
 
 This service publishes integration events to the shared warehouse-systems
 Kafka broker so other bounded contexts (e.g. `wes-work-planning`) can project
-their own read models from inventory reality. It also consumes five topics
-(four consumers always run, each under a mandatory stable consumer group; the
-facility cache is the fifth, with `LOCATION_LOOKUP_MODE=kafka`):
+their own read models from inventory reality. It also consumes six topics
+(five consumers always run, each under a mandatory stable consumer group; the
+facility cache is the sixth, with `LOCATION_LOOKUP_MODE=kafka`):
 `warehouse.facility.events`, to keep a local read model of facility-layout's
 zone classifications (see [Consumed](#consumed-facility-layouts-location-classifications)
 below), `warehouse.network-inventory-planning.events`, the command side
 of the site-scoped transfer allocation exchange (ADR-0030),
-`warehouse.product-master.events` and `warehouse.inbound-receiving.events`,
-and `warehouse.fulfillment.events` (the sections below).
+`warehouse.product-master.events`, `warehouse.inbound-receiving.events`,
+`warehouse.returns-processing.events`, and
+`warehouse.fulfillment.events` (the sections below).
 
 - **Topic**: `warehouse.inventory.events`
 - **Publishing**: always through the transactional outbox (ADR 0017,
@@ -439,6 +440,28 @@ is unchanged and keeps serving ad-hoc receipts.
 | Env var | Required | Meaning |
 | --- | --- | --- |
 | `INBOUND_RECEIPT_CONSUMER_GROUP` | yes | Stable consumer group id, e.g. `inventory-storage-inbound-receipt`. The consumer always runs; a missing value is a boot error. `StockReceived` leaves through the outbox like every other event. Chart value `config.inboundReceiptConsumerGroup`. |
+
+### Consumed: returns-processing's ReturnLineStaged → staged stock (ADR-0044)
+
+returns-processing owns the reverse flow of goods. When a disposition
+decides RESTOCK it publishes
+`com.warehouse.wms.returns-processing.disposition.ReturnLineStaged` (the
+RESTOCK disposition's handover, `data` = inbound-receiving's
+`ReceiptLineReceived` shape plus `rma_id`, `disposition_id`, `site_id`) on
+`warehouse.returns-processing.events`. The line is booked through the SAME
+`ReceiveStock` use case a receipt line uses, so the effect is identical to
+`POST /stock/receive` and to the dock path: `StockReceived` on the analytics
+topic, the quantity **staged and not yet usable**, stow still the RF action.
+The CloudEvents `id` is claimed in `processed_events` (consumer
+`return-line-staged`, the flow's provenance record) in the same transaction,
+so a redelivery books nothing twice; `condition` is the constant `Good` and
+anything else, an empty `sku`, a non-positive `quantity` or an empty
+`disposition_id` is logged (WARN) and skipped. Other returns-processing event
+types are ignored.
+
+| Env var | Required | Meaning |
+| --- | --- | --- |
+| `RETURN_LINE_CONSUMER_GROUP` | yes | Stable consumer group id, e.g. `inventory-storage-return-lines`. The consumer always runs; a missing value is a boot error. `StockReceived` leaves through the outbox like every other event. Chart value `config.returnLineConsumerGroup`. |
 
 The one-shot `republish-product-classifications` backfill (product-master ADR
 0003 stage B) was retired with stage E: `cmd/inventory` has no subcommands.

@@ -8,14 +8,17 @@ paths:
 # Cross-service integration events (Kafka)
 
 This service PUBLISHES integration events over Kafka to the fleet's shared
-broker. It CONSUMES five sibling topics: `warehouse.facility.events`
+broker. It CONSUMES six sibling topics: `warehouse.facility.events`
 (facility-layout) into a local location-classification cache,
 `warehouse.network-inventory-planning.events` (transfer commands),
 `warehouse.product-master.events` (product-master, ADR-0034) into the local
 copy of product classifications, `warehouse.fulfillment.events`
-(fulfillment-execution `TaskCompleted`, ADR-0035) to confirm picks, and
+(fulfillment-execution `TaskCompleted`, ADR-0035) to confirm picks,
 `warehouse.inbound-receiving.events` (inbound-receiving `ReceiptLineReceived`,
-ADR-0037) to book Good lines as staged stock — see "Consumed" below.
+ADR-0037) to book Good lines as staged stock, and
+`warehouse.returns-processing.events` (returns-processing `ReturnLineStaged`,
+ADR-0044) to book restocked return lines through the same staged-receipt seam
+— see "Consumed" below.
 
 ## Envelope: CloudEvents 1.0, mandatory (ADR-0024)
 
@@ -189,6 +192,39 @@ not the event stream.
 - Integration test: `internal/application/usecases/inbound_receipt_handover_integration_test.go`
   (testcontainers Kafka + Postgres: `ReceiptLineReceived` -> `StockReceived`
   analytics outbox row; Damaged, invalid and redelivered lines add none).
+
+## Consumed: `warehouse.returns-processing.events` (ADR-0044)
+
+- Adapter: `internal/adapters/inbound/kafka/return_line_consumer.go`
+  (`ReturnsProcessingTopic`). The consumer always runs under the stable group
+  id `RETURN_LINE_CONSUMER_GROUP` (mandatory, as are `DATABASE_URL` and
+  `KAFKA_BROKERS`; no default, a missing value is a boot error; chart
+  `config.returnLineConsumerGroup`). Wiring: `cmd/inventory/returnline.go`.
+- Dispatches ONLY on the full type
+  `com.warehouse.wms.returns-processing.disposition.ReturnLineStaged`, `data`
+  `{receipt_id, line_no, sku, quantity, condition, received_at, rma_id,
+  disposition_id, site_id}` with `condition` the constant `Good` (only a
+  RESTOCK disposition stages a line); `ReturnAuthorized`,
+  `ReturnAuthorizationRejected`, the `ReturnReceipt*` types,
+  `UnexpectedReturnReceived` and `DispositionDecided` (and anything else) are
+  committed past untouched.
+- `BookReturnLine` claims the CloudEvents `id` in `processed_events` (consumer
+  `return-line-staged`, the flow's provenance record — the mirror of
+  `inbound-receipt-line`) and runs the EXISTING `ReceiveStock` — the SAME
+  staged-receipt use case an inbound receipt line and `POST /stock/receive`
+  drive — in ONE UnitOfWork: `StockReceived` through the outbox (analytics
+  topic), staged and not yet usable, stow stays the RF action. Return context
+  (`receipt_id`, `rma_id`, `disposition_id`, `site_id`, `received_at`) is NOT
+  stored on the stock event (ADR 0037 froze `{sku, quantity}`); it lives in
+  the log line and the claim row.
+- At-least-once checklist: `FetchMessage`, commit after the handler settles,
+  capped-backoff retry of the SAME message on transient (DB) errors; not a
+  CloudEvent / undecodable payload / empty `sku` / `quantity` <= 0 / empty
+  `disposition_id` / a `condition` other than `Good` -> WARN and commit past
+  (never claimed).
+- Integration test: `internal/application/usecases/return_line_handover_integration_test.go`
+  (testcontainers Kafka + Postgres: `ReturnLineStaged` -> `StockReceived`
+  analytics outbox row -> stow -> usable; a redelivered id adds nothing).
 
 ## Consumed: `warehouse.fulfillment.events` (ADR-0035)
 
