@@ -50,8 +50,10 @@ info:
     catalog for the bounded context. Two topics carry a subset of it:
     `warehouse.inventory.events` (the integration contract — `StockReserved`,
     `ReservationRevoked`, the transfer replies, the transfer receipt/stow events,
-    `BinStockLevelChanged` (the per-bin absolute level feed, ADR 0040), from
-    `internal/adapters/outbound/kafka/publisher.go`) and
+    `BinStockLevelChanged` (the per-bin absolute level feed, ADR 0040), and
+    the promoted exception facts `DiscrepancyDetected`, `ItemUnlocated` and
+    `ItemStowed` (ADR 0043 — byte-identical copies of the analytics feed),
+    from `internal/adapters/outbound/kafka/publisher.go`) and
     `warehouse.inventory.analytics` (the analytics data product — every
     message below except `LocationRecorded`, from
     `internal/adapters/outbound/kafka/analytics_publisher.go`). Each message
@@ -152,8 +154,11 @@ channels:
       constant in `internal/adapters/outbound/kafka/publisher.go`). Reaching
       it: `StockReserved` and `ReservationRevoked` (keyed by reservation
       id), the transfer replies and receipt/stow events (keyed by transfer line id),
-      `StockRelocated` (keyed by relocation id, ADR 0039) and
-      `BinStockLevelChanged` (keyed by `<bin>:<sku>`, ADR 0040). The legacy
+      `StockRelocated` (keyed by relocation id, ADR 0039),
+      `BinStockLevelChanged` (keyed by `<bin>:<sku>`, ADR 0040) and the
+      promoted exception facts `DiscrepancyDetected`, `ItemUnlocated` and
+      `ItemStowed` (ADR 0043 — byte-identical copies of the analytics
+      feed, consumed by exception-management and returns-processing). The legacy
       `ProductClassified` was retired at product-master ADR 0003 stage E
       (2026-10-17). The primary downstream consumer is
       wes-work-planning, which dispatches on their full `type` strings and
@@ -181,6 +186,9 @@ channels:
           - $ref: "#/components/messages/TransferStockStowed"
           - $ref: "#/components/messages/StockRelocated"
           - $ref: "#/components/messages/BinStockLevelChanged"
+          - $ref: "#/components/messages/DiscrepancyDetected"
+          - $ref: "#/components/messages/ItemUnlocated"
+          - $ref: "#/components/messages/ItemStowed"
 
   warehouse.inventory.analytics:
     description: >
@@ -478,7 +486,11 @@ components:
         exceeded. This is the point at which the quantity becomes usable.
 
 
-        Published to `warehouse.inventory.analytics` only (subject = SKU, Kafka key = SKU). Analytics `data`: `{sku, bin_id, quantity}`.
+        **Published to both topics** (promoted to the integration topic
+        2026-10-21, ADR 0043, so returns-processing can close its restock
+        loop on it). Subject = Kafka key = SKU on both topics; `data` is
+        byte-identical: `{sku, bin_id, quantity}`. Only the `dataschema`
+        stream differs (`...:events:` vs `...:analytics:`).
       contentType: application/cloudevents+json
       tags:
         - name: stock
@@ -1333,7 +1345,13 @@ components:
         exactly one known bin" rule.
 
 
-        Published to `warehouse.inventory.analytics` only (subject = stock unit id, Kafka key = SKU). Analytics `data`: `{sku, bin_id, stock_unit_id, quantity}`.
+        **Published to both topics** (promoted to the integration topic
+        2026-10-21, ADR 0043, for exception-management). Subject = stock
+        unit id, Kafka key = SKU on both topics (the split the analytics
+        publisher always used: every fact about one SKU's units stays on
+        one partition while the subject names the lost unit); `data` is
+        byte-identical: `{sku, bin_id, stock_unit_id, quantity}`. Only the
+        `dataschema` stream differs.
       contentType: application/cloudevents+json
       tags:
         - name: stock
@@ -1406,7 +1424,10 @@ components:
         quantity that could not be found.
 
 
-        Published to `warehouse.inventory.analytics` only (subject = bin id, Kafka key = bin id). Analytics `data`: `{bin_id, counted, system}`.
+        **Published to both topics** (promoted to the integration topic
+        2026-10-21, ADR 0043, for exception-management). Subject = Kafka
+        key = bin id on both topics; `data` is byte-identical:
+        `{bin_id, counted, system}`. Only the `dataschema` stream differs.
       contentType: application/cloudevents+json
       tags:
         - name: bin
@@ -1552,8 +1573,8 @@ components:
               const: "com.warehouse.wms.inventory-storage.stock.ItemStowed"
             dataschema:
               type: string
-              description: urn:warehouse:inventory-storage:analytics:ItemStowed:v1
-              pattern: "^urn:warehouse:inventory-storage:analytics:ItemStowed:v1$"
+              description: urn:warehouse:inventory-storage:events:ItemStowed:v1 on the integration topic, ...:analytics:ItemStowed:v1 on the analytics topic (ADR 0043).
+              pattern: "^urn:warehouse:inventory-storage:(events|analytics):ItemStowed:v1$"
             data:
               type: object
               description: Business payload for ItemStowed.
@@ -2145,8 +2166,8 @@ components:
               const: "com.warehouse.wms.inventory-storage.stock.ItemUnlocated"
             dataschema:
               type: string
-              description: urn:warehouse:inventory-storage:analytics:ItemUnlocated:v1
-              pattern: "^urn:warehouse:inventory-storage:analytics:ItemUnlocated:v1$"
+              description: urn:warehouse:inventory-storage:events:ItemUnlocated:v1 on the integration topic, ...:analytics:ItemUnlocated:v1 on the analytics topic (ADR 0043).
+              pattern: "^urn:warehouse:inventory-storage:(events|analytics):ItemUnlocated:v1$"
             data:
               type: object
               description: Business payload for ItemUnlocated.
@@ -2230,8 +2251,8 @@ components:
               const: "com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected"
             dataschema:
               type: string
-              description: urn:warehouse:inventory-storage:analytics:DiscrepancyDetected:v1
-              pattern: "^urn:warehouse:inventory-storage:analytics:DiscrepancyDetected:v1$"
+              description: urn:warehouse:inventory-storage:events:DiscrepancyDetected:v1 on the integration topic, ...:analytics:DiscrepancyDetected:v1 on the analytics topic (ADR 0043).
+              pattern: "^urn:warehouse:inventory-storage:(events|analytics):DiscrepancyDetected:v1$"
             data:
               type: object
               description: Business payload for DiscrepancyDetected.
