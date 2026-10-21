@@ -107,6 +107,9 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | reservation id |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.bin.CycleCountCompleted` | bin id |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | bin id |
+| `warehouse.inventory.events` + `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | bin id — integration + analytics (promoted 2026-10-21, for exception-management; ADR 0043) |
+| `warehouse.inventory.events` + `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | stock unit id — integration + analytics (promoted 2026-10-21, for exception-management; ADR 0043) |
+| `warehouse.inventory.events` + `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | SKU — integration + analytics (promoted 2026-10-21, for returns-processing; ADR 0043) |
 | _(none: in-process only, never published)_ | `com.warehouse.wms.inventory-storage.stock.LocationRecorded` | _n/a_ |
 
 `ProductClassified` (`internal/domain/product`), entity segment `product`

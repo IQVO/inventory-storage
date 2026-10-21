@@ -36,6 +36,8 @@ flowchart LR
     NIP["network-inventory-planning"]
     SO["slotting-optimization<br/>Supporting · WMS"]
     PFR["pick-face-replenishment<br/>Supporting · WMS"]
+    EX["exception-management<br/>Core · WES"]
+    RP["returns-processing<br/>Core · WMS"]
     OA["warehouse-ops-agent<br/>console BFF + agent"]
     WM["workforce-management<br/>Supporting"]
 
@@ -51,6 +53,8 @@ flowchart LR
     INV -->|"U OHS+PL to D<br/>Kafka warehouse.inventory.events<br/>transfer replies, receipt and stow facts · LIVE"| NIP
     INV -->|"U OHS+PL to D CF<br/>Kafka warehouse.inventory.events<br/>StockRelocated · LIVE, ADR 0039"| SO
     INV -->|"U OHS+PL to D CF<br/>Kafka warehouse.inventory.events<br/>BinStockLevelChanged, StockRelocated · LIVE, ADR 0039/0040"| PFR
+    INV -->|"U OHS+PL to D CF<br/>Kafka warehouse.inventory.events<br/>DiscrepancyDetected, ItemUnlocated · LIVE, ADR 0043"| EX
+    INV -->|"U OHS+PL to D CF<br/>Kafka warehouse.inventory.events<br/>ItemStowed · LIVE, ADR 0043"| RP
     INV -->|"U OHS+PL to D CF<br/>REST GET /reservations?demandRef, reports REST,<br/>MCP check_availability, get_bin_occupancy · LIVE"| OA
     INV ~~~ WM
 
@@ -58,7 +62,7 @@ flowchart LR
     classDef other fill:#1e293b,stroke:#475569,color:#fff;
     classDef absent fill:#e2e8f0,stroke:#94a3b8,color:#334155,stroke-dasharray: 5 5;
     class INV this;
-    class FL,PM,WP,OM,FE,NF,NIP,OA,IR,SO,PFR other;
+    class FL,PM,WP,OM,FE,NF,NIP,OA,IR,SO,PFR,EX,RP other;
     class WM absent;
 ```
 
@@ -109,6 +113,8 @@ bounded context).
 | 13 | `inbound-receiving` → `inventory-storage` | OHS + PL / CF | **Built ([ADR 0037](/docs/adr/0037)); inbound-receiving's ADR 0003 is the producer side.** Kafka `warehouse.inbound-receiving.events`, `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` (key = ASN number, subject = receipt id; every other inbound-receiving type is committed past). A `condition=Good` line runs the existing `ReceiveStock` use case (the same `StockReceived` as `POST /stock/receive`, quantity staged and not yet usable, stow still the RF action) in one transaction with the CloudEvents-id claim; `Damaged` is not booked in v1 (counted in `inventory.inbound_receipt_units`). No sync call either way, no acknowledgement event back | here: `internal/adapters/inbound/kafka/inbound_receipt_consumer.go`, `internal/application/usecases/book_inbound_receipt_line.go` (group from `INBOUND_RECEIPT_CONSUMER_GROUP`, mandatory, always on); there: inbound-receiving's outbox relay | **Live** (always on since [ADR 0042](/docs/adr/0042); `warehouse-infra` sets `inboundReceiptConsumerGroup`; `StockReceived` leaves through the outbox) |
 | 14 | `inventory-storage` → `slotting-optimization` | OHS + PL / CF | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.stock.StockRelocated` ([ADR 0039](/docs/adr/0039)), the proof that a planned slot move happened | here: `internal/adapters/outbound/kafka/publisher.go` (outbox relay); there: slotting-optimization `internal/adapters/inbound/kafka/stock_consumer.go` (`relocationConsumerGroup` `slotting-optimization-relocation` in `warehouse-infra`) | **Live** |
 | 15 | `inventory-storage` → `pick-face-replenishment` | OHS + PL / CF | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged` ([ADR 0040](/docs/adr/0040)) and `StockRelocated` | here: `internal/adapters/outbound/kafka/publisher.go` (outbox relay); there: pick-face-replenishment `internal/adapters/inbound/kafka/inventory_consumer.go` (`inventoryConsumerGroup` `pick-face-replenishment-inventory` in `warehouse-infra`) | **Live** |
+| 16 | `inventory-storage` → `exception-management` | OHS + PL / CF | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected`, `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` — byte-identical copies of the analytics feed ([ADR 0043](/docs/adr/0043)); exception-management opens and triages cases from them | here: `internal/adapters/outbound/kafka/publisher.go` (outbox relay); there: exception-management's consumer (new context) | **Live** on this side (producer wired; consumer under construction) |
+| 17 | `inventory-storage` → `returns-processing` | OHS + PL / CF | Kafka `warehouse.inventory.events`: `com.warehouse.wms.inventory-storage.stock.ItemStowed` — byte-identical copy of the analytics feed ([ADR 0043](/docs/adr/0043)); returns-processing closes its restock loop on it | here: `internal/adapters/outbound/kafka/publisher.go` (outbox relay); there: returns-processing's consumer (new context) | **Live** on this side (producer wired; consumer under construction) |
 
 All REST and MCP surfaces are unauthenticated (ADR 0015). Every Kafka
 message is CloudEvents 1.0 structured mode (ADR 0024).

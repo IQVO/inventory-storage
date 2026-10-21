@@ -35,6 +35,8 @@ each edge behaves when the other side fails, as implemented here.
 | network-inventory-planning | Kafka `warehouse.inventory.events`: `TransferStockAllocated`, `TransferStockAllocationRejected`, `TransferReceiptStaged`, `TransferStockStowed` | Same outbox guarantee. |
 | slotting-optimization | Kafka `warehouse.inventory.events`: `StockRelocated` ([ADR 0039](/docs/adr/0039)) | Same outbox guarantee. |
 | pick-face-replenishment | Kafka `warehouse.inventory.events`: `BinStockLevelChanged` ([ADR 0040](/docs/adr/0040)), `StockRelocated` | Same outbox guarantee. |
+| exception-management | Kafka `warehouse.inventory.events`: `bin.DiscrepancyDetected`, `stock.ItemUnlocated` (promoted [ADR 0043](/docs/adr/0043)) | Same outbox guarantee. |
+| returns-processing | Kafka `warehouse.inventory.events`: `stock.ItemStowed` (promoted [ADR 0043](/docs/adr/0043)) | Same outbox guarantee. |
 | order-management | REST `POST /reservations` (`Idempotency-Key`), `DELETE /reservations/{id}` | Synchronous: `409 insufficient-usable` / `concurrent-modification`, `422 idempotency-key-reused`. A retried POST with the same key and body replays the stored response. |
 | network-fulfillment | REST `GET /inventory/{sku}/usable` | Read-only; no side effects. |
 | warehouse-ops-agent | REST `GET /reservations?demandRef=`; reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP `check_availability`, `get_bin_occupancy` ([MCP tools](../mcp/tools.md)) | Read-only. MCP sessions are per process; reports reflect the projector's lag. |
@@ -51,10 +53,10 @@ facility-layout lookup. Every route, topic and group is also on the
 | | |
 | --- | --- |
 | **Topic** | `warehouse.inventory.events` |
-| **Events** | `StockReserved`, `ReservationRevoked`, the transfer replies and facts (ADR 0030, ADR 0033), `StockRelocated` (ADR 0039) and `BinStockLevelChanged` (ADR 0040); the legacy `ProductClassified` was removed at stage E (2026-10-17) |
+| **Events** | `StockReserved`, `ReservationRevoked`, the transfer replies and facts (ADR 0030, ADR 0033), `StockRelocated` (ADR 0039), `BinStockLevelChanged` (ADR 0040) and the promoted exception facts `bin.DiscrepancyDetected`, `stock.ItemUnlocated`, `stock.ItemStowed` (byte-identical copies of the analytics feed, [ADR 0043](/docs/adr/0043)); the legacy `ProductClassified` was removed at stage E (2026-10-17) |
 | **Client library** | `github.com/segmentio/kafka-go` |
 | **Balancer** | `Hash` (message key = reservation id, [ADR 0021](/docs/adr/0021-kafka-producer-partition-key)), `AllowAutoTopicCreation: true` |
-| **Consumers today** | `wes-work-planning` (`StockReserved`, `ReservationRevoked`); `network-inventory-planning` (the transfer replies); `slotting-optimization` (`StockRelocated`); `pick-face-replenishment` (`BinStockLevelChanged`, `StockRelocated`) |
+| **Consumers today** | `wes-work-planning` (`StockReserved`, `ReservationRevoked`); `network-inventory-planning` (the transfer replies); `slotting-optimization` (`StockRelocated`); `pick-face-replenishment` (`BinStockLevelChanged`, `StockRelocated`); `exception-management` (`DiscrepancyDetected`, `ItemUnlocated`); `returns-processing` (`ItemStowed`) |
 
 ## What this service consumes
 
