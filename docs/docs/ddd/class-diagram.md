@@ -241,14 +241,6 @@ classDiagram
         +CountedQty Quantity
         +SystemQty Quantity
     }
-    class ProductClassified {
-        <<DomainEvent>>
-        +SKU SKU
-        +HandlingTags List~HandlingTag~
-        +TemperatureClass TemperatureClass
-        +DOTHazardClass DOTHazardClass
-        +At Time
-    }
 
     DomainEvent <|.. base
     base <|-- StockReceived
@@ -261,13 +253,12 @@ classDiagram
     base <|-- ItemUnlocated
     base <|-- CycleCountCompleted
     base <|-- DiscrepancyDetected
-    DomainEvent <|.. ProductClassified
 ```
 
-Source: `internal/domain/shared/events.go`, `internal/domain/product/classification.go`.
+Source: `internal/domain/shared/events.go`.
 Omitted: the `New*` constructors. The `base <|--` edges are Go struct
-**embedding**, drawn as inheritance; `ProductClassified` implements the
-interface directly in package `product`.
+**embedding**, drawn as inheritance. There is no `ProductClassified` event
+class any more: the aggregate raises none (ADR 0034, stage E).
 
 ## 3. Application ports
 
@@ -357,7 +348,7 @@ classDiagram
 
 Source: `internal/application/ports/ports.go`,
 `internal/application/usecases/reserve_stock.go`, `stow_stock.go`.
-Omitted: the other nine use cases, which follow the same struct-of-ports
+Omitted: the other use cases, which follow the same struct-of-ports
 shape (see [Use Cases](./use-cases.md)); `ctx` is `context.Context`.
 
 ## 4. Hexagonal ports and adapters
@@ -367,11 +358,11 @@ flowchart LR
     subgraph IN["Inbound adapters"]
         HTTP["inbound/http<br/>chi router, DTOs, RFC 7807,<br/>RequireIdempotencyKey, /readyz"]
         MCP["inbound/mcp<br/>check_availability, get_bin_occupancy,<br/>get_relocation, revoke_reservation, report tool"]
-        AKC["inbound/kafka<br/>AnalyticsConsumer"]
+        AKC["inbound/kafka<br/>AnalyticsConsumer, TaskCompletedConsumer,<br/>InboundReceiptConsumer, ProductMasterConsumer,<br/>TransferConsumer"]
         RPT["inbound/http<br/>ReportsHandlers"]
     end
     subgraph APP["Application"]
-        UC["usecases<br/>11 use cases"]
+        UC["usecases<br/>20 use cases"]
         PORTS["ports<br/>StockRepo, LocationRepo, ReservationRepo,<br/>ProductClassificationRepo, LocationClassificationLookup,<br/>EventPublisher, UnitOfWork, ReservationMetrics, Clock"]
         REPORT["analytics/report<br/>ReportStore, ProjectionStore, ProcessedEvents"]
     end
@@ -380,11 +371,11 @@ flowchart LR
     end
     subgraph OUT["Outbound adapters"]
         PG["outbound/postgres<br/>repos, UnitOfWork,<br/>OutboxPublisher, OutboxRelay, Sweeper"]
-        MEM["outbound/memory<br/>repos, SystemClock"]
+        MEM["outbound/memory<br/>repos (test doubles only)"]
         KAF["outbound/kafka<br/>Publisher, AnalyticsPublisher, RelaySink"]
-        EVT["outbound/events<br/>log, buffered, multi"]
+        EVT["outbound/events<br/>log, buffered, multi (test doubles only)"]
         FC["outbound/facilitycache<br/>Kafka-fed cache"]
-        FLC["outbound/facilitylayout<br/>HTTP client, breaker, permissive"]
+        FLC["outbound/facilitylayout<br/>HTTP client, breaker"]
         TEL["outbound/telemetry<br/>metrics, OTel"]
         AS["outbound/analyticsstore<br/>Postgres projection and reader"]
     end
@@ -410,5 +401,6 @@ Source: `internal/adapters/**`, `internal/application/ports/ports.go`,
 roots. Omitted: `cmd/mcp`'s reports REST client (`inboundmcp.NewReportsRESTClient`)
 and `internal/adapters/kafka/cloudevents`, the shared envelope helper used
 by every Kafka adapter. The MCP adapter reads `StockRepo.FindByBin`
-directly for `get_bin_occupancy`; the HTTP adapter reads
-`ProductClassificationRepo` directly for `GET /products/{sku}/classification`.
+directly for `get_bin_occupancy`. `outbound/memory` and `outbound/events` are
+unit/BDD test doubles: no `cmd/` binary imports them (ADR 0042,
+`TestRuntimeBinaryHasNoInMemoryAdapters`).

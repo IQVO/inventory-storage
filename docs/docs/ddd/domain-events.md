@@ -75,8 +75,8 @@ reservation path** (plus
 the two transfer replies, [ADR 0030](/docs/adr/0030), `StockRelocated` on
 the relocation path, [ADR 0039](/docs/adr/0039), and `BinStockLevelChanged`,
 the per-bin absolute level feed, [ADR 0040](/docs/adr/0040)). The legacy
-`ProductClassified` (ADR 0034, product-master ADR 0003) was retired at stage
-E (2026-10-17). The integration
+`ProductClassified` (ADR 0034, product-master ADR 0003) was removed at stage
+E (2026-10-17), together with its republish command. The integration
 publisher's `Encode` returns nothing for every other event — deliberate, not
 an oversight: those are the published integration contract. Nine of the
 thirteen events go to the internal analytics topic (`StockRelocated` and
@@ -124,7 +124,8 @@ on `warehouse.product-master.events` feeds the local classification copy via
 carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick
 otherwise ([ADR 0035](/docs/adr/0035)) — and, for `task_type=RELOCATE`,
 applies the move via `ApplyRelocationTask` → `RelocateStock`
-([ADR 0039](/docs/adr/0039)) — and
+([ADR 0039](/docs/adr/0039)), and for `task_type=REPLENISH` via
+`ApplyReplenishTask` ([ADR 0041](/docs/adr/0041)) — and
 `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` on
 `warehouse.inbound-receiving.events` books a received `Good` line as staged
 stock via `BookInboundReceiptLine` → `ReceiveStock` (the same `StockReceived`

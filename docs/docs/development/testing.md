@@ -137,7 +137,7 @@ the re-arm SQL, `outbox_relay_cap_integration_test.go`),
 the sweeper, pool limits, rehydration, the transfer, confirm-pick, inbound
 receipt and product-master hand-overs at the use-case level, the analytics
 store, the facility cache consumer, publisher partitioning, the MCP
-Streamable-HTTP transport, the `cmd/inventory` housekeeping / republish wiring,
+Streamable-HTTP transport, the `cmd/inventory` housekeeping wiring,
 `TestRunOnRealPostgresAndKafka` (boots `run(ctx)` on real Postgres and Kafka,
 `cmd/inventory/e2e_integration_test.go`) and `cmd/mcp` outbox wiring. CI runs the whole tree
 (`go test -tags=integration ./... -race -count=1`) with
@@ -152,10 +152,18 @@ without them; CI provides a `postgres:16` and a `confluentinc/confluent-local`
 service container, locally start disposable ones as the script header shows),
 waits for `/readyz`, and runs
 `st run apis/openapi.yaml` with up to 100 examples per operation
-(`CONTRACT_MAX_EXAMPLES`) and 4 workers. Excluded: `classifyProduct` (retired,
-always `410`), the `Reports` tag (served by `cmd/inventory-reports`), and the
-positive-data check for the two transfer operations (a well-formed scan with no
-ledger row is quarantined with `422` by design).
+(`CONTRACT_MAX_EXAMPLES`) and 4 workers, with the hooks in
+`scripts/contract_hooks.py` (a fresh UUID `Idempotency-Key` per request) and
+`--generation-allow-x00 false` (a NUL byte is answered with a client error
+before any other middleware, `internal/adapters/inbound/http/nul.go`). Excluded
+(`--exclude-operation-id` / `--exclude-tag`, `scripts/contract-test.sh:137-140`):
+the `Reports` tag (served by `cmd/inventory-reports`) and the operations
+`stageTransferReceipt`, `stowTransferStock` (a well-formed scan with no ledger
+row is quarantined with `422` by design) and `relocateStock` (a well-formed body
+with `fromBin == toBin` is refused with `422 same-bin`), because Schemathesis'
+positive-data-acceptance check cannot model "valid shape, refused by domain
+state"; the unit, integration and BDD suites pin them instead. `classifyProduct`
+left the spec at stage E, so no exclusion remains for it.
 
 ### Mutation
 

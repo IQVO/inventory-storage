@@ -160,12 +160,12 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 
 | Method | Path | Use case |
 |--------|------|----------|
-| POST   | `/stock/receive` | ReceiveStock — requires `Idempotency-Key` (ADR-0018) |
+| POST   | `/stock/receive` | ReceiveStock — **deprecated** in `apis/openapi.yaml` (K24): inbound-receiving's `ReceiptLineReceived` is the production path (ADR-0037); still serves ad-hoc receipts. Requires `Idempotency-Key` (ADR-0018) |
 | POST   | `/stock/stow` | StowStock |
 | POST   | `/reservations` | ReserveStock — requires `Idempotency-Key` (ADR-0018) |
 | GET    | `/reservations?demandRef=` | GetReservationsByDemandRef |
 | DELETE | `/reservations/{id}` | RevokeReservation |
-| POST   | `/reservations/{id}/confirm-pick` | ConfirmPick |
+| POST   | `/reservations/{id}/confirm-pick` | ConfirmPick — **deprecated** in `apis/openapi.yaml` (K37): fulfillment-execution's `TaskCompleted` consumer confirms picks (ADR-0035, ADR-0036); removal planned with the next breaking window |
 | GET    | `/inventory/{sku}/usable` | GetUsable |
 | PUT    | `/bins/{binId}` | RegisterBin — idempotent: 201 created / 200 unchanged or resized / 409 below occupancy (ADR-0025) |
 | GET    | `/bins/{binId}` | GetBin — capacity, occupied, available |
