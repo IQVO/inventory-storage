@@ -174,7 +174,7 @@ empty or kafka, never off.
 {{- fail (printf "config.%s=%q is not supported: the consumer always runs, the only value is kafka (or empty); off was removed" $key $v) -}}
 {{- end -}}
 {{- end -}}
-{{- range $key := list "transferAllocationConsumerGroup" "productMasterConsumerGroup" "inboundReceiptConsumerGroup" "taskCompletedConsumerGroup" -}}
+{{- range $key := list "transferAllocationConsumerGroup" "productMasterConsumerGroup" "inboundReceiptConsumerGroup" "returnLineConsumerGroup" "taskCompletedConsumerGroup" -}}
 {{- if not (trim (toString (default "" (index $.Values.config $key)))) -}}
 {{- fail (printf "config.%s is required: the consumer always runs and needs a STABLE consumer group id (a restarted pod resumes from its committed offsets)" $key) -}}
 {{- end -}}
@@ -211,7 +211,7 @@ valueFrom entries are not inspected. Call with (dict "env" <list> "where" <name>
 {{- if and (eq $name "LOCATION_LOOKUP_MODE") (ne $v "kafka") (ne $v "http") -}}
 {{- fail (printf "%s sets LOCATION_LOOKUP_MODE=%s: not supported, only kafka or http, the binary rejects it at boot" $where (toString .value)) -}}
 {{- end -}}
-{{- if and (has $name (list "DATABASE_URL" "KAFKA_BROKERS" "TRANSFER_ALLOCATION_CONSUMER_GROUP" "PRODUCT_MASTER_CONSUMER_GROUP" "INBOUND_RECEIPT_CONSUMER_GROUP" "TASK_COMPLETED_CONSUMER_GROUP")) (eq $v "") -}}
+{{- if and (has $name (list "DATABASE_URL" "KAFKA_BROKERS" "TRANSFER_ALLOCATION_CONSUMER_GROUP" "PRODUCT_MASTER_CONSUMER_GROUP" "INBOUND_RECEIPT_CONSUMER_GROUP" "RETURN_LINE_CONSUMER_GROUP" "TASK_COMPLETED_CONSUMER_GROUP")) (eq $v "") -}}
 {{- fail (printf "%s sets %s to an empty value: it is mandatory, the binary rejects it at boot" $where $name) -}}
 {{- end -}}
 {{- end -}}

@@ -9,8 +9,9 @@ import (
 
 // buildEventDrivenConsumers builds the event-driven inbound consumers that
 // follow the transfer and product-master ones — the TaskCompleted
-// confirm-pick consumer (ADR 0035) and the inbound-receiving receipt consumer
-// (ADR 0037) — and returns one handle draining all of them together with
+// confirm-pick consumer (ADR 0035), the inbound-receiving receipt consumer
+// (ADR 0037) and the returns-processing return-line consumer (ADR 0044) —
+// and returns one handle draining all of them together with
 // started (the consumers run() already built). All share run()'s lookupCtx, so
 // shutdown's stopLookup cancel unblocks every loop. On error it stops
 // started and the consumers built here, so the caller only has to release
@@ -40,5 +41,13 @@ func buildEventDrivenConsumers(
 		stopTransferConsumer(logger, combineConsumerHandles(started, confirmPicks))
 		return noopTransferConsumer(), err
 	}
-	return combineConsumerHandles(started, confirmPicks, inboundReceipt), nil
+
+	// RETURN_LINE_CONSUMER_GROUP is mandatory (loadConfig), so the
+	// returns-processing consumer always runs too.
+	returnLine, err := buildReturnLineConsumer(ctx, logger, cfg, set)
+	if err != nil {
+		stopTransferConsumer(logger, combineConsumerHandles(started, confirmPicks, inboundReceipt))
+		return noopTransferConsumer(), err
+	}
+	return combineConsumerHandles(started, confirmPicks, inboundReceipt, returnLine), nil
 }
