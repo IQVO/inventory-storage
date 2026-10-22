@@ -8,9 +8,9 @@ description: Every environment variable each of the four binaries reads, with it
 # Configuration
 
 The repository builds **four binaries**, and each one reads its own environment.
-There are no configuration files and no flags (the one exception is the
-`republish-product-classifications` subcommand of `cmd/inventory`, see
-[Runbook](./runbook.md#re-publish-product-classifications)).
+There are no configuration files and no flags: `cmd/inventory` takes no
+arguments (the `republish-product-classifications` subcommand was removed at
+stage E, 2026-10-17).
 
 **Postgres and Kafka are the only runtime**
 ([ADR 0042](../adr/0042-postgres-and-kafka-are-the-only-runtime.md)). There is
@@ -71,12 +71,6 @@ What this means at runtime:
   See [Troubleshooting](./troubleshooting.md).
 - **A NUL byte never reaches Postgres**: `404` in the request path, `400` in the
   query string or the body (`internal/adapters/inbound/http/nul.go`).
-
-The `republish-product-classifications` subcommand
-(`go run ./cmd/inventory republish-product-classifications`) reads only
-`DATABASE_URL`, which is **required** there (`cmd/inventory/republish.go`). It
-writes `outbox_events` rows; the relay of a running `cmd/inventory` delivers
-them.
 
 ## `cmd/inventory-projector` — the analytics writer
 

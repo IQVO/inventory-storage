@@ -50,8 +50,10 @@ info:
     catalog for the bounded context. Two topics carry a subset of it:
     `warehouse.inventory.events` (the integration contract — `StockReserved`,
     `ReservationRevoked`, the transfer replies, the transfer receipt/stow events,
-    `BinStockLevelChanged` (the per-bin absolute level feed, ADR 0040), from
-    `internal/adapters/outbound/kafka/publisher.go`) and
+    `BinStockLevelChanged` (the per-bin absolute level feed, ADR 0040), and
+    the promoted exception facts `DiscrepancyDetected`, `ItemUnlocated` and
+    `ItemStowed` (ADR 0043 — byte-identical copies of the analytics feed),
+    from `internal/adapters/outbound/kafka/publisher.go`) and
     `warehouse.inventory.analytics` (the analytics data product — every
     message below except `LocationRecorded`, from
     `internal/adapters/outbound/kafka/analytics_publisher.go`). Each message
@@ -75,7 +77,12 @@ info:
     line with `condition=Good` is booked as a staged receipt through the
     existing ReceiveStock use case (the same `StockReceived` as
     `POST /stock/receive`, analytics topic; quantity staged, stow stays the RF
-    action); `Damaged` is not booked in v1.
+    action); `Damaged` is not booked in v1. And it consumes
+    returns-processing's `ReturnLineStaged` from
+    `warehouse.returns-processing.events` (channel below, ADR 0044): the
+    RESTOCK disposition's handover is booked through the SAME ReceiveStock
+    seam as a receipt line (same `StockReceived`, analytics topic; quantity
+    staged, stow stays the RF action).
 
 
     **CloudEvents is mandatory (ADR-0024).** Every message on both topics is
@@ -131,6 +138,11 @@ tags:
       Events consumed from the inbound-receiving bounded context (wms
       subdomain): ReceiptLineReceived, from which Good lines are booked as
       staged stock (ADR 0037).
+  - name: returns-processing
+    description: >
+      Events consumed from the returns-processing bounded context (wms
+      subdomain): ReturnLineStaged, from which restocked return lines are
+      booked as staged stock (ADR 0044).
 
 servers:
   production:
@@ -152,8 +164,11 @@ channels:
       constant in `internal/adapters/outbound/kafka/publisher.go`). Reaching
       it: `StockReserved` and `ReservationRevoked` (keyed by reservation
       id), the transfer replies and receipt/stow events (keyed by transfer line id),
-      `StockRelocated` (keyed by relocation id, ADR 0039) and
-      `BinStockLevelChanged` (keyed by `<bin>:<sku>`, ADR 0040). The legacy
+      `StockRelocated` (keyed by relocation id, ADR 0039),
+      `BinStockLevelChanged` (keyed by `<bin>:<sku>`, ADR 0040) and the
+      promoted exception facts `DiscrepancyDetected`, `ItemUnlocated` and
+      `ItemStowed` (ADR 0043 — byte-identical copies of the analytics
+      feed, consumed by exception-management and returns-processing). The legacy
       `ProductClassified` was retired at product-master ADR 0003 stage E
       (2026-10-17). The primary downstream consumer is
       wes-work-planning, which dispatches on their full `type` strings and
@@ -181,6 +196,9 @@ channels:
           - $ref: "#/components/messages/TransferStockStowed"
           - $ref: "#/components/messages/StockRelocated"
           - $ref: "#/components/messages/BinStockLevelChanged"
+          - $ref: "#/components/messages/DiscrepancyDetected"
+          - $ref: "#/components/messages/ItemUnlocated"
+          - $ref: "#/components/messages/ItemStowed"
 
   warehouse.inventory.analytics:
     description: >
@@ -394,6 +412,47 @@ channels:
       message:
         $ref: "#/components/messages/InboundReceivingReceiptLineReceived"
 
+  warehouse.returns-processing.events:
+    description: >
+      returns-processing's integration topic, its Published Language for the
+      reverse flow of goods (returns-processing ADR 0001; the
+      `ReturnsProcessingTopic` constant in
+      `internal/adapters/inbound/kafka/return_line_consumer.go`). CONSUMED
+      by this service (ADR 0044), not published: key and `subject` = the
+      disposition id, `source=/warehouse/returns-processing`. Only
+      `com.warehouse.wms.returns-processing.disposition.ReturnLineStaged` is
+      acted on (the RESTOCK disposition's handover);
+      `ReturnAuthorized`, `ReturnAuthorizationRejected`, the `ReturnReceipt*`
+      types, `UnexpectedReturnReceived` and `DispositionDecided` share the
+      topic and are committed past untouched. The consumer always runs, under
+      the stable group id `RETURN_LINE_CONSUMER_GROUP` (mandatory, as are
+      `DATABASE_URL` and `KAFKA_BROKERS`).
+    publish:
+      operationId: bookReturnLine
+      summary: Book a staged return line as a staged receipt.
+      description: >
+        At-least-once, fixed group: FetchMessage, then CommitMessages only
+        after the handler settles. The CloudEvents `id` is claimed in
+        `processed_events` (consumer `return-line-staged`, the flow's
+        provenance record — the mirror of `inbound-receipt-line`) in the SAME
+        transaction as the existing ReceiveStock use case — the SAME
+        staged-receipt seam an inbound receipt line and
+        `POST /stock/receive` drive — which raises `StockReceived` through
+        the outbox (analytics topic): the units are staged and not yet
+        usable, and stow stays the RF action (item scan plus location scan).
+        Return context (`receipt_id`, `rma_id`, `disposition_id`, `site_id`,
+        `received_at`) is logged, never stored on the stock event. A
+        redelivered `id` is a no-op. A transient failure retries the same
+        message with capped backoff; a message that is not a valid
+        CloudEvent, has an undecodable payload, an empty `sku`, a
+        non-positive `quantity`, an empty `disposition_id` or a `condition`
+        other than the constant `Good` is logged (WARN) and committed past.
+      tags:
+        - name: returns-processing
+          description: Consumed from the returns-processing bounded context.
+      message:
+        $ref: "#/components/messages/ReturnsProcessingReturnLineStaged"
+
   warehouse.network-inventory-planning.events:
     description: >
       network-inventory-planning's integration topic, its Published Language
@@ -478,7 +537,11 @@ components:
         exceeded. This is the point at which the quantity becomes usable.
 
 
-        Published to `warehouse.inventory.analytics` only (subject = SKU, Kafka key = SKU). Analytics `data`: `{sku, bin_id, quantity}`.
+        **Published to both topics** (promoted to the integration topic
+        2026-10-21, ADR 0043, so returns-processing can close its restock
+        loop on it). Subject = Kafka key = SKU on both topics; `data` is
+        byte-identical: `{sku, bin_id, quantity}`. Only the `dataschema`
+        stream differs (`...:events:` vs `...:analytics:`).
       contentType: application/cloudevents+json
       tags:
         - name: stock
@@ -758,6 +821,53 @@ components:
               quantity: 4
               condition: Damaged
               received_at: "2026-10-09T08:12:00Z"
+
+    ReturnsProcessingReturnLineStaged:
+      name: ReturnsProcessingReturnLineStaged
+      title: Return Line Staged (from returns-processing, consumed)
+      summary: A RESTOCK disposition hands restockable units back as a staged receipt line.
+      description: >
+        CONSUMED, not produced (ADR 0044). Pinned by returns-processing's
+        `apis/asyncapi.yaml`: type
+        `com.warehouse.wms.returns-processing.disposition.ReturnLineStaged`,
+        `source=/warehouse/returns-processing`, subject and Kafka key = the
+        disposition id. `data` is inbound-receiving's ReceiptLineReceived
+        fields plus `rma_id`, `disposition_id` and `site_id`:
+        `{receipt_id, line_no, sku, quantity, condition, received_at,
+        rma_id, disposition_id, site_id}` with `condition` the constant
+        `Good` (only a RESTOCK disposition stages a line). This service books
+        `sku` and `quantity` through the SAME ReceiveStock use case as a
+        receipt line (its own clock stamps the resulting `StockReceived`;
+        the return context is logged, not stored), so the units are staged
+        and not yet usable until stow.
+      contentType: application/cloudevents+json
+      tags:
+        - name: returns-processing
+          description: Consumed from returns-processing.
+      payload:
+        $ref: "#/components/schemas/ReturnsProcessingReturnLineStagedEvent"
+      examples:
+        - name: staged
+          summary: The 2 restockable units of SKU-1 are staged at WH1.
+          payload:
+            specversion: "1.0"
+            id: 6d8e0f1a-4b5c-4e6f-9a7b-8c9d0e1f2a3c
+            source: /warehouse/returns-processing
+            type: com.warehouse.wms.returns-processing.disposition.ReturnLineStaged
+            subject: disp-0c1d2e3f-4a5b-4e6f-9a7b-8c9d0e1f2a3b
+            time: "2026-10-22T15:10:02Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:returns-processing:events:ReturnLineStaged:v1
+            data:
+              receipt_id: rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d
+              line_no: 1
+              sku: SKU-1
+              quantity: 2
+              condition: Good
+              received_at: "2026-10-22T14:05:00Z"
+              rma_id: rma-4d5e6f7a-8b9c-4d0e-a1f2-3b4c5d6e7f80
+              disposition_id: disp-0c1d2e3f-4a5b-4e6f-9a7b-8c9d0e1f2a3b
+              site_id: WH1
 
     NetworkInventoryPlanningTransferAllocationRequested:
       name: NetworkInventoryPlanningTransferAllocationRequested
@@ -1333,7 +1443,13 @@ components:
         exactly one known bin" rule.
 
 
-        Published to `warehouse.inventory.analytics` only (subject = stock unit id, Kafka key = SKU). Analytics `data`: `{sku, bin_id, stock_unit_id, quantity}`.
+        **Published to both topics** (promoted to the integration topic
+        2026-10-21, ADR 0043, for exception-management). Subject = stock
+        unit id, Kafka key = SKU on both topics (the split the analytics
+        publisher always used: every fact about one SKU's units stays on
+        one partition while the subject names the lost unit); `data` is
+        byte-identical: `{sku, bin_id, stock_unit_id, quantity}`. Only the
+        `dataschema` stream differs.
       contentType: application/cloudevents+json
       tags:
         - name: stock
@@ -1406,7 +1522,10 @@ components:
         quantity that could not be found.
 
 
-        Published to `warehouse.inventory.analytics` only (subject = bin id, Kafka key = bin id). Analytics `data`: `{bin_id, counted, system}`.
+        **Published to both topics** (promoted to the integration topic
+        2026-10-21, ADR 0043, for exception-management). Subject = Kafka
+        key = bin id on both topics; `data` is byte-identical:
+        `{bin_id, counted, system}`. Only the `dataschema` stream differs.
       contentType: application/cloudevents+json
       tags:
         - name: bin
@@ -1552,8 +1671,8 @@ components:
               const: "com.warehouse.wms.inventory-storage.stock.ItemStowed"
             dataschema:
               type: string
-              description: urn:warehouse:inventory-storage:analytics:ItemStowed:v1
-              pattern: "^urn:warehouse:inventory-storage:analytics:ItemStowed:v1$"
+              description: urn:warehouse:inventory-storage:events:ItemStowed:v1 on the integration topic, ...:analytics:ItemStowed:v1 on the analytics topic (ADR 0043).
+              pattern: "^urn:warehouse:inventory-storage:(events|analytics):ItemStowed:v1$"
             data:
               type: object
               description: Business payload for ItemStowed.
@@ -1865,6 +1984,97 @@ components:
               type: string
               format: date-time
 
+    ReturnsProcessingReturnLineStagedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of returns-processing's ReturnLineStaged v1
+        as consumed here (not composed from CloudEventBase, whose `source` is
+        this service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events under consumer `return-line-staged`).
+        source:
+          type: string
+          enum: ["/warehouse/returns-processing"]
+        type:
+          type: string
+          const: "com.warehouse.wms.returns-processing.disposition.ReturnLineStaged"
+        subject:
+          type: string
+          description: The disposition id (also the Kafka key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:returns-processing:events:ReturnLineStaged:v1
+        data:
+          type: object
+          description: >
+            inbound-receiving's ReceiptLineReceived fields plus rma_id,
+            disposition_id and site_id — the whole consumed contract.
+          required:
+            - receipt_id
+            - line_no
+            - sku
+            - quantity
+            - condition
+            - received_at
+            - rma_id
+            - disposition_id
+            - site_id
+          properties:
+            receipt_id:
+              type: string
+            line_no:
+              type: integer
+              minimum: 1
+            sku:
+              type: string
+              description: Must be non-empty; an empty SKU is logged and committed past.
+            quantity:
+              type: integer
+              minimum: 1
+              description: Restockable units handed over. A value <= 0 is logged and committed past.
+            condition:
+              type: string
+              const: Good
+              description: >
+                A staged return line is always Good (only a RESTOCK disposition
+                stages one); any other value is logged and committed past.
+            received_at:
+              type: string
+              format: date-time
+              description: When the line arrived on the return receipt; logged, not stored.
+            rma_id:
+              type: string
+              description: The RMA the line was authorized against; logged, not stored.
+            disposition_id:
+              type: string
+              description: >
+                The RESTOCK disposition this staging belongs to (the producer's
+                idempotency key). Must be non-empty; an empty value is logged
+                and committed past. Logged, not stored.
+            site_id:
+              type: string
+              description: The site the goods were received back at; logged, not stored.
+
     NetworkInventoryPlanningTransferAllocationRequestedEvent:
       type: object
       description: >
@@ -2145,8 +2355,8 @@ components:
               const: "com.warehouse.wms.inventory-storage.stock.ItemUnlocated"
             dataschema:
               type: string
-              description: urn:warehouse:inventory-storage:analytics:ItemUnlocated:v1
-              pattern: "^urn:warehouse:inventory-storage:analytics:ItemUnlocated:v1$"
+              description: urn:warehouse:inventory-storage:events:ItemUnlocated:v1 on the integration topic, ...:analytics:ItemUnlocated:v1 on the analytics topic (ADR 0043).
+              pattern: "^urn:warehouse:inventory-storage:(events|analytics):ItemUnlocated:v1$"
             data:
               type: object
               description: Business payload for ItemUnlocated.
@@ -2230,8 +2440,8 @@ components:
               const: "com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected"
             dataschema:
               type: string
-              description: urn:warehouse:inventory-storage:analytics:DiscrepancyDetected:v1
-              pattern: "^urn:warehouse:inventory-storage:analytics:DiscrepancyDetected:v1$"
+              description: urn:warehouse:inventory-storage:events:DiscrepancyDetected:v1 on the integration topic, ...:analytics:DiscrepancyDetected:v1 on the analytics topic (ADR 0043).
+              pattern: "^urn:warehouse:inventory-storage:(events|analytics):DiscrepancyDetected:v1$"
             data:
               type: object
               description: Business payload for DiscrepancyDetected.

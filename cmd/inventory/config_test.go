@@ -14,6 +14,7 @@ func validEnv() map[string]string {
 		"TRANSFER_ALLOCATION_CONSUMER_GROUP": "inventory-storage-transfer-allocation",
 		"PRODUCT_MASTER_CONSUMER_GROUP":      "inventory-storage-product-master",
 		"INBOUND_RECEIPT_CONSUMER_GROUP":     "inventory-storage-inbound-receipt",
+		"RETURN_LINE_CONSUMER_GROUP":         "inventory-storage-return-lines",
 		"TASK_COMPLETED_CONSUMER_GROUP":      "inventory-storage-confirm-pick",
 	}
 }
@@ -36,6 +37,7 @@ func TestLoadConfig_ValidEnvironment(t *testing.T) {
 	if cfg.transferConsumerGroup != "inventory-storage-transfer-allocation" ||
 		cfg.productMasterConsumerGroup != "inventory-storage-product-master" ||
 		cfg.inboundReceiptConsumerGroup != "inventory-storage-inbound-receipt" ||
+		cfg.returnLineConsumerGroup != "inventory-storage-return-lines" ||
 		cfg.taskCompletedConsumerGroup != "inventory-storage-confirm-pick" {
 		t.Fatalf("consumer groups = %+v", cfg)
 	}
@@ -81,6 +83,7 @@ func TestLoadConfig_RefusesAnythingButRealWiring(t *testing.T) {
 		{"no transfer group", func(e map[string]string) { delete(e, "TRANSFER_ALLOCATION_CONSUMER_GROUP") }, "TRANSFER_ALLOCATION_CONSUMER_GROUP"},
 		{"no product-master group", func(e map[string]string) { delete(e, "PRODUCT_MASTER_CONSUMER_GROUP") }, "PRODUCT_MASTER_CONSUMER_GROUP"},
 		{"no receipt group", func(e map[string]string) { delete(e, "INBOUND_RECEIPT_CONSUMER_GROUP") }, "INBOUND_RECEIPT_CONSUMER_GROUP"},
+		{"no return-line group", func(e map[string]string) { delete(e, "RETURN_LINE_CONSUMER_GROUP") }, "RETURN_LINE_CONSUMER_GROUP"},
 		{"no task group", func(e map[string]string) { delete(e, "TASK_COMPLETED_CONSUMER_GROUP") }, "TASK_COMPLETED_CONSUMER_GROUP"},
 	}
 	for _, tt := range tests {

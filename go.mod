@@ -1,6 +1,6 @@
 module github.com/claudioed/inventory-storage
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/arch-go/arch-go v1.7.0
@@ -8,7 +8,7 @@ require (
 	github.com/cloudevents/sdk-go/v2 v2.16.2
 	github.com/cucumber/godog v0.16.0
 	github.com/exaring/otelpgx v0.13.0
-	github.com/go-chi/chi/v5 v5.3.2
+	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-chi/cors v1.2.2
 	github.com/go-logr/logr v1.4.4
 	github.com/golang-migrate/migrate/v4 v4.20.1

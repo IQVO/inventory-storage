@@ -355,8 +355,8 @@ aggregate is a version-guarded local copy of it: a closed set of
 `HandlingTag`s, a `TemperatureClass` required only for
 `TemperatureSensitive` SKUs, and an optional US DOT hazard class meaningful
 only for `Hazmat` SKUs (ADR 0010). `StowStock` enforces placement and
-same-bin segregation from it; no sibling context reads it any more (the REST
-`GET` is deprecated).
+same-bin segregation from it; no sibling context reads it from here any more (the REST
+`GET` was removed at stage E).
 
 | Field | Meaning |
 | --- | --- |
@@ -419,20 +419,22 @@ Unclassified SKUs, unknown bins and unclassified occupants are **fail-open**.
 
 | Command | Method | Use case / entry point |
 | --- | --- | --- |
-| Apply product-master's classification | `product.New` | `ApplyProductClassification` — Kafka `warehouse.product-master.events` (`PUT /products/{sku}/classification` is 410) |
+| Apply product-master's classification | `product.New` | `ApplyProductClassification` — Kafka `warehouse.product-master.events` (`PUT /products/{sku}/classification` was removed at stage E) |
 
 ### 7. Created Events
 
-| Event | Full CloudEvents `type` | Topics |
-| --- | --- | --- |
-| ProductClassified (legacy) | `com.warehouse.wms.inventory-storage.product.ProductClassified` (subject and Kafka key = SKU; `data` = `{sku, handling_tags, temperature_class?, dot_hazard_class?}`, a full-state replacement) | `warehouse.inventory.events` only, through the outbox — since [ADR 0034](/docs/adr/0034) raised by **no** write path; only the one-shot `RepublishProductClassifications` backfill emits it, for product-master's legacy importer (published on every write from 2026-10-06 under [ADR 0031](/docs/adr/0031) until ADR 0034) |
+None. The aggregate raises no event since [ADR 0034](/docs/adr/0034). The
+legacy `com.warehouse.wms.inventory-storage.product.ProductClassified`
+(published on every write from 2026-10-06 under [ADR 0031](/docs/adr/0031))
+and the `RepublishProductClassifications` backfill were removed at stage E
+(2026-10-17).
 
 ### 8. Throughput (estimate)
 
 Low writes (product-master's `ProductClassified` messages), high reads: every
 classified-SKU stow. Siblings keep their own copies from product-master's
-events; the deprecated REST read `GET /products/{sku}/classification` stays
-until product-master ADR 0003 stage E.
+events; the REST read `GET /products/{sku}/classification` was removed at
+stage E.
 
 ### 9. Size (estimate)
 
