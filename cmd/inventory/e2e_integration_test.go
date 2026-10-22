@@ -147,6 +147,7 @@ func startE2EService(t *testing.T, ctx context.Context, env e2eEnv) func() (erro
 	t.Setenv("TRANSFER_ALLOCATION_CONSUMER_GROUP", "inventory-storage-e2e-transfer")
 	t.Setenv("PRODUCT_MASTER_CONSUMER_GROUP", "inventory-storage-e2e-product-master")
 	t.Setenv("INBOUND_RECEIPT_CONSUMER_GROUP", "inventory-storage-e2e-receipts")
+	t.Setenv("RETURN_LINE_CONSUMER_GROUP", "inventory-storage-e2e-return-lines")
 	t.Setenv("TASK_COMPLETED_CONSUMER_GROUP", "inventory-storage-e2e-confirm-pick")
 	t.Setenv("OUTBOX_RELAY_INTERVAL", "200ms")
 	t.Setenv("LOG_LEVEL", "error")

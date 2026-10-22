@@ -3,7 +3,10 @@
 // drops in wherever the log or Postgres outbox publisher is used today.
 //
 // Only the reservation-lifecycle events (StockReserved, ReservationRevoked),
-// the transfer replies, and the receipt/stow facts (ADR 0030, ADR 0033) are
+// the transfer replies, the receipt/stow facts (ADR 0030, ADR 0033), the
+// relocation and bin-level feeds (ADR 0039, ADR 0040) and the promoted
+// exception facts DiscrepancyDetected, ItemUnlocated and ItemStowed
+// (ADR 0043, consumed by exception-management and returns-processing) are
 // part of the published integration contract (see apis/asyncapi.yaml); the
 // legacy ProductClassified (ADR 0031) was retired at product-master ADR 0003
 // stage E (2026-10-17); every other
@@ -238,7 +241,8 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 	case shared.StockReserved, shared.ReservationRevoked,
 		shared.TransferStockAllocated, shared.TransferStockAllocationRejected,
 		shared.TransferReceiptStaged, shared.TransferStockStowed,
-		shared.StockRelocated, shared.BinStockLevelChanged:
+		shared.StockRelocated, shared.BinStockLevelChanged,
+		shared.DiscrepancyDetected, shared.ItemUnlocated, shared.ItemStowed:
 		return true
 	default:
 		return false
@@ -248,11 +252,14 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 // Encode maps event onto its integration wire form: a CloudEvents 1.0
 // structured-mode event (ADR-0024) whose `data` is the event payload, the
 // `content-type: application/cloudevents+json` header, and W3C trace headers injected from whatever span
-// is active on ctx. The Kafka message Key is always the reservation
-// aggregate id (ReservationID) — StockReserved and ReservationRevoked for the
-// SAME reservation must land on the same partition so a consumer never
-// observes them out of order (a real bug exposed when the shared broker's
-// business topics grew from 1 to 8 partitions — see ADR-0021). It returns
+// is active on ctx. The Kafka message Key is the aggregate id the event is
+// about — for the reservation lifecycle the ReservationID, so StockReserved
+// and ReservationRevoked for the SAME reservation land on the same partition
+// and a consumer never observes them out of order (a real bug exposed when
+// the shared broker's business topics grew from 1 to 8 partitions — see
+// ADR-0021). The CloudEvents `subject` equals the key except for
+// ItemUnlocated (key = SKU, subject = stock unit id — the analytics
+// publisher's split, kept byte-identical by ADR 0043). It returns
 // an empty slice (never an error) for an event outside this publisher's
 // contract, so a caller — the outbox publisher included — can hand it the
 // full event stream indiscriminately.
@@ -268,6 +275,12 @@ func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Enc
 	if err != nil {
 		return nil, err
 	}
+	subject := key
+	if data == nil {
+		// Not one of the long-standing integration events: a promoted
+		// exception fact (ADR 0043), or outside the contract altogether.
+		data, key, subject, entity = encodePromotedEvent(event)
+	}
 	if data == nil {
 		// Not part of this publisher's contract: no messages, no error.
 		return nil, nil
@@ -277,7 +290,7 @@ func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Enc
 		ID:        newEventID(p.NewID),
 		Entity:    entity,
 		EventName: event.EventName(),
-		Subject:   key,
+		Subject:   subject,
 		Time:      event.OccurredAt(),
 		Stream:    cloudevents.StreamEvents,
 		Version:   1,

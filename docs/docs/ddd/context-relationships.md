@@ -59,6 +59,8 @@ flowchart TB
     OM["<b>order-management</b><br/>WMS<br/>order intake · allocation"]
     PM["<b>product-master</b><br/>WMS · Supporting<br/>SKU master data"]
     IR["<b>inbound-receiving</b><br/>WMS · Supporting<br/>ASNs · dock · receipts"]
+    SO["<b>slotting-optimization</b><br/>WMS · Supporting<br/>slot plans"]
+    PFR["<b>pick-face-replenishment</b><br/>WMS · Supporting<br/>min/max requests"]
 
     INV -->|"U → D · C/S<br/>Conformist to PL<br/><b>wired: Kafka</b>"| WP
     WM -->|"U → D · C/S<br/><b>wired: Kafka</b>"| WP
@@ -69,12 +71,14 @@ flowchart TB
     INV -->|"OHS · U → D · C/S<br/><b>wired: sync REST</b>"| OM
     FE -->|"OHS + PL · U → D · CF<br/><b>wired: Kafka</b> TaskCompleted (ADR 0035, per-line ADR 0036)<br/>consumer always on (ADR 0042)"| INV
     IR -->|"OHS + PL · U → D · CF<br/><b>wired: Kafka</b> ReceiptLineReceived (ADR 0037)<br/>Good lines → staged stock · consumer always on (ADR 0042)"| INV
+    INV -->|"OHS + PL · U → D · CF<br/><b>wired: Kafka</b> StockRelocated (ADR 0039)"| SO
+    INV -->|"OHS + PL · U → D · CF<br/><b>wired: Kafka</b> BinStockLevelChanged (ADR 0040), StockRelocated"| PFR
 
     classDef this fill:#0f766e,stroke:#134e4a,color:#fff,stroke-width:3px;
     classDef other fill:#1e293b,stroke:#475569,color:#fff;
     classDef future fill:#475569,stroke:#94a3b8,color:#e2e8f0,stroke-dasharray: 5 5;
     class INV this;
-    class WP,FE,WM,OM,FL,PM,IR other;
+    class WP,FE,WM,OM,FL,PM,IR,SO,PFR other;
 ```
 
 Every edge above is implemented today. Arrows point upstream → downstream,
@@ -83,11 +87,9 @@ service, but it is the downstream customer of this service's REST OHS.
 `network-fulfillment` reads `GET /inventory/{sku}/usable`, and
 `warehouse-ops-agent` reads `GET /reservations?demandRef=`, the Flow &
 Accuracy report and two MCP read tools — the same OHS, omitted from the
-diagram for legibility; the legacy `ProductClassified` backfill (retired at
-stage E, 2026-10-17)
-towards product-master is omitted too. See the
+diagram for legibility. See the
 [Context Map](/docs/ecosystem/context-map) for every wire. No sibling reads
-`GET /products/{sku}/classification` any more (deprecated, [ADR 0034](/docs/adr/0034)).
+`GET /products/{sku}/classification` any more (the route is gone, [ADR 0034](/docs/adr/0034)).
 
 ## Relationship by relationship
 
@@ -140,7 +142,7 @@ record progress, because confirming early would mark unpicked lines as picked.
 Neither `fulfillment-execution` nor
 `wes-work-planning` ever calls `POST /reservations/{id}/confirm-pick`.
 `order_ref` and `line_no` are additive optional fields of `TaskCompleted` v1 that
-fulfillment-execution adds; a message without `order_ref` is a no-op, and the
+fulfillment-execution publishes (its `internal/adapters/outbound/kafka/publisher.go`); a message without `order_ref` is a no-op, and the
 consumer is
 always on (`TASK_COMPLETED_CONSUMER_GROUP`, ADR 0042). A Task carries no SKU or quantity,
 so **short picks are not modelled**. The
@@ -160,11 +162,24 @@ version-guarded local copy in `product_classifications`
 (ADR 0009) and same-bin DOT segregation (ADR 0010) read that copy and stay
 owned here — co-locating goods in a bin is still this context's job.
 `PUT` and `GET /products/{sku}/classification` were removed at stage E
-(2026-10-17). The edge back was migration-only: the legacy
+(2026-10-17): the router registers neither. The edge back was
+migration-only: the legacy
 `com.warehouse.wms.inventory-storage.product.ProductClassified` was emitted
-solely by the one-shot `republish-product-classifications` backfill (retired
-at stage E, 2026-10-17), which
-product-master's legacy importer translates (product-master ADR 0003 stage B).
+solely by the one-shot `republish-product-classifications` backfill, which
+product-master's legacy importer translated (product-master ADR 0003 stage B);
+the type and the backfill were removed at stage E.
+
+### inventory-storage → slotting-optimization, pick-face-replenishment — **Conformist downstream, wired over Kafka**
+
+Two WMS-tier Supporting contexts read this service's integration topic
+`warehouse.inventory.events` as published, each into its own local read model
+(no REST or MCP call into this service). `slotting-optimization` acts only on
+`StockRelocated` ([ADR 0039](/docs/adr/0039)), the proof that a planned slot
+move happened. `pick-face-replenishment` acts on `BinStockLevelChanged`
+([ADR 0040](/docs/adr/0040)) and `StockRelocated`. In the other direction this
+service never calls either: stock moves arrive as `TaskCompleted` (RELOCATE,
+REPLENISH) from fulfillment-execution and run through `RelocateStock`, which
+stays the only writer of the ledger.
 
 ### inventory-storage ↔ workforce-management — **no relationship**
 

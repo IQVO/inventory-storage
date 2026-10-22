@@ -71,7 +71,7 @@ flowchart LR
     in5 ==>|"evt - Kafka<br/>warehouse.facility.events<br/>ZoneRegistered,<br/>LocationSlotRegistered,<br/>LocationSlotDecommissioned"| BC
     in6 ==>|"evt - Kafka<br/>warehouse.product-master.events<br/>ProductClassified (local copy)"| BC
     in7 ==>|"evt - Kafka<br/>warehouse.inbound-receiving.events<br/>ReceiptLineReceived (Good<br/>lines)"| BC
-    in8 ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCompleted (PICK) confirms<br/>picks"| BC
+    in8 ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCompleted (PICK, RELOCATE,<br/>REPLENISH)"| BC
     in9 -->|"cmd - Kafka<br/>warehouse.network-inventory-planning.events<br/>TransferAllocationRequested"| BC
     linkStyle 0 stroke:#1971c2,stroke-width:1.5px
     linkStyle 1 stroke:#2f9e44,stroke-width:1.5px
@@ -106,22 +106,32 @@ flowchart LR
         direction TB
         out0["wes-work-planning"]:::ctx
         out1["network-inventory-planning<br/>(transfer saga)"]:::ctx
-        out2["product-master (legacy<br/>importer, one-shot<br/>backfill)"]:::ctx
+        out2["slotting-optimization"]:::ctx
+        out6["pick-face-replenishment"]:::ctx
+        out7["exception-management"]:::ctx
+        out8["returns-processing"]:::ctx
         out3["facility-layout (wired,<br/>unused)"]:::ctx
         out4["own<br/>cmd/inventory-projector"]:::self
         out5["facility events DLQ"]:::self
     end
     BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>StockReserved,<br/>ReservationRevoked"| out0
     BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>TransferStockAllocated,<br/>TransferStockAllocationRejected,<br/>TransferReceiptStaged,<br/>TransferStockStowed"| out1
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>StockRelocated"| out2
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>BinStockLevelChanged,<br/>StockRelocated"| out6
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>DiscrepancyDetected,<br/>ItemUnlocated (ADR 0043)"| out7
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>ItemStowed (ADR 0043)"| out8
     BC -.->|"qry - REST (http mode)<br/>location classification"| out3
     BC ==>|"evt - Kafka<br/>warehouse.inventory.analytics<br/>StockReceived, ItemStowed,<br/>ItemUnlocated, StockReserved,<br/>StockPicked,<br/>ReservationExpired,<br/>ReservationRevoked,<br/>CycleCountCompleted,<br/>DiscrepancyDetected"| out4
     BC ==>|"evt - Kafka<br/>warehouse.facility.events.dlq<br/>invalid facility message"| out5
     linkStyle 0 stroke:#e8590c,stroke-width:2.5px
     linkStyle 1 stroke:#e8590c,stroke-width:2.5px
     linkStyle 2 stroke:#e8590c,stroke-width:2.5px
-    linkStyle 3 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 3 stroke:#e8590c,stroke-width:2.5px
     linkStyle 4 stroke:#e8590c,stroke-width:2.5px
     linkStyle 5 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 6 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 7 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 8 stroke:#e8590c,stroke-width:2.5px
 ```
 
 Source: the Inbound Communication and Outbound Communication tables of this
@@ -161,7 +171,7 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | Role | Stance |
 | --- | --- |
 | **System of record** | For `StockUnit`, `Bin` and `Reservation`. No other context has write access to any of them. `ProductClassification` here is a local copy of product-master's classification, written only by the `warehouse.product-master.events` consumer ([ADR 0034](/docs/adr/0034)). |
-| **Open Host Service** | For bin-accurate location and usable inventory, with a Published Language on two surfaces: REST (`apis/openapi.yaml`) and events (`apis/asyncapi.yaml`). The classification read `GET /products/{sku}/classification` is deprecated. |
+| **Open Host Service** | For bin-accurate location and usable inventory, with a Published Language on two surfaces: REST (`apis/openapi.yaml`) and events (`apis/asyncapi.yaml`). The classification routes `PUT` and `GET /products/{sku}/classification` no longer exist (stage E, 2026-10-17). |
 | **Enforcer** | Runs every invariant on every write — capacity, usable, no double-consume, placement, DOT segregation — whoever the caller is. |
 | **Analytics data-product owner** | Owns its own analytical data product (Flow & Accuracy report, ADR 0011), fed only by its own events. |
 
@@ -171,7 +181,7 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | --- | --- | --- | --- | --- |
 | `order-management` | ReserveStock | Command | REST `POST /reservations` (header `Idempotency-Key`) | C/S, caller-side ACL |
 | `order-management` | RevokeReservation | Command | REST `DELETE /reservations/{id}` | C/S, caller-side ACL |
-| none in the fleet (deprecated) | GetProductClassification | Query | REST `GET /products/{sku}/classification`, served from the local copy until product-master ADR 0003 stage E; `order-management`, `wes-work-planning` and `fulfillment-execution` now keep their own copies from product-master | OHS/PL |
+| none in the fleet (removed) | GetProductClassification | Query | REST `GET /products/{sku}/classification` was removed at product-master ADR 0003 stage E (2026-10-17); `order-management`, `wes-work-planning` and `fulfillment-execution` keep their own copies from product-master | — |
 | `network-fulfillment` | GetUsable | Query | REST `GET /inventory/{sku}/usable` | OHS/PL, caller-side ACL |
 | `warehouse-ops-agent` (console BFF) | GetReservationsByDemandRef | Query | REST `GET /reservations?demandRef=` | OHS/PL, Conformist |
 | `warehouse-ops-agent` | Flow & Accuracy report | Query | REST `GET /reports/flow-accuracy`, `GET /reports/flow-accuracy/freshness` (`cmd/inventory-reports`) | OHS/PL, Conformist |
@@ -190,6 +200,7 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | product-master | ProductClassified (local copy, ADR 0034) | Event | Kafka `warehouse.product-master.events` → `ApplyProductClassification` | Conformist (product-master's Published Language) |
 | Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/confirm-pick` | OHS — no sibling context calls it; **decided 2026-10-06: event-driven** — production confirmation comes from fulfillment-execution's `TaskCompleted` (next row), consumed here ([ADR 0035](/docs/adr/0035)) |
 | fulfillment-execution | TaskCompleted (PICK, `order_ref`, `line_no`) | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` → `ConfirmPicksForOrder` → with `line_no`, `ConfirmPick` for exactly that line's ACTIVE reservation; without it, counts the order's picks and confirms on the order's last pick (`TASK_COMPLETED_CONSUMER_GROUP`, mandatory, always on) | Conformist (fulfillment-execution's Published Language); per-line confirm, counting fallback, short picks not modelled ([ADR 0036](/docs/adr/0036), [ADR 0035](/docs/adr/0035)) |
+| fulfillment-execution | TaskCompleted (RELOCATE, REPLENISH) | Event | Same topic and consumer group: `ApplyRelocationTask` (`relocation_ref`, [ADR 0039](/docs/adr/0039)) and `ApplyReplenishTask` (`request_ref`, [ADR 0041](/docs/adr/0041)) move stock between bins through `RelocateStock`; a deterministic rejection is dead-lettered | Conformist (fulfillment-execution's Published Language) |
 | Operator, `inventory-mfe` | GetBin, GetUsable | Query | REST `GET /bins/{binId}`, `GET /inventory/{sku}/usable` | OHS |
 | Kubernetes | liveness / readiness | Query | REST `GET /healthz`, `GET /readyz` | — |
 | network-inventory-planning | TransferAllocationRequested | Command | Kafka `warehouse.network-inventory-planning.events`, `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` → `transfer_consumer.go` (`TRANSFER_ALLOCATION_CONSUMER_GROUP`, mandatory, always on; [ADR 0030](/docs/adr/0030)) | Conformist to NIP's Published Language; reply by event |
@@ -201,6 +212,10 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | `wes-work-planning` | StockReserved | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.reservation.StockReserved` (key = reservation id) | OHS/PL; downstream Conformist |
 | `wes-work-planning` | ReservationRevoked | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` (key = reservation id) | OHS/PL; downstream Conformist |
 | `network-inventory-planning` (transfer saga) | TransferStockAllocated, TransferStockAllocationRejected, TransferReceiptStaged, TransferStockStowed | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated` / `...reservation.TransferStockAllocationRejected` / `...stock.TransferReceiptStaged` / `...stock.TransferStockStowed` ([ADR 0030](/docs/adr/0030), [ADR 0033](/docs/adr/0033)) | OHS/PL; downstream Conformist |
+| `slotting-optimization` | StockRelocated | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.stock.StockRelocated` ([ADR 0039](/docs/adr/0039)) | OHS/PL; downstream Conformist |
+| `pick-face-replenishment` | BinStockLevelChanged, StockRelocated | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged` ([ADR 0040](/docs/adr/0040)) / `...stock.StockRelocated` | OHS/PL; downstream Conformist |
+| `exception-management` | DiscrepancyDetected, ItemUnlocated | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` / `...stock.ItemUnlocated` — byte-identical copies of the analytics feed ([ADR 0043](/docs/adr/0043)) | OHS/PL; downstream Conformist |
+| `returns-processing` | ItemStowed | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.stock.ItemStowed` — byte-identical copy of the analytics feed ([ADR 0043](/docs/adr/0043)) | OHS/PL; downstream Conformist |
 | own projector (`cmd/inventory-projector`) | StockReceived, ItemStowed, ItemUnlocated, StockReserved, StockPicked, ReservationExpired, ReservationRevoked, CycleCountCompleted, DiscrepancyDetected | Event | Kafka `warehouse.inventory.analytics`, `com.warehouse.wms.inventory-storage.<stock, reservation or bin>.<EventName>` (nothing emits `ProductClassified` there since ADR 0034) | internal |
 | `facility-layout` | location classification | Query | REST `GET /locations/{locationCode}/classification` — only with `LOCATION_LOOKUP_MODE=http`, behind a circuit breaker | ACL; wired but unused (rollback) |
 | `facility-layout` (DLQ) | invalid facility message | Event | Kafka `warehouse.facility.events.dlq` (raw payload + `x-dlq-*` headers) | — |
@@ -235,7 +250,7 @@ The terms that carry the model:
 | Reservations are revocable and expire after a timeout (default 30 min); expiry is lazy, on the next read. | ADR 0003, `DefaultReservationTimeout`, `expireIfDue` |
 | A retry for the same `(demandRef, sku, quantity)` returns the existing ACTIVE reservation. | `isReplayOf` |
 | Cycle-count shortfall marks whole units Unlocated; overage is reported, never auto-reconciled. | `RunCycleCount` |
-| product-master owns product classification; this context keeps a version-guarded local copy and answers `410` to `PUT /products/{sku}/classification`. Placement rules are fail-open for unclassified SKUs and unknown bins, fail-closed only when a classified SKU's lookup fails. | ADR 0009, [ADR 0034](/docs/adr/0034) |
+| product-master owns product classification; this context keeps a version-guarded local copy and has no classification route (stage E removed `PUT` and `GET /products/{sku}/classification`). Placement rules are fail-open for unclassified SKUs and unknown bins, fail-closed only when a classified SKU's lookup fails. | ADR 0009, [ADR 0034](/docs/adr/0034) |
 | DOT segregation uses a 9 × 9 class-level matrix with four documented simplifications. | ADR 0010, `product.Incompatible` |
 | Bins are registered declaratively over REST; registration raises no event. | ADR 0025 |
 | `StockReserved` and `ReservationRevoked` are the integration events, plus the transfer replies (ADR 0030, ADR 0033); the legacy `ProductClassified` (ADR 0031) was retired at stage E (2026-10-17). | `kafka.Publisher.Encode`, `apis/asyncapi.yaml` |
@@ -278,8 +293,8 @@ The terms that carry the model:
   published through the outbox on both topics, additive ([ADR 0031](/docs/adr/0031)).
   `LocationRecorded` stays in-process (no consumer). **Superseded by
   [ADR 0034](/docs/adr/0034):** product-master now owns classification and
-  siblings read product-master's `ProductClassified`; this service emits its
-  legacy type only from the one-shot backfill.
+  siblings read product-master's `ProductClassified`; this service's own
+  legacy type and its backfill were removed at stage E (2026-10-17).
 - Should `StowStock` validate a bin against facility-layout's slot catalogue,
   not only against its own `LocationRepo`?
 - ~~Who should call `POST /reservations/{id}/confirm-pick` in production?~~

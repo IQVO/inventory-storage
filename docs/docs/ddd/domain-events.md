@@ -75,8 +75,8 @@ reservation path** (plus
 the two transfer replies, [ADR 0030](/docs/adr/0030), `StockRelocated` on
 the relocation path, [ADR 0039](/docs/adr/0039), and `BinStockLevelChanged`,
 the per-bin absolute level feed, [ADR 0040](/docs/adr/0040)). The legacy
-`ProductClassified` (ADR 0034, product-master ADR 0003) was retired at stage
-E (2026-10-17). The integration
+`ProductClassified` (ADR 0034, product-master ADR 0003) was removed at stage
+E (2026-10-17), together with its republish command. The integration
 publisher's `Encode` returns nothing for every other event — deliberate, not
 an oversight: those are the published integration contract. Nine of the
 thirteen events go to the internal analytics topic (`StockRelocated` and
@@ -106,9 +106,12 @@ relayed by `cmd/inventory`.
 | StockPicked | `com.warehouse.wms.inventory-storage.reservation.StockPicked` | `warehouse.inventory.analytics` | reservation id / reservation id | `sku`, `reservation_id`, `quantity` | `ConfirmPick` (REST, and per reservation from `ConfirmPicksForOrder`, ADR 0035) | `cmd/inventory-projector` |
 | StockReceived | `com.warehouse.wms.inventory-storage.stock.StockReceived` | `warehouse.inventory.analytics` | SKU / SKU | `sku`, `quantity` | `ReceiveStock` | `cmd/inventory-projector` |
 | ItemStowed | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | `warehouse.inventory.analytics` | SKU / SKU | `sku`, `bin_id`, `quantity` | `StowStock` | `cmd/inventory-projector` |
+| ItemStowed | same `type` | `warehouse.inventory.events` | SKU / SKU | `sku`, `bin_id`, `quantity` (byte-identical to the analytics copy, [ADR 0043](/docs/adr/0043)) | `StowStock` | returns-processing (closes its restock loop) |
 | ItemUnlocated | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | `warehouse.inventory.analytics` | SKU / stock unit id | `sku`, `bin_id`, `stock_unit_id`, `quantity` | `RunCycleCount` | `cmd/inventory-projector` |
+| ItemUnlocated | same `type` | `warehouse.inventory.events` | SKU / stock unit id | `sku`, `bin_id`, `stock_unit_id`, `quantity` (byte-identical to the analytics copy, [ADR 0043](/docs/adr/0043)) | `RunCycleCount` | exception-management (opens cases from short counts) |
 | CycleCountCompleted | `com.warehouse.wms.inventory-storage.bin.CycleCountCompleted` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system`, `discrepancy` | `RunCycleCount` | `cmd/inventory-projector` |
 | DiscrepancyDetected | `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system` | `RunCycleCount` | `cmd/inventory-projector` |
+| DiscrepancyDetected | same `type` | `warehouse.inventory.events` | bin id / bin id | `bin_id`, `counted`, `system` (byte-identical to the analytics copy, [ADR 0043](/docs/adr/0043)) | `RunCycleCount` | exception-management (opens cases from short counts) |
 | TransferReceiptStaged | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | `warehouse.inventory.events` | transfer line id / transfer line id | `transfer_id`, `transfer_line_id`, `destination_site_id`, `sku`, `expected_quantity`, `received_quantity`, `variance` (signed, ADR 0033) | `StageTransferReceipt` | planning reconciliation (over/short is explicit, never absorbed) |
 | TransferStockStowed | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | `warehouse.inventory.events` | transfer line id / transfer line id | `transfer_id`, `transfer_line_id`, `destination_site_id`, `sku`, `received_quantity`, `stowed_quantity`, `allocations[]` (ADR 0033) | `StowTransferStock` | the only event that raises destination usable; `wes-work-planning` may project it |
 | StockRelocated | `com.warehouse.wms.inventory-storage.stock.StockRelocated` | `warehouse.inventory.events` | relocation id / relocation id | `relocation_id`, `site_code`, `sku`, `from_bin`, `to_bin`, `quantity`, `reason` (`SLOTTING`/`CONSOLIDATION`/`MANUAL`/`REPLENISHMENT`), `source_ref` (always present, `""` when none), `occurred_at` ([ADR 0039](/docs/adr/0039), `REPLENISHMENT` by [ADR 0041](/docs/adr/0041)) | `RelocateStock` (`POST /relocations`, and `ApplyRelocationTask` on a RELOCATE `TaskCompleted`, and `ApplyReplenishTask` on a REPLENISH one) | slotting-optimization (slot-plan execution progress, its ADR 0010; must act only on `SLOTTING`), pick-face-replenishment (closes a request when `reason=REPLENISHMENT` and `source_ref` = the request id) |
@@ -124,7 +127,8 @@ on `warehouse.product-master.events` feeds the local classification copy via
 carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick
 otherwise ([ADR 0035](/docs/adr/0035)) — and, for `task_type=RELOCATE`,
 applies the move via `ApplyRelocationTask` → `RelocateStock`
-([ADR 0039](/docs/adr/0039)) — and
+([ADR 0039](/docs/adr/0039)), and for `task_type=REPLENISH` via
+`ApplyReplenishTask` ([ADR 0041](/docs/adr/0041)) — and
 `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` on
 `warehouse.inbound-receiving.events` books a received `Good` line as staged
 stock via `BookInboundReceiptLine` → `ReceiveStock` (the same `StockReceived`
