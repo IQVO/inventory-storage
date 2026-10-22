@@ -106,8 +106,8 @@ With warehouse-infra running, the deployed API is behind Kong at
 
 There is no seed script: the walk below *is* the seed. Register bins with
 `PUT /bins/{binId}`, then receive and stow stock. Product classifications
-cannot be written here any more (`PUT /products/{sku}/classification` answers
-`410 classification-moved`); they arrive from product-master through the
+cannot be written here any more (`PUT /products/{sku}/classification` was
+removed at stage E and answers `404`); they arrive from product-master through the
 always-on `PRODUCT_MASTER_CONSUMER_GROUP` consumer, so a SKU product-master has
 not classified yet is stowed without hazmat/temperature checks.
 
@@ -136,7 +136,8 @@ curl -s -i -X PUT localhost:8080/bins/A-1-1 \
 # Location: /bins/A-1-1
 # {"binId":"A-1-1","capacity":20,"occupied":0,"available":20}
 
-# 1. Receive: goods are in the building, not yet located.
+# 1. Receive: goods are in the building, not yet located. (POST /stock/receive is
+#    deprecated in the spec: in production inbound-receiving's ReceiptLineReceived books this.)
 curl -s -i -X POST localhost:8080/stock/receive \
   -H 'Content-Type: application/json' \
   -d '{"sku":"SKU-1","quantity":10}'
@@ -167,7 +168,8 @@ curl -s -i -X POST localhost:8080/reservations \
 curl -s localhost:8080/inventory/SKU-1/usable
 # {"sku":"SKU-1","usable":4}   <- usable dropped, on-hand did not
 
-# 5a. The pick succeeded — consume the reservation.
+# 5a. The pick succeeded — consume the reservation. (confirm-pick is deprecated in the
+#     spec: in production fulfillment-execution's TaskCompleted does this.)
 curl -s -X POST localhost:8080/reservations/<id>/confirm-pick
 
 # 5b. …or the pick failed. Revoke; quantity returns to usable.

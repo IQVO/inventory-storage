@@ -48,7 +48,7 @@ type config struct {
 	facilityLayoutBaseURL string
 	kafkaBrokers          []string // KAFKA_BROKERS split on ","; never empty after loadConfig
 
-	// The four consumer-group ids are mandatory: every consumer always runs
+	// The five consumer-group ids are mandatory: every consumer always runs
 	// under a stable group so a restarted pod resumes from its offsets.
 	// transferConsumerGroup is TRANSFER_ALLOCATION_CONSUMER_GROUP.
 	transferConsumerGroup string
@@ -63,6 +63,11 @@ type config struct {
 	// (ADR 0037).
 	inboundReceiptConsumerGroup string
 
+	// returnLineConsumerGroup is RETURN_LINE_CONSUMER_GROUP: the stable
+	// consumer group of the returns-processing return-line consumer
+	// (ADR 0044).
+	returnLineConsumerGroup string
+
 	// taskCompletedConsumerGroup is TASK_COMPLETED_CONSUMER_GROUP: the
 	// stable consumer group of the TaskCompleted confirm-pick consumer
 	// (ADR 0035).
@@ -72,7 +77,7 @@ type config struct {
 // loadConfig reads and validates the process environment through get
 // (os.Getenv in production, a map lookup in the tests). Postgres and Kafka
 // are the only runtime (the real-wiring ADR): DATABASE_URL, KAFKA_BROKERS,
-// LOCATION_LOOKUP_MODE and the four consumer-group ids are mandatory, and
+// LOCATION_LOOKUP_MODE and the five consumer-group ids are mandatory, and
 // every problem is an error that names the variable, so the process exits
 // before telemetry, the listener or any dial. EVENT_PUBLISHER and the two
 // *_CONSUMER_MODE variables stay accepted (warehouse-infra sets them) but only
@@ -124,6 +129,7 @@ func loadConfig(get func(string) string) (config, error) {
 		{"TRANSFER_ALLOCATION_CONSUMER_GROUP", &cfg.transferConsumerGroup},
 		{"PRODUCT_MASTER_CONSUMER_GROUP", &cfg.productMasterConsumerGroup},
 		{"INBOUND_RECEIPT_CONSUMER_GROUP", &cfg.inboundReceiptConsumerGroup},
+		{"RETURN_LINE_CONSUMER_GROUP", &cfg.returnLineConsumerGroup},
 		{"TASK_COMPLETED_CONSUMER_GROUP", &cfg.taskCompletedConsumerGroup},
 	} {
 		v := strings.TrimSpace(get(g.env))

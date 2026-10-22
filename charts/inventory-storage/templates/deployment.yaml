@@ -74,7 +74,7 @@ spec:
             - name: FACILITY_LAYOUT_BASE_URL
               value: {{ .Values.config.facilityLayoutBaseUrl | quote }}
             {{- end }}
-            # The four consumer-group ids are mandatory (the render fails when
+            # The five consumer-group ids are mandatory (the render fails when
             # one is empty), so they are always set.
             - name: TRANSFER_ALLOCATION_CONSUMER_MODE
               value: {{ .Values.config.transferAllocationConsumerMode | quote }}
@@ -84,6 +84,8 @@ spec:
               value: {{ .Values.config.productMasterConsumerGroup | quote }}
             - name: INBOUND_RECEIPT_CONSUMER_GROUP
               value: {{ .Values.config.inboundReceiptConsumerGroup | quote }}
+            - name: RETURN_LINE_CONSUMER_GROUP
+              value: {{ .Values.config.returnLineConsumerGroup | quote }}
             - name: TASK_COMPLETED_CONSUMER_MODE
               value: {{ .Values.config.taskCompletedConsumerMode | quote }}
             - name: TASK_COMPLETED_CONSUMER_GROUP

@@ -242,3 +242,116 @@ func TestPublisher_RealBroker_SameReservationLandsOnSamePartition(t *testing.T) 
 		}
 	}
 }
+
+// TestPublisher_RealBroker_PromotedExceptionFactsReachIntegrationTopic is
+// the real-broker proof of ADR 0043: a stow and a cycle-count shortfall,
+// handed to the integration Publisher, land on the integration topic as
+// valid CloudEvents whose FULL type strings are exactly the contract
+// exception-management and returns-processing dispatch on — with the
+// events-stream dataschema and the byte-identical analytics payloads.
+func TestPublisher_RealBroker_PromotedExceptionFactsReachIntegrationTopic(t *testing.T) {
+	const numPartitions = 8
+	brokerList := startPartitionKeyBroker(t)
+	topic := uniquePartitionKeyTopic(t)
+	createTopicWithPartitions(t, brokerList, topic, numPartitions)
+
+	transport := &kafkago.Transport{}
+	defer transport.CloseIdleConnections()
+	writer := &kafkago.Writer{
+		Addr:      kafkago.TCP(brokerList...),
+		Topic:     topic,
+		Balancer:  &kafkago.Hash{},
+		Transport: transport,
+	}
+	defer func() { _ = writer.Close() }()
+
+	pub := outboundkafka.NewPublisher(writer, memory.NewReservationRepo())
+
+	// A stow of 50 units of one SKU into a bin, then a cycle count of that
+	// bin coming up short: 47 counted against 50 in the system, with the 3
+	// missing units flagged Unlocated.
+	sku, _ := shared.NewSKU("SKU-ITEST-PROMO")
+	bin, _ := shared.NewBinId("BIN-ITEST-01")
+	qty50, _ := shared.NewPositiveQuantity(50)
+	qty47, _ := shared.NewPositiveQuantity(47)
+	qty3, _ := shared.NewPositiveQuantity(3)
+	at := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+
+	events := []shared.DomainEvent{
+		shared.NewItemStowed(at, sku, bin, qty50),
+		shared.NewDiscrepancyDetected(at, bin, qty47, qty50),
+		shared.NewItemUnlocated(at, "su-itest-1", sku, bin, qty3),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for _, event := range events {
+		encoded, err := pub.Encode(ctx, event)
+		if err != nil || len(encoded) != 1 {
+			t.Fatalf("Encode %T: encoded=%v err=%v", event, encoded, err)
+		}
+		if err := writer.WriteMessages(ctx,
+			kafkago.Message{Key: encoded[0].Key, Value: encoded[0].Value, Headers: encoded[0].Headers},
+		); err != nil {
+			t.Fatalf("WriteMessages %T: %v", event, err)
+		}
+	}
+
+	got := readAllTypes(t, brokerList, topic, numPartitions)
+
+	want := map[string]string{
+		// Full type string -> events-stream dataschema, exactly what the
+		// consumers' AsyncAPI contract pins.
+		"com.warehouse.wms.inventory-storage.stock.ItemStowed":        "urn:warehouse:inventory-storage:events:ItemStowed:v1",
+		"com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected": "urn:warehouse:inventory-storage:events:DiscrepancyDetected:v1",
+		"com.warehouse.wms.inventory-storage.stock.ItemUnlocated":     "urn:warehouse:inventory-storage:events:ItemUnlocated:v1",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("read %d distinct types off the integration topic, want %d: %v", len(got), len(want), got)
+	}
+	for fullType, wantSchema := range want {
+		schema, ok := got[fullType]
+		if !ok {
+			t.Errorf("type %s never reached the integration topic; saw %v", fullType, got)
+			continue
+		}
+		if schema != wantSchema {
+			t.Errorf("type %s dataschema = %q, want %q", fullType, schema, wantSchema)
+		}
+	}
+}
+
+// readAllTypes reads every message on topic across all partitions (bounded
+// by a short per-partition deadline) and returns full CloudEvents type ->
+// dataschema for each, failing on a value that does not decode.
+func readAllTypes(t *testing.T, brokerList []string, topic string, numPartitions int) map[string]string {
+	t.Helper()
+	types := map[string]string{}
+	for p := 0; p < numPartitions; p++ {
+		reader := kafkago.NewReader(kafkago.ReaderConfig{
+			Brokers:   brokerList,
+			Topic:     topic,
+			Partition: p,
+			MinBytes:  1,
+			MaxBytes:  10e6,
+		})
+		func() {
+			defer func() { _ = reader.Close() }()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			for {
+				msg, err := reader.ReadMessage(ctx)
+				if err != nil {
+					return // deadline hit: no more messages on this partition
+				}
+				e, err := cloudevents.Decode(msg.Value)
+				if err != nil {
+					t.Errorf("message on partition %d is not a valid CloudEvent: %v", p, err)
+					return
+				}
+				types[e.Type()] = e.DataSchema()
+			}
+		}()
+	}
+	return types
+}
