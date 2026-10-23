@@ -79,6 +79,7 @@ export LOCATION_LOOKUP_MODE="${LOCATION_LOOKUP_MODE:-kafka}"
 export TRANSFER_ALLOCATION_CONSUMER_GROUP="${TRANSFER_ALLOCATION_CONSUMER_GROUP:-inventory-storage-contract-transfer}"
 export PRODUCT_MASTER_CONSUMER_GROUP="${PRODUCT_MASTER_CONSUMER_GROUP:-inventory-storage-contract-product-master}"
 export INBOUND_RECEIPT_CONSUMER_GROUP="${INBOUND_RECEIPT_CONSUMER_GROUP:-inventory-storage-contract-receipts}"
+export RETURN_LINE_CONSUMER_GROUP="${RETURN_LINE_CONSUMER_GROUP:-inventory-storage-contract-return-lines}"
 export TASK_COMPLETED_CONSUMER_GROUP="${TASK_COMPLETED_CONSUMER_GROUP:-inventory-storage-contract-confirm-pick}"
 LOG_LEVEL="${LOG_LEVEL:-warn}" HTTP_ADDR="127.0.0.1:${PORT}" "$BIN" &
 SERVER_PID=$!
