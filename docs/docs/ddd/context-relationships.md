@@ -13,7 +13,7 @@ This page is the *strategic* view — the DDD relationship patterns. The
 ## Pattern vocabulary
 
 Using the patterns as `warehouse-systems-ddd.md` and
-`amazon-fulfillment-ddd.md` use them:
+`fulfillment-reference-ddd.md` use them:
 
 | Pattern | Meaning |
 | --- | --- |
