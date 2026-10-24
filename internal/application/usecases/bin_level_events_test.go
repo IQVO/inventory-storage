@@ -500,6 +500,6 @@ func TestBinLevels_PublishFailurePropagates(t *testing.T) {
 // failingLedger fails every Advance.
 type failingLedger struct{}
 
-func (failingLedger) Advance(context.Context, shared.BinId, shared.SKU) (shared.BinLevel, error) {
+func (failingLedger) Advance(context.Context, shared.BinId, shared.SKU, shared.OwnerRef) (shared.BinLevel, error) {
 	return shared.BinLevel{}, errFake
 }

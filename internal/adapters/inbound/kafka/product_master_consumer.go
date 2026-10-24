@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/cloudevents/sdk-go/v2/event"
 	kafkago "github.com/segmentio/kafka-go"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
@@ -24,6 +25,41 @@ const ProductMasterTopic = "warehouse.product-master.events"
 // ProductDescriptionChanged, ProductDimensionsDeclared, ProductMeasured)
 // are committed past untouched.
 const typeProductMasterClassified = "com.warehouse.wms.product-master.product.ProductClassified"
+
+// The pack-level types feed the local PackagingView (contract R8). Their
+// payloads use product-master's snake_case casing.
+const (
+	typeProductPackLevelDeclared = "com.warehouse.wms.product-master.product.ProductPackLevelDeclared"
+	typeProductPackLevelRetired  = "com.warehouse.wms.product-master.product.ProductPackLevelRetired"
+)
+
+// productPackLevelDeclaredData is ProductPackLevelDeclared v1. Fields this
+// service does not use (dims, is_orderable, ...) are ignored.
+type productPackLevelDeclaredData struct {
+	SKU           string    `json:"sku"`
+	Level         string    `json:"level"`
+	GTIN          string    `json:"gtin"`
+	ChildGTIN     string    `json:"child_gtin"`
+	UnitsPerPack  int       `json:"units_per_pack"`
+	EffectiveFrom time.Time `json:"effective_from"`
+	Version       int64     `json:"version"`
+}
+
+// productPackLevelRetiredData is ProductPackLevelRetired v1.
+type productPackLevelRetiredData struct {
+	SKU         string    `json:"sku"`
+	Level       string    `json:"level"`
+	GTIN        string    `json:"gtin"`
+	EffectiveTo time.Time `json:"effective_to"`
+	Version     int64     `json:"version"`
+}
+
+// PackLevelApplier is the use-case port the consumer drives for pack levels,
+// satisfied by *usecases.ApplyPackLevel.
+type PackLevelApplier interface {
+	Declared(ctx context.Context, d usecases.PackLevelDeclared) (usecases.PackLevelOutcome, error)
+	Retired(ctx context.Context, r usecases.PackLevelRetired) (usecases.PackLevelOutcome, error)
+}
 
 // productMasterClassifiedData is product-master's ProductClassified v1
 // payload: full-state replacement of the SKU's classification plus the
@@ -52,8 +88,11 @@ type ProductClassificationApplier interface {
 type ProductMasterConsumer struct {
 	Reader Reader
 	// Apply is the handler. Required.
-	Apply  ProductClassificationApplier
-	Logger *slog.Logger
+	Apply ProductClassificationApplier
+	// Packaging projects pack levels into the local PackagingView (contract
+	// R8). Optional: nil commits those events past untouched.
+	Packaging PackLevelApplier
+	Logger    *slog.Logger
 	// Backoff is the wait before retry attempt n; nil means retryBackoff.
 	Backoff func(attempt int) time.Duration
 }
@@ -138,10 +177,18 @@ func (c *ProductMasterConsumer) Handle(ctx context.Context, msg kafkago.Message)
 			"partition", msg.Partition, "offset", msg.Offset, "error", err)
 		return nil
 	}
-	if e.Type() != typeProductMasterClassified {
-		return nil
+	switch e.Type() {
+	case typeProductMasterClassified:
+		return c.handleClassified(ctx, msg, e)
+	case typeProductPackLevelDeclared:
+		return c.handlePackDeclared(ctx, msg, e)
+	case typeProductPackLevelRetired:
+		return c.handlePackRetired(ctx, msg, e)
 	}
+	return nil
+}
 
+func (c *ProductMasterConsumer) handleClassified(ctx context.Context, msg kafkago.Message, e event.Event) error {
 	var data productMasterClassifiedData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping product-master ProductClassified with undecodable payload",
@@ -168,6 +215,55 @@ func (c *ProductMasterConsumer) Handle(ctx context.Context, msg kafkago.Message)
 	}
 	c.Logger.InfoContext(ctx, "product-master classification handled",
 		"id", e.ID(), "sku", data.SKU, "version", data.Version, "outcome", string(outcome))
+	return nil
+}
+
+func (c *ProductMasterConsumer) handlePackDeclared(ctx context.Context, msg kafkago.Message, e event.Event) error {
+	if c.Packaging == nil {
+		return nil
+	}
+	var data productPackLevelDeclaredData
+	if err := e.DataAs(&data); err != nil {
+		c.Logger.WarnContext(ctx, "skipping product-master ProductPackLevelDeclared with undecodable payload",
+			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+		return nil
+	}
+	outcome, err := c.Packaging.Declared(ctx, usecases.PackLevelDeclared{
+		EventID: e.ID(), SKU: data.SKU, Level: data.Level, GTIN: data.GTIN, ChildGTIN: data.ChildGTIN,
+		UnitsPerPack: data.UnitsPerPack, EffectiveFrom: data.EffectiveFrom, Version: data.Version,
+	})
+	return c.packLevelDone(ctx, e.ID(), data.SKU, data.GTIN, data.Version, outcome, err)
+}
+
+func (c *ProductMasterConsumer) handlePackRetired(ctx context.Context, msg kafkago.Message, e event.Event) error {
+	if c.Packaging == nil {
+		return nil
+	}
+	var data productPackLevelRetiredData
+	if err := e.DataAs(&data); err != nil {
+		c.Logger.WarnContext(ctx, "skipping product-master ProductPackLevelRetired with undecodable payload",
+			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+		return nil
+	}
+	outcome, err := c.Packaging.Retired(ctx, usecases.PackLevelRetired{
+		EventID: e.ID(), SKU: data.SKU, Level: data.Level, GTIN: data.GTIN, EffectiveTo: data.EffectiveTo, Version: data.Version,
+	})
+	return c.packLevelDone(ctx, e.ID(), data.SKU, data.GTIN, data.Version, outcome, err)
+}
+
+// packLevelDone logs the result of a pack-level event: a malformed one is
+// skipped (nil), a transient failure is returned for retry.
+func (c *ProductMasterConsumer) packLevelDone(ctx context.Context, id, sku, gtin string, version int64, outcome usecases.PackLevelOutcome, err error) error {
+	if err != nil {
+		if errors.Is(err, usecases.ErrMalformedPackLevel) {
+			c.Logger.WarnContext(ctx, "skipping invalid product-master pack level",
+				"id", id, "sku", sku, "gtin", gtin, "version", version, "error", err)
+			return nil
+		}
+		return err
+	}
+	c.Logger.InfoContext(ctx, "product-master pack level handled",
+		"id", id, "sku", sku, "gtin", gtin, "version", version, "outcome", string(outcome))
 	return nil
 }
 

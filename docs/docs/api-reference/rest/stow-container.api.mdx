@@ -1,0 +1,72 @@
+---
+id: stow-container
+title: "Stow a sealed case into a case bin"
+description: "Scan the LPN, scan the location (ADR 0045). The bin must accept sealed cases (handling unit CASE or PALLET, as published by facility-layout); a bin whose handling unit is unknown or EACH is 409 `bin-handling-unit-mismatch` (fail closed). The first stow sets the container's site from the bin's site (a carton event carries no site) and creates the SEALED_CASE stock unit holding the case's eaches; moving a stowed container to another bin of the same site is allowed, to another site is 409 `container-not-at-site`. Stowing into the bin it is already in is a no-op."
+sidebar_label: "Stow a sealed case into a case bin"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Stow a sealed case into a case bin"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/containers/{lpn}:stow"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Scan the LPN, scan the location (ADR 0045). The bin must accept sealed cases (handling unit CASE or PALLET, as published by facility-layout); a bin whose handling unit is unknown or EACH is 409 `bin-handling-unit-mismatch` (fail closed). The first stow sets the container's site from the bin's site (a carton event carries no site) and creates the SEALED_CASE stock unit holding the case's eaches; moving a stowed container to another bin of the same site is allowed, to another site is 409 `container-not-at-site`. Stowing into the bin it is already in is a no-op.
+
+Behind the Idempotency-Key middleware like the other creating POSTs (ADR 0018).
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./stow-container.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./stow-container.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./stow-container.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

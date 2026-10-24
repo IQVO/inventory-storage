@@ -142,7 +142,7 @@ func TestRehydrateBin(t *testing.T) {
 func TestRehydrateReservation(t *testing.T) {
 	now := time.Now().UTC()
 	three := 3
-	res, err := rehydrateReservation("res-1", "SKU-1", 3, "order-1", &three, nil, "ACTIVE", now, now.Add(time.Hour), 1)
+	res, err := rehydrateReservation("res-1", "SKU-1", 3, "order-1", &three, "", nil, "ACTIVE", now, now.Add(time.Hour), 1)
 	if err != nil {
 		t.Fatalf("unexpected error for a valid row: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestRehydrateReservation(t *testing.T) {
 	if got := res.LineNo(); got == nil || *got != 3 {
 		t.Fatalf("rehydrated LineNo = %v, want 3", got)
 	}
-	legacy, err := rehydrateReservation("res-2", "SKU-1", 3, "order-1", nil, nil, "ACTIVE", now, now.Add(time.Hour), 1)
+	legacy, err := rehydrateReservation("res-2", "SKU-1", 3, "order-1", nil, "", nil, "ACTIVE", now, now.Add(time.Hour), 1)
 	if err != nil || legacy.LineNo() != nil {
 		t.Fatalf("a NULL line_no must rehydrate as unknown, got %v, %v", legacy.LineNo(), err)
 	}
@@ -168,7 +168,7 @@ func TestRehydrateReservation(t *testing.T) {
 		{"negative quantity", "SKU-1", -2, shared.ErrNegativeQuantity, "rehydrate quantity -2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := rehydrateReservation("res-1", tc.sku, tc.quantity, "order-1", nil, nil, "ACTIVE", now, now, 1)
+			res, err := rehydrateReservation("res-1", tc.sku, tc.quantity, "order-1", nil, "", nil, "ACTIVE", now, now, 1)
 			if err == nil || res != nil {
 				t.Fatalf("expected (nil, error), got (%+v, %v)", res, err)
 			}

@@ -8,7 +8,9 @@ var (
 	ErrStockUnitNotFound   = errors.New("stock unit not found")
 	ErrBinNotFound         = errors.New("bin not found")
 	ErrReservationNotFound = errors.New("reservation not found")
-	ErrInsufficientUsable  = errors.New("requested quantity exceeds usable inventory")
+	// ErrContainerNotFound: no container has this LPN.
+	ErrContainerNotFound  = errors.New("container not found")
+	ErrInsufficientUsable = errors.New("requested quantity exceeds usable inventory")
 
 	// ErrProductClassificationNotFound is returned when a GetProductClassification
 	// (or similar) lookup finds no registered classification for the SKU.

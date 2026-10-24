@@ -1,0 +1,1 @@
+{"parameters":[{"name":"binId","in":"path","required":true,"description":"The bin to inspect.","schema":{"type":"string","example":"WH1-STOR-AMB-A01-01-01-A"}}]}

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/cloudevents/sdk-go/v2/event"
 	kafkago "github.com/segmentio/kafka-go"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
@@ -24,6 +25,10 @@ const InboundReceivingTopic = "warehouse.inbound-receiving.events"
 // ReceiptClosed) are committed past untouched.
 const typeReceiptLineReceived = "com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived"
 
+// typeReceiptCartonReceived is the carton identity event (ADR 0045): it
+// creates or links Containers and never books a quantity.
+const typeReceiptCartonReceived = "com.warehouse.wms.inbound-receiving.receipt.ReceiptCartonReceived"
+
 // receiptLineReceivedData is inbound-receiving's ReceiptLineReceived v1
 // payload. received_at is not needed: StockReceived is stamped by this
 // service's clock, exactly like POST /stock/receive.
@@ -34,12 +39,48 @@ type receiptLineReceivedData struct {
 	SKU       string `json:"sku"`
 	Quantity  int    `json:"quantity"`
 	Condition string `json:"condition"`
+	// The optional pack provenance (ADR 0045). Unknown fields are ignored.
+	OwnerRef string `json:"owner_ref"`
+	PackGTIN string `json:"pack_gtin"`
+	Cases    int    `json:"cases"`
+	SSCC     string `json:"sscc"`
+}
+
+// receiptCartonReceivedData is inbound-receiving's ReceiptCartonReceived v1
+// payload (contract section 2 with R6/R7 applied): snake_case, NO site. The
+// decode is tolerant: fields this service does not know are ignored, and the
+// carton's received_at is not needed.
+type receiptCartonReceivedData struct {
+	ReceiptID  string                 `json:"receipt_id"`
+	ASNNumber  string                 `json:"asn_number"`
+	SSCC       string                 `json:"sscc"`
+	ParentSSCC string                 `json:"parent_sscc"`
+	Sealed     bool                   `json:"sealed"`
+	LPN        string                 `json:"lpn"`
+	OwnerRef   string                 `json:"owner_ref"`
+	Contents   []receiptCartonContent `json:"contents"`
+}
+
+type receiptCartonContent struct {
+	LineNo    int    `json:"line_no"`
+	SKU       string `json:"sku"`
+	GTIN      string `json:"gtin"`
+	Qty       int    `json:"qty"`
+	Lot       string `json:"lot"`
+	Expiry    string `json:"expiry"`
+	Condition string `json:"condition"`
 }
 
 // InboundReceiptBooker is the use-case port the consumer drives, satisfied by
 // *usecases.BookInboundReceiptLine.
 type InboundReceiptBooker interface {
 	Execute(ctx context.Context, l usecases.InboundReceiptLine) (usecases.BookOutcome, error)
+}
+
+// InboundCartonLinker is the use-case port the consumer drives for carton
+// events, satisfied by *usecases.LinkReceiptCarton.
+type InboundCartonLinker interface {
+	Execute(ctx context.Context, c usecases.ReceiptCarton) (usecases.CartonOutcome, usecases.SettleResult, error)
 }
 
 // InboundReceiptConsumer books the Good lines of inbound-receiving's
@@ -51,7 +92,10 @@ type InboundReceiptBooker interface {
 type InboundReceiptConsumer struct {
 	Reader Reader
 	// Book is the handler. Required.
-	Book   InboundReceiptBooker
+	Book InboundReceiptBooker
+	// Carton links ReceiptCartonReceived to Containers (ADR 0045). Optional:
+	// nil commits carton events past untouched.
+	Carton InboundCartonLinker
 	Logger *slog.Logger
 	// Backoff is the wait before retry attempt n; nil means retryBackoff.
 	Backoff func(attempt int) time.Duration
@@ -138,10 +182,16 @@ func (c *InboundReceiptConsumer) Handle(ctx context.Context, msg kafkago.Message
 			"partition", msg.Partition, "offset", msg.Offset, "error", err)
 		return nil
 	}
-	if e.Type() != typeReceiptLineReceived {
-		return nil
+	switch e.Type() {
+	case typeReceiptLineReceived:
+		return c.handleLine(ctx, msg, e)
+	case typeReceiptCartonReceived:
+		return c.handleCarton(ctx, msg, e)
 	}
+	return nil
+}
 
+func (c *InboundReceiptConsumer) handleLine(ctx context.Context, msg kafkago.Message, e event.Event) error {
 	var data receiptLineReceivedData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping inbound-receiving ReceiptLineReceived with undecodable payload",
@@ -157,6 +207,10 @@ func (c *InboundReceiptConsumer) Handle(ctx context.Context, msg kafkago.Message
 		SKU:       data.SKU,
 		Quantity:  data.Quantity,
 		Condition: data.Condition,
+		OwnerRef:  data.OwnerRef,
+		PackGTIN:  data.PackGTIN,
+		Cases:     data.Cases,
+		SSCC:      data.SSCC,
 	})
 	if err != nil {
 		if errors.Is(err, usecases.ErrMalformedInboundReceiptLine) {
@@ -169,6 +223,46 @@ func (c *InboundReceiptConsumer) Handle(ctx context.Context, msg kafkago.Message
 	}
 	c.logOutcome(ctx, e.ID(), data, outcome)
 	return nil
+}
+
+// handleCarton links one ReceiptCartonReceived. It never books quantity.
+func (c *InboundReceiptConsumer) handleCarton(ctx context.Context, msg kafkago.Message, e event.Event) error {
+	if c.Carton == nil {
+		return nil
+	}
+	var data receiptCartonReceivedData
+	if err := e.DataAs(&data); err != nil {
+		c.Logger.WarnContext(ctx, "skipping inbound-receiving ReceiptCartonReceived with undecodable payload",
+			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+		return nil
+	}
+	outcome, settled, err := c.Carton.Execute(ctx, data.carton(e.ID()))
+	if err != nil {
+		if errors.Is(err, usecases.ErrMalformedReceiptCarton) {
+			c.Logger.WarnContext(ctx, "skipping invalid inbound-receiving receipt carton",
+				"id", e.ID(), "receipt_id", data.ReceiptID, "sscc", data.SSCC, "error", err)
+			return nil
+		}
+		return err
+	}
+	c.Logger.InfoContext(ctx, "inbound-receiving receipt carton handled",
+		"id", e.ID(), "receipt_id", data.ReceiptID, "lpn", data.LPN, "outcome", string(outcome),
+		"registered", settled.Registered, "pending", settled.Pending, "rejected", settled.Rejected)
+	return nil
+}
+
+// carton maps the wire payload onto the use case's command.
+func (d receiptCartonReceivedData) carton(eventID string) usecases.ReceiptCarton {
+	contents := make([]usecases.ReceiptCartonContent, 0, len(d.Contents))
+	for _, ct := range d.Contents {
+		contents = append(contents, usecases.ReceiptCartonContent{
+			LineNo: ct.LineNo, SKU: ct.SKU, GTIN: ct.GTIN, Quantity: ct.Qty, Lot: ct.Lot, Expiry: ct.Expiry, Condition: ct.Condition,
+		})
+	}
+	return usecases.ReceiptCarton{
+		EventID: eventID, ReceiptID: d.ReceiptID, ASNNumber: d.ASNNumber, SSCC: d.SSCC, ParentSSCC: d.ParentSSCC,
+		LPN: d.LPN, Sealed: d.Sealed, OwnerRef: d.OwnerRef, Contents: contents,
+	}
 }
 
 // logOutcome logs what the use case did with one settled line. A Damaged line

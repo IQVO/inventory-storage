@@ -5,6 +5,7 @@ import (
 
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
+	"github.com/claudioed/inventory-storage/internal/domain/stock"
 )
 
 // ConfirmPick consumes a reservation: reserved quantity is physically
@@ -22,6 +23,10 @@ type ConfirmPick struct {
 	// emptied, in the same transaction (ADR 0040). Optional: nil means
 	// "not emitted".
 	Levels *BinLevelEmitter
+	// Containers empties the container of a sealed-case unit that a
+	// confirmed whole-case pick removed (ADR 0045). Optional: nil leaves
+	// containers untouched.
+	Containers ports.ContainerRepo
 }
 
 func (uc *ConfirmPick) Execute(ctx context.Context, reservationID string) error {
@@ -83,8 +88,13 @@ func (uc *ConfirmPick) pickFromBin(ctx context.Context, stockUnitID string, qty 
 	if err := uc.Stock.Save(ctx, unit); err != nil {
 		return err
 	}
-	if err := uc.Levels.Track(ctx, shared.BinLevelPick, binID, unit.SKU()); err != nil {
+	if err := uc.Levels.TrackFor(ctx, shared.BinLevelPick, binID, unit.SKU(), unit.OwnerRef()); err != nil {
 		return err
+	}
+	if unit.State() == stock.StateRemoved {
+		if err := emptyContainerOfUnit(ctx, uc.Containers, uc.Events, uc.Clock, unit, shared.ContainerEmptiedPicked); err != nil {
+			return err
+		}
 	}
 
 	bin, err := uc.Locations.FindByID(ctx, binID)

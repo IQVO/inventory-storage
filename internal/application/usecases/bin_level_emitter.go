@@ -36,8 +36,9 @@ type BinLevelEmitter struct {
 }
 
 type levelKey struct {
-	bin shared.BinId
-	sku shared.SKU
+	bin   shared.BinId
+	sku   shared.SKU
+	owner shared.OwnerRef
 }
 
 // levelBatch collects the (bin, sku) pairs one outermost bracket moved, in
@@ -85,16 +86,24 @@ func (e *BinLevelEmitter) Atomically(ctx context.Context, uow ports.UnitOfWork, 
 // called outside one it publishes at once so a change is never silently
 // dropped.
 func (e *BinLevelEmitter) Track(ctx context.Context, reason shared.BinLevelReason, bin shared.BinId, sku shared.SKU) error {
+	return e.TrackFor(ctx, reason, bin, sku, "")
+}
+
+// TrackFor is Track for the share of the (bin, sku) held by owner (ADR 0045):
+// two owners' stock in one bin are two levels with their own versions. An
+// empty owner is fleet-owned stock, whose event is unchanged.
+func (e *BinLevelEmitter) TrackFor(ctx context.Context, reason shared.BinLevelReason, bin shared.BinId, sku shared.SKU, owner shared.OwnerRef) error {
 	if e == nil {
 		return nil
 	}
+	key := levelKey{bin: bin, sku: sku, owner: owner}
 	batch, ok := batchFrom(ctx)
 	if !ok {
 		batch = &levelBatch{reasons: make(map[levelKey]shared.BinLevelReason)}
-		batch.add(reason, levelKey{bin: bin, sku: sku})
+		batch.add(reason, key)
 		return e.flush(ctx, batch)
 	}
-	batch.add(reason, levelKey{bin: bin, sku: sku})
+	batch.add(reason, key)
 	return nil
 }
 
@@ -121,7 +130,7 @@ func (e *BinLevelEmitter) flush(ctx context.Context, batch *levelBatch) error {
 	now := e.Clock.Now()
 	for _, p := range pending {
 		level := levels[p.key]
-		ev := shared.NewBinStockLevelChanged(now, p.site, p.key.bin, p.key.sku, level.OnHand, level.Reserved, level.Version, p.reason)
+		ev := shared.NewBinStockLevelChanged(now, p.site, p.key.bin, p.key.sku, level.OnHand, level.Reserved, level.Version, p.reason).ForOwner(p.key.owner)
 		if err := e.Events.Publish(ctx, ev); err != nil {
 			return err
 		}
@@ -173,11 +182,14 @@ func (e *BinLevelEmitter) advance(ctx context.Context, pending []pendingLevel) (
 		if keys[i].bin != keys[j].bin {
 			return keys[i].bin < keys[j].bin
 		}
-		return keys[i].sku < keys[j].sku
+		if keys[i].sku != keys[j].sku {
+			return keys[i].sku < keys[j].sku
+		}
+		return keys[i].owner < keys[j].owner
 	})
 	levels := make(map[levelKey]shared.BinLevel, len(keys))
 	for _, key := range keys {
-		level, err := e.Ledger.Advance(ctx, key.bin, key.sku)
+		level, err := e.Ledger.Advance(ctx, key.bin, key.sku, key.owner)
 		if err != nil {
 			return nil, err
 		}

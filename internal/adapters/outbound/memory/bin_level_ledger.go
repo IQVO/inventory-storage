@@ -11,8 +11,9 @@ import (
 
 // binSku is the key of one level: a SKU in a bin.
 type binSku struct {
-	bin shared.BinId
-	sku shared.SKU
+	bin   shared.BinId
+	sku   shared.SKU
+	owner shared.OwnerRef
 }
 
 // BinLevelLedger is the in-memory ports.BinLevelLedger: it keeps the
@@ -32,7 +33,7 @@ func NewBinLevelLedger(stock *StockRepo) *BinLevelLedger {
 }
 
 // Advance implements ports.BinLevelLedger.
-func (l *BinLevelLedger) Advance(ctx context.Context, bin shared.BinId, sku shared.SKU) (shared.BinLevel, error) {
+func (l *BinLevelLedger) Advance(ctx context.Context, bin shared.BinId, sku shared.SKU, owner shared.OwnerRef) (shared.BinLevel, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	units, err := l.stock.FindByBin(ctx, bin)
@@ -41,13 +42,13 @@ func (l *BinLevelLedger) Advance(ctx context.Context, bin shared.BinId, sku shar
 	}
 	var level shared.BinLevel
 	for _, unit := range units {
-		if unit.SKU() != sku || unit.State() == stock.StateUnlocated || unit.State() == stock.StateRemoved {
+		if unit.SKU() != sku || unit.OwnerRef() != owner || unit.State() == stock.StateUnlocated || unit.State() == stock.StateRemoved {
 			continue
 		}
 		level.OnHand = level.OnHand.Add(unit.Quantity())
 		level.Reserved = level.Reserved.Add(unit.Reserved())
 	}
-	key := binSku{bin: bin, sku: sku}
+	key := binSku{bin: bin, sku: sku, owner: owner}
 	l.versions[key]++
 	level.Version = l.versions[key]
 	return level, nil

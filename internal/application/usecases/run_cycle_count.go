@@ -32,6 +32,9 @@ type RunCycleCount struct {
 	// units the shortfall marked unlocated, in the count's transaction (ADR
 	// 0040). Optional: nil means "not emitted".
 	Levels *BinLevelEmitter
+	// Containers empties the container of a sealed-case unit the shortfall
+	// marked unlocated (ADR 0045). Optional: nil leaves containers untouched.
+	Containers ports.ContainerRepo
 }
 
 func (uc *RunCycleCount) Execute(ctx context.Context, binID shared.BinId, countedQty shared.Quantity) (CycleCountResult, error) {
@@ -126,7 +129,10 @@ func (uc *RunCycleCount) markShortfallUnlocated(ctx context.Context, binID share
 		if err := uc.Stock.Save(ctx, unit); err != nil {
 			return err
 		}
-		if err := uc.Levels.Track(ctx, shared.BinLevelCount, binID, unit.SKU()); err != nil {
+		if err := uc.Levels.TrackFor(ctx, shared.BinLevelCount, binID, unit.SKU(), unit.OwnerRef()); err != nil {
+			return err
+		}
+		if err := emptyContainerOfUnit(ctx, uc.Containers, uc.Events, uc.Clock, unit, shared.ContainerEmptiedUnlocated); err != nil {
 			return err
 		}
 		if err := uc.Events.Publish(ctx, shared.NewItemUnlocated(now, unit.ID(), unit.SKU(), binID, take)); err != nil {

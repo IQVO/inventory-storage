@@ -1,0 +1,1 @@
+{"title":"Body","body":{"required":true,"content":{"application/json":{"schema":{"type":"object","required":["bin"],"properties":{"bin":{"type":"string","minLength":1,"description":"The case bin to stow into.","example":"WH1-STOR-AMB-A01-01-01-A"}}},"example":{"bin":"WH1-STOR-AMB-A01-01-01-A"}}}}}

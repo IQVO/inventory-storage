@@ -1,0 +1,23 @@
+{
+  "specversion": "1.0",
+  "id": "0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c",
+  "source": "/warehouse/inventory-storage",
+  "type": "com.warehouse.wms.inventory-storage.container.ContainerRegistered",
+  "subject": "003400000000000017",
+  "time": "2026-08-21T22:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:inventory-storage:events:ContainerRegistered:v1",
+  "data": {
+    "lpn": "003400000000000017",
+    "sku": "SKU-1",
+    "gtin": "24006381333935",
+    "units_per_pack": 12,
+    "qty_eaches": 12,
+    "owner_ref": "seller-a",
+    "lot": "L1",
+    "expiry": "2027-03-01",
+    "receipt_id": "R-1",
+    "line_no": 1,
+    "at": "2026-08-21T22:00:00Z"
+  }
+}

@@ -55,7 +55,7 @@ func releaseAllocations(ctx context.Context, stock ports.StockRepo, levels *BinL
 		if err := stock.Save(ctx, unit); err != nil {
 			return err
 		}
-		if err := levels.Track(ctx, shared.BinLevelRevoke, unit.BinID(), unit.SKU()); err != nil {
+		if err := levels.TrackFor(ctx, shared.BinLevelRevoke, unit.BinID(), unit.SKU(), unit.OwnerRef()); err != nil {
 			return err
 		}
 	}

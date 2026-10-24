@@ -1,0 +1,21 @@
+---
+id: containers
+title: "Containers"
+description: "Containers"
+custom_edit_url: null
+---
+
+
+
+Sealed cases with an identity (ADR 0045, 0046). A Container is a case licence plate (LPN, the carton SSCC) created from inbound-receiving's `ReceiptCartonReceived`; it is stowed into a case bin, and broken (`BreakCase`) into loose eaches. The ledger stays in eaches. Quantity is booked once, by `ReceiptLineReceived`, never by a container.
+
+
+
+
+```mdx-code-block
+import DocCardList from '@theme/DocCardList';
+import {useCurrentSidebarCategory} from '@docusaurus/theme-common';
+
+<DocCardList items={useCurrentSidebarCategory().items}/>
+```
+      

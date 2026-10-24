@@ -11,8 +11,10 @@ description: "ADR 0045 — a Container aggregate (SEALED/OPEN/EMPTY, LPN = SSCC 
 
 ## Status
 
-**Proposed** (2026-10-23). Phase 0 of the mastercase / GTIN programme: this is a
-design record, **nothing is built**. The authoritative cross-service contract is
+**Accepted** (2026-10-23, built in Phase 2 of the mastercase / GTIN programme;
+**amended by [ADR 0046](./0046-containers-no-site-on-carton-local-packaging-view.md)**:
+site from the bin, local PackagingView, snake_case wire shapes). Written in
+Phase 0 as a design record. The authoritative cross-service contract is
 `.hermes/plans/mastercase-briefs/contracts.md` in the `warehouse-systems`
 workspace (sections 0, 2 and 3); the plan is
 `.hermes/plans/2026-10-23_225746-mastercase-gtin-handling.md`. Every name below

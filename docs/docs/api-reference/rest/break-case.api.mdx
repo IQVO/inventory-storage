@@ -1,0 +1,72 @@
+---
+id: break-case
+title: "Break a sealed case into loose eaches"
+description: "BreakCase (ADR 0045): the whole sealed case is opened and its eaches move to loose stock of the same owner in `looseBin`. Full-quantity and conserving: exactly `unitsPerPack` eaches leave the SEALED_CASE unit and arrive as loose stock, and the container goes SEALED, OPEN, EMPTY in one transaction, with `CaseBroken` and `ContainerEmptied` in the transactional outbox. A case that is reserved (a `cases` reservation) cannot be broken; a container that is not SEALED and stowed cannot either; `looseBin` must accept loose eaches and be in the container's site."
+sidebar_label: "Break a sealed case into loose eaches"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Break a sealed case into loose eaches"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/containers/{lpn}:break"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+BreakCase (ADR 0045): the whole sealed case is opened and its eaches move to loose stock of the same owner in `looseBin`. Full-quantity and conserving: exactly `unitsPerPack` eaches leave the SEALED_CASE unit and arrive as loose stock, and the container goes SEALED, OPEN, EMPTY in one transaction, with `CaseBroken` and `ContainerEmptied` in the transactional outbox. A case that is reserved (a `cases` reservation) cannot be broken; a container that is not SEALED and stowed cannot either; `looseBin` must accept loose eaches and be in the container's site.
+
+Behind the Idempotency-Key middleware (ADR 0018).
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./break-case.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./break-case.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./break-case.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

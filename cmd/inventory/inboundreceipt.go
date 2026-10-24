@@ -38,13 +38,22 @@ func buildInboundReceiptConsumer(
 	if err != nil {
 		return noopTransferConsumer(), err
 	}
+	processed := postgres.NewProcessedEventRepo(set.pool)
+	linker := set.containerLinker(system.Clock{})
 	book := &usecases.BookInboundReceiptLine{
 		Receive:         &usecases.ReceiveStock{Events: set.publisher, Clock: system.Clock{}, UnitOfWork: set.uow},
-		ProcessedEvents: postgres.NewProcessedEventRepo(set.pool),
+		ProcessedEvents: processed,
 		UnitOfWork:      set.uow,
 		Metrics:         metrics,
+		// The line booking is the bound on containers (ADR 0045): it is stored
+		// and the cartons waiting for it are settled in the same transaction.
+		Bookings: set.bookings,
+		Linker:   linker,
 	}
 	consumer := inboundkafka.NewInboundReceiptConsumer(cfg.kafkaBrokers, cfg.inboundReceiptConsumerGroup, book, logger)
+	// ReceiptCartonReceived rides the same consumer, group and topic: it
+	// creates or links Containers and never books a quantity (ADR 0045).
+	consumer.Carton = &usecases.LinkReceiptCarton{ProcessedEvents: processed, Pending: set.pendingLinks, Linker: linker, UnitOfWork: set.uow}
 	logger.Info("inbound-receiving receipt consumer configured",
 		"topic", inboundkafka.InboundReceivingTopic, "consumer_group", cfg.inboundReceiptConsumerGroup)
 

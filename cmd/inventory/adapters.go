@@ -53,6 +53,22 @@ type adapterSet struct {
 	// binLevels advances and reads the per-(bin, sku) level behind
 	// BinStockLevelChanged (ADR 0040).
 	binLevels ports.BinLevelLedger
+	// containers, pendingLinks, bookings and packaging back the Container
+	// aggregate, the carton pending-link table, the receipt line bookings and
+	// the PackagingView (ADR 0045, 0046).
+	containers   ports.ContainerRepo
+	pendingLinks ports.PendingLinkRepo
+	bookings     ports.ReceiptBookingRepo
+	packaging    *postgres.PackagingViewRepo
+}
+
+// containerLinker builds the linker that turns pending cartons into
+// Containers, over the FINAL publisher. Call it only after buildAdapters.
+func (a adapterSet) containerLinker(clock ports.Clock) *usecases.ContainerLinker {
+	return &usecases.ContainerLinker{
+		Containers: a.containers, Pending: a.pendingLinks, Bookings: a.bookings, Packaging: a.packaging,
+		Events: a.publisher, Clock: clock,
+	}
 }
 
 // levelEmitter builds the BinStockLevelChanged emitter over the adapter set's
@@ -97,6 +113,10 @@ func buildRepos(ctx context.Context, databaseURL, migrationsDatabaseURL, migrati
 		inventoryExceptions: postgres.NewInventoryExceptionRepo(pool),
 		relocations:         postgres.NewRelocationRepo(pool),
 		binLevels:           postgres.NewBinLevelLedger(pool),
+		containers:          postgres.NewContainerRepo(pool),
+		pendingLinks:        postgres.NewPendingLinkRepo(pool),
+		bookings:            postgres.NewReceiptBookingRepo(pool),
+		packaging:           postgres.NewPackagingViewRepo(pool),
 		// UnitOfWork brackets every use case's Save(s) + Publish(es) in
 		// one Postgres transaction (ADR 0017).
 		uow:   postgres.NewUnitOfWork(pool),

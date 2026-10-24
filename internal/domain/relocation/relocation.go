@@ -252,7 +252,7 @@ type draw struct {
 func (r *Relocation) drawPlan(units []*stock.StockUnit) ([]draw, error) {
 	candidates := make([]*stock.StockUnit, 0, len(units))
 	for _, u := range units {
-		if u.SKU() == r.spec.SKU && u.BinID() == r.spec.FromBin && u.Usable().Int() > 0 {
+		if u.SKU() == r.spec.SKU && u.BinID() == r.spec.FromBin && u.Usable().Int() > 0 && u.ReservableBy("") {
 			candidates = append(candidates, u)
 		}
 	}

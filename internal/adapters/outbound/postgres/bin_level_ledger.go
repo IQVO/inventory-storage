@@ -31,15 +31,15 @@ func NewBinLevelLedger(pool *pgxpool.Pool) *BinLevelLedger {
 }
 
 // Advance implements ports.BinLevelLedger.
-func (l *BinLevelLedger) Advance(ctx context.Context, bin shared.BinId, sku shared.SKU) (shared.BinLevel, error) {
+func (l *BinLevelLedger) Advance(ctx context.Context, bin shared.BinId, sku shared.SKU, owner shared.OwnerRef) (shared.BinLevel, error) {
 	q := querierFrom(ctx, l.pool)
 
 	var level shared.BinLevel
 	if err := q.QueryRow(ctx, `
-		INSERT INTO bin_sku_levels (bin_id, sku, version) VALUES ($1, $2, 1)
-		ON CONFLICT (bin_id, sku) DO UPDATE SET version = bin_sku_levels.version + 1, updated_at = now()
+		INSERT INTO bin_sku_levels (bin_id, sku, owner_ref, version) VALUES ($1, $2, $3, 1)
+		ON CONFLICT (bin_id, sku, owner_ref) DO UPDATE SET version = bin_sku_levels.version + 1, updated_at = now()
 		RETURNING version
-	`, bin.String(), sku.String()).Scan(&level.Version); err != nil {
+	`, bin.String(), sku.String(), owner.String()).Scan(&level.Version); err != nil {
 		return shared.BinLevel{}, fmt.Errorf("postgres: bump bin level version: %w", err)
 	}
 
@@ -47,8 +47,8 @@ func (l *BinLevelLedger) Advance(ctx context.Context, bin shared.BinId, sku shar
 	if err := q.QueryRow(ctx, `
 		SELECT COALESCE(SUM(quantity), 0), COALESCE(SUM(reserved), 0)
 		FROM stock_units
-		WHERE bin_id = $1 AND sku = $2 AND state NOT IN ($3, $4)
-	`, bin.String(), sku.String(), string(stock.StateUnlocated), string(stock.StateRemoved)).Scan(&onHand, &reserved); err != nil {
+		WHERE bin_id = $1 AND sku = $2 AND COALESCE(owner_ref, '') = $5 AND state NOT IN ($3, $4)
+	`, bin.String(), sku.String(), string(stock.StateUnlocated), string(stock.StateRemoved), owner.String()).Scan(&onHand, &reserved); err != nil {
 		return shared.BinLevel{}, fmt.Errorf("postgres: read bin level: %w", err)
 	}
 	level.OnHand = shared.Quantity(onHand)
