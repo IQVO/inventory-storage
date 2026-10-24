@@ -1,15 +1,23 @@
 import { defineConfig } from "vitest/config";
+import react from "@vitejs/plugin-react";
 
-// Deliberately standalone rather than mergeConfig(viteConfig, ...): the only
-// tests here are pure unit tests of the runtime endpoint resolver, which need
-// neither the React plugin nor the Module Federation plugin. Importing
-// vite.config.ts would pull both in for no benefit, and the fleet's other
-// remotes have already hit "Cannot merge config in form of callback" doing it.
-//
-// No jsdom either -- src/config.ts guards its window access, so the resolver
-// is exercised in vitest's default node environment.
+// Standalone on purpose: it does NOT import vite.config.ts or mergeConfig it.
+// The Module Federation plugin has nothing to do in a unit test, and a
+// callback-form Vite config cannot be merged ("Cannot merge config in form of
+// callback").
 export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    // @warehouse/ui-kit is consumed via `file:../../warehouse-ui-kit` and has
+    // its own react/react-dom; without dedupe its hooks run against a
+    // SEPARATE React instance than the test tree ("Invalid hook call").
+    dedupe: ["react", "react-dom"],
+  },
   test: {
-    include: ["src/**/*.test.ts"],
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test/setup.ts"],
+    css: false,
+    include: ["src/**/*.test.{ts,tsx}"],
   },
 });
