@@ -21,6 +21,8 @@ var (
 	ErrInsufficientUsable   = errors.New("reserve quantity exceeds usable quantity")
 	ErrInsufficientReserved = errors.New("pick quantity exceeds reserved quantity")
 	ErrUnitUnlocated        = errors.New("stock unit is unlocated")
+	// ErrNotSealedCase: a whole-case operation was attempted on loose stock.
+	ErrNotSealedCase = errors.New("stock unit is not a sealed case")
 )
 
 // StockUnit is the aggregate root binding a SKU to a Bin with a quantity and
@@ -37,6 +39,11 @@ type StockUnit struct {
 	// existed (rehydrated legacy units); such units remain allocatable for
 	// ordinary demand but are NEVER allocatable for site-scoped transfers.
 	siteID shared.SiteID
+	// ownerRef segregates stock by owner (ADR 0045). Empty = fleet-owned,
+	// which is every row that predates owners.
+	ownerRef shared.OwnerRef
+	// packState is LOOSE or SEALED_CASE; the zero value reads as LOOSE.
+	packState PackState
 	// version is optimistic-concurrency infrastructure metadata (ADR
 	// 0019): inert, unexported, carried by the aggregate but never read
 	// or reasoned about by business logic. It exists solely so the repo
@@ -99,12 +106,65 @@ func RehydrateStockUnitAtSite(id string, sku shared.SKU, binID shared.BinId, qty
 	return &StockUnit{id: id, sku: sku, binID: binID, quantity: qty, reserved: reserved, state: state, siteID: siteID, version: version}
 }
 
+// NewLooseUnit stows loose eaches of sku for owner into binID at siteID.
+// owner may be empty (fleet-owned).
+func NewLooseUnit(id string, sku shared.SKU, binID shared.BinId, qty shared.Quantity, siteID shared.SiteID, owner shared.OwnerRef) (*StockUnit, error) {
+	unit, err := NewStockUnitAtSite(id, sku, binID, qty, siteID)
+	if err != nil {
+		return nil, err
+	}
+	unit.ownerRef = owner
+	return unit, nil
+}
+
+// NewSealedCaseUnit creates the unit that stands for one sealed case stowed
+// in binID (ADR 0045): its quantity is the case's eaches and it is never
+// split by a quantity reservation or a relocation.
+func NewSealedCaseUnit(id string, sku shared.SKU, binID shared.BinId, qty shared.Quantity, siteID shared.SiteID, owner shared.OwnerRef) (*StockUnit, error) {
+	unit, err := NewLooseUnit(id, sku, binID, qty, siteID, owner)
+	if err != nil {
+		return nil, err
+	}
+	unit.packState = PackSealedCase
+	return unit, nil
+}
+
+// WithOwnership returns u carrying the persisted owner and pack state. It is
+// used by repositories rehydrating a row; the empty owner is fleet-owned and
+// the empty pack state is LOOSE.
+func (u *StockUnit) WithOwnership(owner shared.OwnerRef, pack PackState) *StockUnit {
+	u.ownerRef = owner
+	u.packState = pack
+	return u
+}
+
 func (u *StockUnit) ID() string                { return u.id }
 func (u *StockUnit) SKU() shared.SKU           { return u.sku }
 func (u *StockUnit) BinID() shared.BinId       { return u.binID }
 func (u *StockUnit) Quantity() shared.Quantity { return u.quantity }
 func (u *StockUnit) Reserved() shared.Quantity { return u.reserved }
 func (u *StockUnit) State() State              { return u.state }
+
+// OwnerRef is the owner this unit's stock belongs to; empty = fleet-owned.
+func (u *StockUnit) OwnerRef() shared.OwnerRef { return u.ownerRef }
+
+// PackState is LOOSE or SEALED_CASE.
+func (u *StockUnit) PackState() PackState {
+	if u.packState == PackSealedCase {
+		return PackSealedCase
+	}
+	return PackLoose
+}
+
+// IsLoose reports whether the unit holds loose eaches.
+func (u *StockUnit) IsLoose() bool { return u.PackState() == PackLoose }
+
+// ReservableBy reports whether a quantity reservation for owner may draw on
+// this unit: same owner (an absent owner matches fleet stock only, never any
+// owner) and loose eaches (a sealed case is only reserved whole).
+func (u *StockUnit) ReservableBy(owner shared.OwnerRef) bool {
+	return u.ownerRef == owner && u.IsLoose()
+}
 
 // SiteID reports this unit's site custody. Empty means "not recorded"
 // (a legacy row persisted before site custody existed).
@@ -150,6 +210,56 @@ func (u *StockUnit) Reserve(qty shared.Quantity) error {
 	}
 	u.reserved = u.reserved.Add(qty)
 	u.state = StateReserved
+	return nil
+}
+
+// ReserveFor is Reserve for a reservation bound to owner. A unit of another
+// owner is rejected with ErrOwnerMismatch: a reservation never spans owners.
+func (u *StockUnit) ReserveFor(owner shared.OwnerRef, qty shared.Quantity) error {
+	if u.ownerRef != owner {
+		return shared.ErrOwnerMismatch
+	}
+	return u.Reserve(qty)
+}
+
+// ReserveWhole binds the entire quantity of a sealed-case unit to demand. It
+// fails with ErrInsufficientUsable when any part is already reserved, so a
+// case is never partially allocated.
+func (u *StockUnit) ReserveWhole(owner shared.OwnerRef) error {
+	if u.PackState() != PackSealedCase {
+		return ErrNotSealedCase
+	}
+	if u.Usable() != u.quantity || u.quantity.Int() == 0 {
+		return ErrInsufficientUsable
+	}
+	return u.ReserveFor(owner, u.quantity)
+}
+
+// AddQuantity puts qty more eaches into a present loose unit (the loose side
+// of a case break). A removed or unlocated unit cannot take stock.
+func (u *StockUnit) AddQuantity(qty shared.Quantity) error {
+	if qty.Int() <= 0 {
+		return shared.ErrZeroQuantity
+	}
+	if u.state == StateUnlocated || u.state == StateRemoved {
+		return ErrUnitUnlocated
+	}
+	u.quantity = u.quantity.Add(qty)
+	return nil
+}
+
+// MoveTo re-locates a whole sealed-case unit into binID at siteID (a
+// re-stow of its container). Reserved quantity never moves: the reservation
+// names this unit's current pick location.
+func (u *StockUnit) MoveTo(binID shared.BinId, siteID shared.SiteID) error {
+	if u.reserved.Int() > 0 {
+		return ErrInsufficientUsable
+	}
+	if u.state == StateUnlocated || u.state == StateRemoved {
+		return ErrUnitUnlocated
+	}
+	u.binID = binID
+	u.siteID = siteID
 	return nil
 }
 
