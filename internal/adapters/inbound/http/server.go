@@ -51,6 +51,14 @@ type Server struct {
 	RelocateStock *usecases.RelocateStock
 	// GetRelocation backs GET /relocations/{id}.
 	GetRelocation *usecases.GetRelocation
+	// StowContainer, BreakCase, GetContainer and ListBinContainers back the
+	// container endpoints (ADR 0045); ReserveFullCases serves POST
+	// /reservations when the body asks for whole cases.
+	StowContainer     *usecases.StowContainer
+	BreakCase         *usecases.BreakCase
+	GetContainer      *usecases.GetContainer
+	ListBinContainers *usecases.ListBinContainers
+	ReserveFullCases  *usecases.ReserveFullCases
 	// Classifications backs the deprecated read-only GET endpoint: the
 	// local copy of product-master's classifications (ADR 0034). There is
 	// no dedicated use case because the read is a direct, no-invariant
@@ -190,6 +198,22 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	}
 	r.Get("/relocations/{id}", s.handleGetRelocation)
 
+	// Containers (ADR 0045). The custom-method suffix is part of the path
+	// ("/containers/{lpn}:stow"); an LPN is [A-Za-z0-9._-] so it never holds
+	// a colon. Stow and break act on a caller-supplied lpn and are naturally
+	// idempotent (a repeat stow is a no-op, a repeat break is 409); the
+	// Idempotency-Key middleware (ADR 0018) is defence in depth that also
+	// replays the original response.
+	if s.IdempotencyPool != nil {
+		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/containers/{lpn}:stow", s.handleStowContainer)
+		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/containers/{lpn}:break", s.handleBreakCase)
+	} else {
+		r.Post("/containers/{lpn}:stow", s.handleStowContainer)
+		r.Post("/containers/{lpn}:break", s.handleBreakCase)
+	}
+	r.Get("/containers/{lpn}", s.handleGetContainer)
+	r.Get("/bins/{binId}/containers", s.handleListBinContainers)
+
 	return r
 }
 
@@ -298,9 +322,13 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	qty, err := shared.NewPositiveQuantity(req.Quantity)
+	owner, err := shared.NewOwnerRef(req.OwnerRef)
 	if err != nil {
 		writeError(w, r, err)
+		return
+	}
+	if req.Cases != nil && req.Quantity != 0 {
+		writeProblem(w, http.StatusBadRequest, problemInfo{"quantity-and-cases-exclusive", "quantity and cases are mutually exclusive"}, "send either quantity (eaches) or cases (whole sealed cases), not both", r.URL.Path)
 		return
 	}
 
@@ -319,7 +347,7 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.ReserveStock.ExecuteForLine(r.Context(), sku, qty, req.DemandRef, req.LineNo)
+	res, err := s.reserve(r, req, sku, owner)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -327,6 +355,23 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Location", "/reservations/"+res.ID())
 	writeJSON(w, http.StatusCreated, toReservationResponse(res))
+}
+
+// reserve runs the quantity reservation, or the whole-case one when the body
+// carries `cases` (ADR 0045).
+func (s *Server) reserve(r *http.Request, req reserveStockRequest, sku shared.SKU, owner shared.OwnerRef) (*reservation.Reservation, error) {
+	if req.Cases != nil {
+		return s.ReserveFullCases.Execute(r.Context(), usecases.ReserveFullCasesCommand{
+			SKU: sku, Cases: *req.Cases, DemandRef: req.DemandRef, LineNo: req.LineNo, OwnerRef: owner,
+		})
+	}
+	qty, err := shared.NewPositiveQuantity(req.Quantity)
+	if err != nil {
+		return nil, err
+	}
+	return s.ReserveStock.ExecuteFor(r.Context(), usecases.ReserveRequest{
+		SKU: sku, Quantity: qty, DemandRef: req.DemandRef, LineNo: req.LineNo, OwnerRef: owner,
+	})
 }
 
 func (s *Server) handleRevokeReservation(w http.ResponseWriter, r *http.Request) {
@@ -379,13 +424,22 @@ func (s *Server) handleGetUsable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	usable, err := s.GetUsable.Execute(r.Context(), sku)
+	owner, err := shared.NewOwnerRef(r.URL.Query().Get("ownerRef"))
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, usableInventoryResponse{SKU: usable.SKU.String(), Usable: usable.Usable.Int()})
+	usable, err := s.GetUsable.ExecuteFor(r.Context(), sku, owner)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, usableInventoryResponse{
+		SKU: usable.SKU.String(), OwnerRef: usable.OwnerRef.String(), Usable: usable.Usable.Int(),
+		LooseUsable: usable.LooseUsable.Int(), ReservableCases: usable.ReservableCases,
+	})
 }
 
 func (s *Server) handleRunCycleCount(w http.ResponseWriter, r *http.Request) {
@@ -512,6 +566,7 @@ func toReservationResponse(res *reservation.Reservation) reservationResponse {
 		SKU:         res.SKU().String(),
 		Quantity:    res.Quantity().Int(),
 		DemandRef:   res.DemandRef(),
+		OwnerRef:    res.OwnerRef().String(),
 		LineNo:      res.LineNo(),
 		Status:      string(res.Status()),
 		Allocations: allocations,

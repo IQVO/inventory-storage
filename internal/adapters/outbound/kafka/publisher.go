@@ -170,6 +170,9 @@ type binStockLevelChangedData struct {
 	Version    int64     `json:"version"`
 	Reason     string    `json:"reason"`
 	OccurredAt time.Time `json:"occurred_at"`
+	// OwnerRef is present only for owner-segregated stock (ADR 0045); absent
+	// means fleet-owned stock and the payload is byte-identical to v1 without it.
+	OwnerRef string `json:"owner_ref,omitempty"`
 }
 
 func newBinStockLevelChangedData(e shared.BinStockLevelChanged) binStockLevelChangedData {
@@ -182,6 +185,7 @@ func newBinStockLevelChangedData(e shared.BinStockLevelChanged) binStockLevelCha
 		Version:    e.Version,
 		Reason:     string(e.Reason),
 		OccurredAt: e.OccurredAt().UTC(),
+		OwnerRef:   e.OwnerRef.String(),
 	}
 }
 
@@ -242,7 +246,8 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 		shared.TransferStockAllocated, shared.TransferStockAllocationRejected,
 		shared.TransferReceiptStaged, shared.TransferStockStowed,
 		shared.StockRelocated, shared.BinStockLevelChanged,
-		shared.DiscrepancyDetected, shared.ItemUnlocated, shared.ItemStowed:
+		shared.DiscrepancyDetected, shared.ItemUnlocated, shared.ItemStowed,
+		shared.ContainerRegistered, shared.ContainerStowed, shared.CaseBroken, shared.ContainerEmptied:
 		return true
 	default:
 		return false
@@ -412,7 +417,7 @@ func encodeEvent(ctx context.Context, p *Publisher, event shared.DomainEvent) (d
 func encodeLevelEvent(event shared.DomainEvent) (data any, key, entity string, err error) {
 	e, ok := event.(shared.BinStockLevelChanged)
 	if !ok {
-		return nil, "", "", nil
+		return encodeContainerEvent(event)
 	}
 	return newBinStockLevelChangedData(e), binLevelKey(e), stockEntity, nil
 }

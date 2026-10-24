@@ -13,26 +13,42 @@ func buildServer(
 	a adapterSet,
 	clock ports.Clock,
 	locationLookup ports.LocationClassificationLookup,
+	handlingUnits ports.BinHandlingUnitLookup,
 	reservationMetrics ports.ReservationMetrics,
 	readiness *inboundhttp.Readiness,
 ) *inboundhttp.Server {
 	stockRepo, locationRepo, reservationRepo, classificationRepo := a.stock, a.locations, a.reservations, a.classifications
 	publisher, uow := a.publisher, a.uow
 	levels := a.levelEmitter(clock)
+	reserve := &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow, Levels: levels}
+	// placement applies the hazmat, temperature and segregation rules of a
+	// plain stow to container stows and case breaks.
+	placement := &usecases.StowStock{Stock: stockRepo, Classifications: classificationRepo, LocationLookup: locationLookup}
 	return &inboundhttp.Server{
 		ReceiveStock: &usecases.ReceiveStock{Events: publisher, Clock: clock, UnitOfWork: uow},
 		StowStock: &usecases.StowStock{
 			Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
 			Classifications: classificationRepo, LocationLookup: locationLookup, UnitOfWork: uow, Levels: levels,
 		},
-		ReserveStock:               &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow, Levels: levels},
+		ReserveStock:               reserve,
 		RevokeReservation:          &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow, Levels: levels},
-		ConfirmPick:                &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow, Levels: levels},
+		ConfirmPick:                &usecases.ConfirmPick{Stock: stockRepo, Locations: locationRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow, Levels: levels, Containers: a.containers},
 		GetUsable:                  &usecases.GetUsable{Stock: stockRepo},
 		GetReservationsByDemandRef: &usecases.GetReservationsByDemandRef{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow, Levels: levels},
-		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock, UnitOfWork: uow, Levels: levels},
-		RegisterBin:                &usecases.RegisterBin{Locations: locationRepo, UnitOfWork: uow},
-		GetBin:                     &usecases.GetBin{Locations: locationRepo},
+		RunCycleCount:              &usecases.RunCycleCount{Stock: stockRepo, Events: publisher, Clock: clock, UnitOfWork: uow, Levels: levels, Containers: a.containers},
+		StowContainer: &usecases.StowContainer{
+			Containers: a.containers, Stock: stockRepo, Locations: locationRepo, HandlingUnits: handlingUnits,
+			Events: publisher, Clock: clock, Placement: placement, UnitOfWork: uow, Levels: levels,
+		},
+		BreakCase: &usecases.BreakCase{
+			Containers: a.containers, Stock: stockRepo, Locations: locationRepo, HandlingUnits: handlingUnits,
+			Events: publisher, Clock: clock, Placement: placement, UnitOfWork: uow, Levels: levels,
+		},
+		GetContainer:      &usecases.GetContainer{Containers: a.containers},
+		ListBinContainers: &usecases.ListBinContainers{Containers: a.containers, Locations: locationRepo},
+		ReserveFullCases:  &usecases.ReserveFullCases{Reserve: reserve, Containers: a.containers},
+		RegisterBin:       &usecases.RegisterBin{Locations: locationRepo, UnitOfWork: uow},
+		GetBin:            &usecases.GetBin{Locations: locationRepo},
 		StageTransferReceipt: &usecases.StageTransferReceipt{
 			Transfers:  a.transfers,
 			Receipts:   a.transferReceipts,

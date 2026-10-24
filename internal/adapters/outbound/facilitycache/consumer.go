@@ -48,6 +48,7 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
+	"github.com/claudioed/inventory-storage/internal/domain/container"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
@@ -104,6 +105,10 @@ type zoneData struct {
 type slotData struct {
 	LocationCode string `json:"locationCode"`
 	ZoneID       string `json:"zoneId"`
+	// HandlingUnit is the optional handling unit the bin accepts (EACH, CASE
+	// or PALLET), once facility-layout publishes the attribute (ADR 0045
+	// section 4). Absent means "not recorded".
+	HandlingUnit string `json:"handlingUnit"`
 }
 
 // Reader is the subset of *kafkago.Reader this Consumer needs, so tests
@@ -154,6 +159,9 @@ type Consumer struct {
 	mu    sync.RWMutex
 	zones map[string]product.SlotAttributes
 	slots map[string]string // locationCode -> zoneID
+	// handlingUnits is the event-fed copy of each bin's handling unit
+	// (locationCode -> unit). A bin absent from it has none recorded.
+	handlingUnits map[string]container.HandlingUnit
 
 	ready   bool
 	readyCh chan struct{}
@@ -500,6 +508,7 @@ func (c *Consumer) apply(value []byte) error {
 		}
 		c.mu.Lock()
 		delete(c.slots, data.LocationCode)
+		delete(c.handlingUnits, data.LocationCode)
 		c.mu.Unlock()
 	default:
 		// Every other event on this topic (SiteRegistered, AisleRegistered,
@@ -553,8 +562,32 @@ func (c *Consumer) applySlotRegistered(dataAs func(any) error) error {
 	}
 	c.mu.Lock()
 	c.slots[data.LocationCode] = zoneID
+	c.setHandlingUnit(data.LocationCode, container.ParseHandlingUnit(data.HandlingUnit))
 	c.mu.Unlock()
 	return nil
+}
+
+// setHandlingUnit records (or clears) a bin's handling unit. The caller holds
+// c.mu. A registration that carries none clears a stale value.
+func (c *Consumer) setHandlingUnit(code string, hu container.HandlingUnit) {
+	if hu == container.HandlingUnknown {
+		delete(c.handlingUnits, code)
+		return
+	}
+	if c.handlingUnits == nil {
+		c.handlingUnits = make(map[string]container.HandlingUnit)
+	}
+	c.handlingUnits[code] = hu
+}
+
+// HandlingUnit satisfies ports.BinHandlingUnitLookup from the local copy. It
+// never performs I/O. A bin with no recorded handling unit (every bin before
+// facility-layout ships the attribute, or an unknown bin) answers
+// HandlingUnknown, which fails closed for a sealed case.
+func (c *Consumer) HandlingUnit(_ context.Context, bin shared.BinId) (container.HandlingUnit, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.handlingUnits[bin.String()], nil
 }
 
 // zoneIDFromLocationCode mirrors facility-layout's LocationCode.ZoneID():

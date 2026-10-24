@@ -1,0 +1,19 @@
+{
+  "specversion": "1.0",
+  "id": "0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c",
+  "source": "/warehouse/inventory-storage",
+  "type": "com.warehouse.wms.inventory-storage.container.CaseBroken",
+  "subject": "003400000000000017",
+  "time": "2026-08-21T22:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:inventory-storage:events:CaseBroken:v1",
+  "data": {
+    "lpn": "003400000000000017",
+    "sku": "SKU-1",
+    "qty_eaches": 12,
+    "owner_ref": "seller-a",
+    "from_bin": "WH1-STOR-AMB-A01-01-01-A",
+    "loose_bin": "WH1-STOR-AMB-A01-01-02-A",
+    "at": "2026-08-21T22:00:00Z"
+  }
+}
