@@ -138,6 +138,7 @@ const sidebars: SidebarsConfig = {
         'adr/0043-promote-exception-facts-to-integration-topic',
         'adr/0044-consume-return-line-staged',
         'adr/0045-container-lpn-sealed-cases-breakcase-owner-segregated-stock',
+        'adr/0046-containers-no-site-on-carton-local-packaging-view',
       ],
     },
   ],

@@ -1,0 +1,1 @@
+{"parameters":[{"name":"lpn","in":"path","required":true,"description":"The container's license plate (the carton SSCC, or an internal `LPN-<site>-<id>`).","schema":{"type":"string","example":"003400000000000017"}}]}

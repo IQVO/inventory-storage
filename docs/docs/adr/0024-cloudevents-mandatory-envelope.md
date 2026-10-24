@@ -87,7 +87,7 @@ published as a new event, never a mutation of the old one.
 ### This service's types
 
 Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
-`stock` (StockUnit), `reservation`, `bin`.
+`stock` (StockUnit), `reservation`, `bin`, `container` (ADR 0045, 0046).
 
 | topic | `type` | `subject` |
 | --- | --- | --- |
@@ -98,6 +98,10 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged` (ADR 0040) | `<bin>:<sku>` |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.ContainerRegistered` (ADR 0046) | LPN |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.ContainerStowed` (ADR 0046) | LPN |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.CaseBroken` (ADR 0046) | LPN |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.ContainerEmptied` (ADR 0046) | LPN |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.StockReceived` | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | stock unit id |

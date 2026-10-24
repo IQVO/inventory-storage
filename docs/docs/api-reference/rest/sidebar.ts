@@ -42,6 +42,40 @@ const sidebar: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Containers",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/containers",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/get-container",
+          label: "Read one container",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/stow-container",
+          label: "Stow a sealed case into a case bin",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/break-case",
+          label: "Break a sealed case into loose eaches",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/list-bin-containers",
+          label: "List the containers stowed in a bin",
+          className: "api-method get",
+        },
+      ],
+    },
+    {
+      type: "category",
       label: "Reservations",
       link: {
         type: "doc",
