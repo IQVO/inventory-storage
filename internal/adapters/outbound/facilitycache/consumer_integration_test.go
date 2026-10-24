@@ -15,6 +15,7 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/facilitycache"
+	"github.com/claudioed/inventory-storage/internal/domain/container"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/testsupport/kafkatc"
@@ -545,4 +546,69 @@ func headerValue(headers []kafkago.Header, key string) string {
 		}
 	}
 	return ""
+}
+
+// handlingUnit reads the consumer's event-fed handling unit for a bin.
+func handlingUnit(t *testing.T, c *facilitycache.Consumer, binID string) container.HandlingUnit {
+	t.Helper()
+	id, err := shared.NewBinId(binID)
+	if err != nil {
+		t.Fatalf("NewBinId(%q): %v", binID, err)
+	}
+	hu, err := c.HandlingUnit(context.Background(), id)
+	if err != nil {
+		t.Fatalf("HandlingUnit: %v", err)
+	}
+	return hu
+}
+
+func waitHandlingUnit(t *testing.T, c *facilitycache.Consumer, binID string, want container.HandlingUnit) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if handlingUnit(t, c, binID) == want {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("handling unit of %s = %q, want %q", binID, handlingUnit(t, c, binID), want)
+}
+
+// A real LocationSlotRegistered carrying the optional handlingUnit and a real
+// LocationSlotHandlingUnitDeclared, both as CloudEvents over real Kafka,
+// reach the event-fed copy: registration without a unit is none (a sealed
+// case fails closed), the declaration makes it CASE, a later one changes it.
+func TestHandlingUnitFromRegisteredAndDeclaredOverRealKafka(t *testing.T) {
+	brokerList := startBroker(t)
+	topic := uniqueTopic(t)
+	createTopic(t, brokerList, topic)
+	const bare, withUnit = "WH1-STOR-AMB-A07-03-02-B", "WH1-STOR-AMB-A07-03-02-C"
+	declared := func(code, unit string) kafkago.Message {
+		return kafkago.Message{Key: []byte(code), Value: envelopeBytes(t, "locationslot", "LocationSlotHandlingUnitDeclared", map[string]any{
+			"locationCode": code, "handlingUnit": unit, "declaredAt": "2026-10-24T12:00:00Z",
+		})}
+	}
+	publish(t, brokerList, topic,
+		slotMsg(t, bare, "WH1-STOR-AMB"),
+		kafkago.Message{Key: []byte(withUnit), Value: envelopeBytes(t, "locationslot", "LocationSlotRegistered", map[string]any{
+			"locationCode": withUnit, "zoneId": "WH1-STOR-AMB", "handlingUnit": "PALLET",
+		})},
+	)
+
+	c := newConsumerOnTopic(t, brokerList, topic)
+	defer func() { _ = c.Close() }()
+	runInBackground(t, c)
+	waitReady(t, c, facilitycache.WaitReadyTimeout)
+
+	if got := handlingUnit(t, c, bare); got != container.HandlingUnknown {
+		t.Fatalf("a bin registered without a unit = %q, want none", got)
+	}
+	if got := handlingUnit(t, c, withUnit); got != container.HandlingPallet {
+		t.Fatalf("a bin registered with PALLET = %q", got)
+	}
+
+	publish(t, brokerList, topic, declared(bare, "CASE"))
+	waitHandlingUnit(t, c, bare, container.HandlingCase)
+	publish(t, brokerList, topic, declared(bare, "EACH"))
+	waitHandlingUnit(t, c, bare, container.HandlingEach)
 }

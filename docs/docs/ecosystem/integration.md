@@ -20,7 +20,7 @@ each edge behaves when the other side fails, as implemented here.
 
 | Upstream | Protocol and contract | Switch here | When it fails |
 | --- | --- | --- | --- |
-| facility-layout | Kafka `warehouse.facility.events` (`ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned`) → in-process location cache | `LOCATION_LOOKUP_MODE=kafka` | Startup blocks up to 60 s for the replay and fails if it does not finish; malformed facts go to `warehouse.facility.events.dlq`; an empty cache answers `Known=false` (stow allowed, fail-open). |
+| facility-layout | Kafka `warehouse.facility.events` (`ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotHandlingUnitDeclared`, `LocationSlotDecommissioned`) → in-process location cache | `LOCATION_LOOKUP_MODE=kafka` | Startup blocks up to 60 s for the replay and fails if it does not finish; malformed facts go to `warehouse.facility.events.dlq`; an empty cache answers `Known=false` (stow allowed, fail-open). |
 | facility-layout | REST `GET /locations/{locationCode}/classification` | `LOCATION_LOOKUP_MODE=http` + `FACILITY_LAYOUT_BASE_URL` | 3 attempts per call inside a circuit breaker; an open breaker falls back to permissive (fail-open); a plain error blocks only hazmat / temperature-sensitive SKUs (`409 location-classification-unavailable`). |
 | product-master | Kafka `warehouse.product-master.events`, `ProductClassified` → `product_classifications` | `PRODUCT_MASTER_CONSUMER_GROUP` (mandatory) | Transient errors retry the same message without limit; poison is logged and skipped. While the consumer is behind, stows use the last local copy (or none). |
 | network-inventory-planning | Kafka `warehouse.network-inventory-planning.events`, `TransferAllocationRequested` (command) | `TRANSFER_ALLOCATION_CONSUMER_GROUP` (mandatory) | Same retry rule; replies (`TransferStockAllocated` / `...Rejected`) are only sent once the command is handled. |
@@ -83,6 +83,7 @@ strings ([ADR-0024](../adr/0024-cloudevents-mandatory-envelope.md)):
 
 - `com.warehouse.wms.facility-layout.zone.ZoneRegistered`
 - `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`
+- `com.warehouse.wms.facility-layout.locationslot.LocationSlotHandlingUnitDeclared` (the bin handling unit, ADR 0047)
 - `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned`
 
 Any other type is ignored; a message that is not a valid CloudEvent (e.g. the

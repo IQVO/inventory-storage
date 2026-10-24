@@ -90,6 +90,9 @@ const (
 	typeZoneRegistered             = "com.warehouse.wms.facility-layout.zone.ZoneRegistered"
 	typeLocationSlotRegistered     = "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered"
 	typeLocationSlotDecommissioned = "com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned"
+	// typeLocationSlotHandlingUnitDeclared sets or changes a bin's handling
+	// unit after registration (facility-layout ADR 0040; this repo's ADR 0047).
+	typeLocationSlotHandlingUnitDeclared = "com.warehouse.wms.facility-layout.locationslot.LocationSlotHandlingUnitDeclared"
 )
 
 // zoneData is facility-layout's ZoneRegistered payload. Only the
@@ -100,14 +103,17 @@ type zoneData struct {
 	Hazmat           bool   `json:"hazmat"`
 }
 
-// slotData is facility-layout's LocationSlot{Registered,Decommissioned}
-// payload.
+// slotData is facility-layout's LocationSlot{Registered,Decommissioned,
+// HandlingUnitDeclared} payload. Unknown fields (declaredAt, role, ...) are
+// ignored by encoding/json, so additive evolution on their side is harmless.
 type slotData struct {
 	LocationCode string `json:"locationCode"`
 	ZoneID       string `json:"zoneId"`
 	// HandlingUnit is the optional handling unit the bin accepts (EACH, CASE
-	// or PALLET), once facility-layout publishes the attribute (ADR 0045
-	// section 4). Absent means "not recorded".
+	// or PALLET), published by facility-layout on LocationSlotRegistered
+	// (omitted when none was recorded) and always present on
+	// LocationSlotHandlingUnitDeclared (ADR 0047). Wire name: camelCase,
+	// like every other facility-layout slot field.
 	HandlingUnit string `json:"handlingUnit"`
 }
 
@@ -501,6 +507,8 @@ func (c *Consumer) apply(value []byte) error {
 		return c.applyZoneRegistered(e.DataAs)
 	case typeLocationSlotRegistered:
 		return c.applySlotRegistered(e.DataAs)
+	case typeLocationSlotHandlingUnitDeclared:
+		return c.applyHandlingUnitDeclared(e.DataAs)
 	case typeLocationSlotDecommissioned:
 		var data slotData
 		if err := e.DataAs(&data); err != nil {
@@ -562,6 +570,26 @@ func (c *Consumer) applySlotRegistered(dataAs func(any) error) error {
 	}
 	c.mu.Lock()
 	c.slots[data.LocationCode] = zoneID
+	c.setHandlingUnit(data.LocationCode, container.ParseHandlingUnit(data.HandlingUnit))
+	c.mu.Unlock()
+	return nil
+}
+
+// applyHandlingUnitDeclared updates a bin's handling unit from a
+// LocationSlotHandlingUnitDeclared event. It is an idempotent last-write-wins
+// upsert on the bin's code, so a redelivery re-applies harmlessly. A value
+// that is not EACH/CASE/PALLET is stored as "none recorded", the fail-closed
+// answer for a sealed case (the same reading ParseHandlingUnit gives a
+// registration), rather than poisoning the partition.
+func (c *Consumer) applyHandlingUnitDeclared(dataAs func(any) error) error {
+	var data slotData
+	if err := dataAs(&data); err != nil {
+		return fmt.Errorf("facilitycache: decode %s: %w", typeLocationSlotHandlingUnitDeclared, err)
+	}
+	if data.LocationCode == "" {
+		return fmt.Errorf("facilitycache: %s with empty locationCode", typeLocationSlotHandlingUnitDeclared)
+	}
+	c.mu.Lock()
 	c.setHandlingUnit(data.LocationCode, container.ParseHandlingUnit(data.HandlingUnit))
 	c.mu.Unlock()
 	return nil

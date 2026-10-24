@@ -561,7 +561,7 @@ validates no location at all):
 
 | Mode | Behaviour |
 | --- | --- |
-| `kafka` | `internal/adapters/outbound/facilitycache` replays `warehouse.facility.events` (`ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned`) from the earliest offset into an in-process cache, under a per-process consumer group, and startup blocks until that replay completes (60s timeout). Uses `KAFKA_BROKERS`. This is what the `warehouse-infra` cluster runs (ADR-0013). |
+| `kafka` | `internal/adapters/outbound/facilitycache` replays `warehouse.facility.events` (`ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotHandlingUnitDeclared`, `LocationSlotDecommissioned`) from the earliest offset into an in-process cache, under a per-process consumer group, and startup blocks until that replay completes (60s timeout). Uses `KAFKA_BROKERS`. This is what the `warehouse-infra` cluster runs (ADR-0013). |
 | `http` | Synchronous `GET /locations/{code}/classification` on facility-layout per stow, via `FACILITY_LAYOUT_BASE_URL` (required in this mode). Kept as the rollback for `kafka`; this REST edge to a sibling context is deliberately out of scope of ADR-0042. |
 
 The same-bin DOT hazard-class segregation check (ADR-0010) needs no lookup —

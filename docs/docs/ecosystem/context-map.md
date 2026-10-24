@@ -41,7 +41,7 @@ flowchart LR
     OA["warehouse-ops-agent<br/>console BFF + agent"]
     WM["workforce-management<br/>Supporting"]
 
-    FL -->|"U OHS+PL to D CF<br/>Kafka warehouse.facility.events<br/>ZoneRegistered, LocationSlotRegistered,<br/>LocationSlotDecommissioned · LIVE"| INV
+    FL -->|"U OHS+PL to D CF<br/>Kafka warehouse.facility.events<br/>ZoneRegistered, LocationSlotRegistered,<br/>LocationSlotHandlingUnitDeclared,<br/>LocationSlotDecommissioned · LIVE"| INV
     FL -.->|"U OHS to D ACL<br/>REST GET /locations/code/classification<br/>LOCATION_LOOKUP_MODE=http · WIRED, UNUSED"| INV
     PM -->|"U OHS+PL to D CF<br/>Kafka warehouse.product-master.events<br/>ProductClassified to local copy · LIVE, ADR 0034"| INV
     INV -->|"U OHS+PL to D CF<br/>Kafka warehouse.inventory.events<br/>StockReserved, ReservationRevoked · LIVE"| WP

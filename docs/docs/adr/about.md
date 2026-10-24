@@ -102,8 +102,9 @@ Typos, broken links and formatting are of course fair game.
 | [0042](./0042-postgres-and-kafka-are-the-only-runtime.md) | Postgres and Kafka are the only runtime: no in-memory mode, log publisher or permissive lookup; the relay and all four consumers are always on; a dead consumer ends the process; `/readyz` checks Postgres and Kafka | Accepted |
 | [0043](./0043-promote-exception-facts-to-integration-topic.md) | Promote `DiscrepancyDetected`, `ItemUnlocated` and `ItemStowed` to `warehouse.inventory.events` with byte-identical data, for exception-management and returns-processing | Accepted |
 | [0044](./0044-consume-return-line-staged.md) | Consume returns-processing's `ReturnLineStaged` through the same staged-receipt use case | Accepted |
-| [0045](./0045-container-lpn-sealed-cases-breakcase-owner-segregated-stock.md) | Container (LPN), sealed cases and `BreakCase`; stock and reservations segregated by `ownerRef` | Accepted (amended by 0046) |
+| [0045](./0045-container-lpn-sealed-cases-breakcase-owner-segregated-stock.md) | Container (LPN), sealed cases and `BreakCase`; stock and reservations segregated by `ownerRef` | Accepted (amended by 0046, 0047 s4) |
 | [0046](./0046-containers-no-site-on-carton-local-packaging-view.md) | Containers as built: the container site comes from the bin (no `site_id` on the carton), a local PackagingView of product-master pack levels, snake_case wire shapes, per-owner `BinStockLevelChanged` versions (amends 0045) | Accepted |
+| [0047](./0047-bin-handling-unit-declared-event.md) | The bin handling unit arrives on `LocationSlotRegistered` (optional `handlingUnit`) and the new `LocationSlotHandlingUnitDeclared`; the facility cache reads both; amends 0045 section 4 (fail-closed unchanged) | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

@@ -141,6 +141,7 @@ product-master ADR 0003 stage E.
 2. Dispatch on the **full** `type`, byte-identical to the publisher. Unknown
    types are ignored. This service consumes:
    - `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`
+   - `com.warehouse.wms.facility-layout.locationslot.LocationSlotHandlingUnitDeclared` (ADR 0047)
    - `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned`
    - `com.warehouse.wms.facility-layout.zone.ZoneRegistered`
    - `com.warehouse.wms.product-master.product.ProductClassified` (topic
@@ -165,6 +166,7 @@ These strings must be byte-identical on both sides:
 
 ```text
 com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered       -> inventory-storage
+com.warehouse.wms.facility-layout.locationslot.LocationSlotHandlingUnitDeclared  -> inventory-storage
 com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned   -> inventory-storage
 com.warehouse.wms.facility-layout.zone.ZoneRegistered                       -> inventory-storage
 com.warehouse.wms.product-master.product.ProductClassified                  -> inventory-storage (ADR 0034)
