@@ -846,6 +846,23 @@ They also run as the `bdd` job in CI.
 `web/` is `inventory_mfe`, this context's Module Federation remote. It talks only to
 this service's own REST API and is never part of `make check`.
 
+**Screens** (mounted by the console at `/inventory/*`; no console change is needed, the
+`/inventory` remote is already registered):
+
+| Route | Screen |
+|---|---|
+| `/inventory` | usable inventory by SKU, reservations by demand ref |
+| `/inventory/containers?lpn=<lpn>` | **Container lookup** (ADR 0045): scan or type a carton SSCC / LPN and read `GET /containers/{lpn}` as a card: state badge (SEALED / OPEN / EMPTY), SKU, case GTIN, units per pack, quantity in eaches, bin, site, owner / seller (`Fleet-owned` when `ownerRef` is null or omitted), lot, expiry and a link to the receipt line in Inbound receiving |
+
+The container screen is read-only: breaking and reserving cases belong to the floor client.
+Failures are keyed by problem code with what / what-to-do copy (`container-not-found` for a
+404; an LPN outside `^[A-Za-z0-9._-]{1,64}$` is rejected before any request; 500 and network
+failures have their own copy). The service keeps no break history read model yet: a broken case
+shows as `EMPTY` with no bin, and the `CaseBroken` event is the only record of the break.
+
+Web checks, all run by the CI `web` job: `npm run lint`, `npm run typecheck`, `npm test`
+(Vitest + Testing Library on jsdom), `npm run build`.
+
 **Standalone development** is unchanged:
 
 ```bash
