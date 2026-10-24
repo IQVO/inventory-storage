@@ -279,6 +279,26 @@ channels:
           - $ref: "#/components/messages/ProductMasterProductPackLevelDeclared"
           - $ref: "#/components/messages/ProductMasterProductPackLevelRetired"
 
+  warehouse.facility.events:
+    description: |
+      facility-layout's integration topic. Consumed ONLY for the four types the
+      facility cache dispatches on (ADR 0024 / this repo's ADR 0047):
+      `ZoneRegistered` (zone classification: temperature + hazmat, for stow
+      legality), `LocationSlotRegistered` (slot existence, zone and optional
+      handling unit), `LocationSlotDecommissioned` (evict the slot; the stow
+      check then fails open for it) and `LocationSlotHandlingUnitDeclared`
+      (set/change a bin's handling unit, ADR 0040). Consumer group from env
+      `FACILITY_CONSUMER_GROUP`; last write wins per subject (same partition).
+    publish:
+      operationId: applyFacilityCache
+      summary: Apply facility-layout's published language to the facility cache.
+      message:
+        oneOf:
+          - $ref: "#/components/messages/FacilityLayoutZoneRegistered"
+          - $ref: "#/components/messages/FacilityLayoutLocationSlotRegistered"
+          - $ref: "#/components/messages/FacilityLayoutLocationSlotDecommissioned"
+          - $ref: "#/components/messages/FacilityLayoutLocationSlotHandlingUnitDeclared"
+
   warehouse.fulfillment.events:
     description: >
       fulfillment-execution's integration topic, its Published Language for
@@ -539,6 +559,7 @@ components:
               quantity: 50
 
     ItemStowed:
+      x-no-consumer-reason: "pending: promoted to the integration topic; network-fulfillment cache consumer in flight, no spec declares it yet"
       name: ItemStowed
       title: Item Stowed
       summary: A quantity of a SKU was placed into a bin.
@@ -612,6 +633,71 @@ components:
               stock_unit_id: su-7781
               bin_id: A-12-3
 
+    FacilityLayoutZoneRegistered:
+      name: FacilityLayoutZoneRegistered
+      title: ZoneRegistered (from facility-layout, consumed)
+      summary: A zone and its classification (temperature, hazmat) was registered.
+      description: >
+        CONSUMED, not produced. Pinned by facility-layout's `apis/asyncapi.yaml`:
+        type `com.warehouse.wms.facility-layout.zone.ZoneRegistered`,
+        `source=/warehouse/facility-layout`, subject and Kafka key = the zoneId.
+        Only the fields the facility cache relies on are listed; the producer's
+        own AsyncAPI is authoritative and unknown fields are ignored.
+      contentType: application/cloudevents+json
+      tags:
+        - name: facility-layout
+          description: Consumed from facility-layout.
+      payload:
+        $ref: "#/components/schemas/FacilityLayoutZoneRegisteredEvent"
+    FacilityLayoutLocationSlotRegistered:
+      name: FacilityLayoutLocationSlotRegistered
+      title: LocationSlotRegistered (from facility-layout, consumed)
+      summary: A coded storage slot was registered, with its zone and optional handling unit.
+      description: >
+        CONSUMED, not produced. Pinned by facility-layout's `apis/asyncapi.yaml`:
+        type `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`,
+        `source=/warehouse/facility-layout`, subject and Kafka key = the locationCode.
+        Only the fields the facility cache relies on are listed; the producer's
+        own AsyncAPI is authoritative and unknown fields are ignored.
+      contentType: application/cloudevents+json
+      tags:
+        - name: facility-layout
+          description: Consumed from facility-layout.
+      payload:
+        $ref: "#/components/schemas/FacilityLayoutLocationSlotRegisteredEvent"
+    FacilityLayoutLocationSlotDecommissioned:
+      name: FacilityLayoutLocationSlotDecommissioned
+      title: LocationSlotDecommissioned (from facility-layout, consumed)
+      summary: A coded slot was permanently retired.
+      description: >
+        CONSUMED, not produced. Pinned by facility-layout's `apis/asyncapi.yaml`:
+        type `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned`,
+        `source=/warehouse/facility-layout`, subject and Kafka key = the locationCode.
+        Only the fields the facility cache relies on are listed; the producer's
+        own AsyncAPI is authoritative and unknown fields are ignored.
+      contentType: application/cloudevents+json
+      tags:
+        - name: facility-layout
+          description: Consumed from facility-layout.
+      payload:
+        $ref: "#/components/schemas/FacilityLayoutLocationSlotDecommissionedEvent"
+    FacilityLayoutLocationSlotHandlingUnitDeclared:
+      name: FacilityLayoutLocationSlotHandlingUnitDeclared
+      title: LocationSlotHandlingUnitDeclared (from facility-layout, consumed)
+      summary: A slot's handling unit (EACH, CASE or PALLET) was set or changed (ADR 0040).
+      description: >
+        CONSUMED, not produced. Pinned by facility-layout's `apis/asyncapi.yaml`:
+        type `com.warehouse.wms.facility-layout.locationslot.LocationSlotHandlingUnitDeclared`,
+        `source=/warehouse/facility-layout`, subject and Kafka key = the locationCode.
+        Only the fields the facility cache relies on are listed; the producer's
+        own AsyncAPI is authoritative and unknown fields are ignored.
+      contentType: application/cloudevents+json
+      tags:
+        - name: facility-layout
+          description: Consumed from facility-layout.
+      payload:
+        $ref: "#/components/schemas/FacilityLayoutLocationSlotHandlingUnitDeclaredEvent"
+
     ProductMasterProductClassified:
       name: ProductMasterProductClassified
       title: Product Classified (from product-master, consumed)
@@ -655,6 +741,7 @@ components:
               version: 3
 
     ContainerRegistered:
+      x-no-consumer-reason: "pending: container fact (ADR 0045); no consumer declared in any fleet spec yet"
       name: ContainerRegistered
       title: Container Registered
       summary: A sealed carton became a Container (LPN), bounded by its receipt line's booking.
@@ -698,6 +785,7 @@ components:
               line_no: 1
               at: "2026-10-24T12:00:00Z"
     ContainerStowed:
+      x-no-consumer-reason: "pending: container fact (ADR 0045); no consumer declared in any fleet spec yet"
       name: ContainerStowed
       title: Container Stowed
       summary: A sealed case was stowed into a case bin; its site is the bin's site.
@@ -735,6 +823,7 @@ components:
               bin: WH1-STOR-AMB-A01-01-01-A
               at: "2026-10-24T12:05:00Z"
     CaseBroken:
+      x-no-consumer-reason: "pending: container fact (ADR 0045/0046); no consumer declared in any fleet spec yet"
       name: CaseBroken
       title: Case Broken
       summary: A sealed case was opened and its eaches moved to loose stock.
@@ -772,6 +861,7 @@ components:
               loose_bin: WH1-PICK-AMB-B01-01-01-A
               at: "2026-10-24T12:10:00Z"
     ContainerEmptied:
+      x-no-consumer-reason: "pending: container fact (ADR 0045/0046); no consumer declared in any fleet spec yet"
       name: ContainerEmptied
       title: Container Emptied
       summary: A container has no contents left; it leaves its bin.
@@ -2034,6 +2124,193 @@ components:
                 bin_id:
                   type: string
                   description: The bin that authoritatively holds that StockUnit.
+
+    FacilityLayoutZoneRegisteredEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of facility-layout's ZoneRegistered as consumed here
+        (not composed from CloudEventBase, whose `source` is this service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events).
+        source:
+          type: string
+          enum: ["/warehouse/facility-layout"]
+        type:
+          type: string
+          const: "com.warehouse.wms.facility-layout.zone.ZoneRegistered"
+        subject:
+          type: string
+          description: The zoneId (also the Kafka key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:facility-layout:events:ZoneRegistered:v1
+        data:
+          type: object
+          required: [zoneId, temperatureClass, hazmat]
+          properties:
+            zoneId: { type: string }
+            temperatureClass: { type: string }
+            hazmat: { type: boolean }
+    FacilityLayoutLocationSlotRegisteredEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of facility-layout's LocationSlotRegistered as consumed here
+        (not composed from CloudEventBase, whose `source` is this service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events).
+        source:
+          type: string
+          enum: ["/warehouse/facility-layout"]
+        type:
+          type: string
+          const: "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered"
+        subject:
+          type: string
+          description: The locationCode (also the Kafka key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:facility-layout:events:LocationSlotRegistered:v1
+        data:
+          type: object
+          required: [locationCode, zoneId]
+          properties:
+            locationCode: { type: string }
+            zoneId: { type: string }
+            handlingUnit:
+              type: string
+              enum: [EACH, CASE, PALLET]
+              description: Optional handling unit recorded at registration; omitted when none was.
+    FacilityLayoutLocationSlotDecommissionedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of facility-layout's LocationSlotDecommissioned as consumed here
+        (not composed from CloudEventBase, whose `source` is this service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events).
+        source:
+          type: string
+          enum: ["/warehouse/facility-layout"]
+        type:
+          type: string
+          const: "com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned"
+        subject:
+          type: string
+          description: The locationCode (also the Kafka key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:facility-layout:events:LocationSlotDecommissioned:v1
+        data:
+          type: object
+          required: [locationCode]
+          properties:
+            locationCode: { type: string }
+    FacilityLayoutLocationSlotHandlingUnitDeclaredEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of facility-layout's LocationSlotHandlingUnitDeclared as consumed here
+        (not composed from CloudEventBase, whose `source` is this service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events).
+        source:
+          type: string
+          enum: ["/warehouse/facility-layout"]
+        type:
+          type: string
+          const: "com.warehouse.wms.facility-layout.locationslot.LocationSlotHandlingUnitDeclared"
+        subject:
+          type: string
+          description: The locationCode (also the Kafka key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:facility-layout:events:LocationSlotHandlingUnitDeclared:v1
+        data:
+          type: object
+          required: [locationCode, handlingUnit]
+          properties:
+            locationCode: { type: string }
+            handlingUnit:
+              type: string
+              enum: [EACH, CASE, PALLET]
 
     ProductMasterProductClassifiedEvent:
       type: object
