@@ -292,6 +292,8 @@ channels:
     publish:
       operationId: applyFacilityCache
       summary: Apply facility-layout's published language to the facility cache.
+      description: |
+        Upserts/evicts facility cache rows in one transaction with the CloudEvents `id` claim; last write wins per subject.
       message:
         oneOf:
           - $ref: "#/components/messages/FacilityLayoutZoneRegistered"
