@@ -847,7 +847,7 @@ paths:
           schema:
             type: string
             maxLength: 64
-            pattern: '^[A-Za-z0-9._-]+$'
+            pattern: '^[A-Za-z0-9._-]*$'
             example: seller-a
       responses:
         "200":
@@ -2295,6 +2295,9 @@ components:
     ReserveStockRequest:
       type: object
       required: [sku, demandRef]
+      oneOf:
+        - required: [quantity]
+        - required: [cases]
       description: >-
         Send exactly one of `quantity` (eaches, drawn from loose stock) or
         `cases` (whole sealed cases, ADR 0045); sending both is 400
@@ -2325,7 +2328,7 @@ components:
         ownerRef:
           type: string
           maxLength: 64
-          pattern: '^[A-Za-z0-9._-]+$'
+          pattern: '^[A-Za-z0-9._-]*$'
           description: >-
             Whose stock the reservation draws on (ADR 0045). A reservation
             never spans owners. Omitted means fleet-owned stock only, never

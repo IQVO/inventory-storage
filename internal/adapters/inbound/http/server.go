@@ -205,13 +205,13 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	// Idempotency-Key middleware (ADR 0018) is defence in depth that also
 	// replays the original response.
 	if s.IdempotencyPool != nil {
-		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/containers/{lpn}:stow", s.handleStowContainer)
-		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/containers/{lpn}:break", s.handleBreakCase)
+		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/containers/{lpn:[A-Za-z0-9._-]+}:stow", s.handleStowContainer)
+		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/containers/{lpn:[A-Za-z0-9._-]+}:break", s.handleBreakCase)
 	} else {
-		r.Post("/containers/{lpn}:stow", s.handleStowContainer)
-		r.Post("/containers/{lpn}:break", s.handleBreakCase)
+		r.Post("/containers/{lpn:[A-Za-z0-9._-]+}:stow", s.handleStowContainer)
+		r.Post("/containers/{lpn:[A-Za-z0-9._-]+}:break", s.handleBreakCase)
 	}
-	r.Get("/containers/{lpn}", s.handleGetContainer)
+	r.Get("/containers/{lpn:[A-Za-z0-9._-]+}", s.handleGetContainer)
 	r.Get("/bins/{binId}/containers", s.handleListBinContainers)
 
 	return r
