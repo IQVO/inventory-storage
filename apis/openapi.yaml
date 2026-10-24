@@ -5,7 +5,7 @@ info:
   description: >
     The WMS-tier authoritative record of what is held where, and what
     portion of it is usable, for the warehouse-systems platform. This
-    bounded context implements Amazon-style chaotic (random) stow: there is
+    bounded context implements chaotic (random) stow: there is
     no fixed product location — an inbound item may be stowed into any free
     bin, and this service records the exact bin it landed in. It supplies
     "stock reality" to the Work Planning bounded context and makes

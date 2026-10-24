@@ -16,7 +16,7 @@ context most.
 
 ## What it buys
 
-From `amazon-fulfillment-ddd.md`:
+From `fulfillment-reference-ddd.md`:
 
 | Benefit | Why it follows from randomness |
 | --- | --- |

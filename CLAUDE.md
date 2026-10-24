@@ -8,7 +8,7 @@ system records the exact bin. Supplies "stock reality" to Work Planning and
 makes allocation a **revocable reservation** so a failed delivery never strands
 an order. Go module `github.com/claudioed/inventory-storage` (Go 1.26).
 
-Source of truth for the domain model: `/Users/claudioed/docs/amazon-fulfillment-ddd.md`
+Source of truth for the domain model: `/Users/claudioed/docs/fulfillment-reference-ddd.md`
 and `/Users/claudioed/warehouse-systems-ddd.md`. Honor that ubiquitous
 language everywhere in this repo.
 
