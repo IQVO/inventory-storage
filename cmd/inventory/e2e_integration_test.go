@@ -289,6 +289,10 @@ func TestRunOnRealPostgresAndKafka(t *testing.T) {
 		e2eReceiveFlow(t, ctx, env, pool)
 	})
 
+	t.Run("sealed cartons become containers over real Kafka, stow and break through REST", func(t *testing.T) {
+		e2eContainersFlow(t, ctx, env, pool)
+	})
+
 	t.Run("the task-completed consumer is running: a poison TaskCompleted is dead-lettered", func(t *testing.T) {
 		e2ePoisonFlow(t, ctx, env)
 	})
@@ -424,4 +428,137 @@ func e2ePoisonFlow(t *testing.T, ctx context.Context, env e2eEnv) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatal("the poison TaskCompleted never reached the dead-letter topic")
+}
+
+// e2ePublish writes one CloudEvent to topic, as another service would.
+func e2ePublish(t *testing.T, ctx context.Context, env e2eEnv, topic, key, id, eventType, source string, data map[string]any) {
+	t.Helper()
+	ev := ce.New()
+	ev.SetSpecVersion("1.0")
+	ev.SetID(id)
+	ev.SetType(eventType)
+	ev.SetSource(source)
+	ev.SetTime(time.Date(2026, 10, 8, 14, 0, 0, 0, time.UTC))
+	if err := ev.SetData("application/json", data); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &kafkago.Writer{Addr: kafkago.TCP(env.brokers...), Topic: topic, RequiredAcks: kafkago.RequireAll}
+	defer func() { _ = w.Close() }()
+	if err := w.WriteMessages(ctx, kafkago.Message{Key: []byte(key), Value: raw}); err != nil {
+		t.Fatalf("publish %s to %s: %v", eventType, topic, err)
+	}
+}
+
+const (
+	e2eCaseGTIN     = "24006381333935"
+	e2eEachGTIN     = "04006381333931"
+	e2eCaseBin      = "S1-A-Z-1-1-1-1"
+	e2eLooseBin     = "S1-A-Z-1-1-1-2"
+	e2eContainerPfx = "com.warehouse.wms.inventory-storage.container."
+)
+
+// e2eContainersFlow: product-master declares a CASE, facility-layout registers
+// a case bin and an each bin, inbound-receiving reports three sealed cartons
+// (BEFORE the line) and then the 36-each line, all over real Kafka. The three
+// containers are stowed and one is broken through REST; the outbox relay
+// publishes the container CloudEvents.
+func e2eContainersFlow(t *testing.T, ctx context.Context, env e2eEnv, pool *pgxpool.Pool) {
+	t.Helper()
+	const sku = "SKU-CASE"
+	e2ePublish(t, ctx, env, inboundkafka.ProductMasterTopic, sku, "pm-pack-1", "com.warehouse.wms.product-master.product.ProductPackLevelDeclared", "/warehouse/product-master", map[string]any{
+		"sku": sku, "level": "CASE", "gtin": e2eCaseGTIN, "child_gtin": e2eEachGTIN, "qty_of_child": 12, "units_per_pack": 12,
+		"is_orderable": true, "is_despatch_unit": true, "effective_from": "2026-10-01T00:00:00Z", "version": 2, "future_field": "tolerated",
+	})
+	for bin, unit := range map[string]string{e2eCaseBin: "CASE", e2eLooseBin: "EACH"} {
+		e2ePublish(t, ctx, env, facilitycache.Topic, bin, "slot-"+bin, "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered", "/warehouse/facility-layout",
+			map[string]any{"locationCode": bin, "zoneId": "S1-A-Z", "handlingUnit": unit})
+		if code, resp := e2eDo(t, ctx, http.MethodPut, env.url("/bins/"+bin), `{"capacity":1000}`, nil); code != http.StatusCreated && code != http.StatusOK {
+			t.Fatalf("register bin %s = %d %s", bin, code, resp)
+		}
+	}
+
+	for _, lpn := range []string{"003400000000000017", "003400000000000024", "003400000000000031"} {
+		e2ePublish(t, ctx, env, inboundkafka.InboundReceivingTopic, "rcpt-9", "carton-"+lpn, "com.warehouse.wms.inbound-receiving.receipt.ReceiptCartonReceived", "/warehouse/inbound-receiving", map[string]any{
+			"receipt_id": "rcpt-9", "asn_number": "ASN-9", "sscc": lpn, "parent_sscc": "003400000000000999", "sealed": true, "lpn": lpn, "owner_ref": "seller-a",
+			"received_at": "2026-10-08T14:00:00Z", "future_field": []int{1},
+			"contents": []map[string]any{{"line_no": 1, "sku": sku, "gtin": e2eCaseGTIN, "qty": 12, "lot": "L1", "expiry": "2027-03-01", "condition": "Good"}},
+		})
+	}
+	// the cartons wait: nothing is booked for their line yet
+	e2eWaitFor(t, ctx, 60*time.Second, "three pending cartons", func() bool {
+		return e2eCount(t, ctx, pool, `SELECT count(*) FROM container_pending_links WHERE receipt_id = 'rcpt-9' AND status = 'PENDING'`) == 3
+	})
+	if n := e2eCount(t, ctx, pool, `SELECT count(*) FROM containers`); n != 0 {
+		t.Fatalf("containers before the line is booked = %d, want 0", n)
+	}
+	e2ePublish(t, ctx, env, inboundkafka.InboundReceivingTopic, "rcpt-9", "line-9-1", "com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived", "/warehouse/inbound-receiving", map[string]any{
+		"receipt_id": "rcpt-9", "asn_number": "ASN-9", "line_no": 1, "sku": sku, "quantity": 36, "condition": "Good",
+		"received_at": "2026-10-08T14:00:00Z", "owner_ref": "seller-a", "pack_gtin": e2eCaseGTIN, "cases": 3,
+	})
+	e2eWaitFor(t, ctx, 60*time.Second, "three containers registered", func() bool {
+		return e2eCount(t, ctx, pool, `SELECT count(*) FROM containers WHERE receipt_id = 'rcpt-9' AND state = 'SEALED'`) == 3
+	})
+	if n := e2eCount(t, ctx, pool, `SELECT count(*) FROM outbox_events WHERE event_type = $1`, e2eStockReceivedType); n != 2 { // 1 from the REST receive earlier + this line
+		t.Fatalf("StockReceived rows = %d, want 2 (one earlier REST receive and the 36-each line once)", n)
+	}
+
+	// stow once the facility cache has the handling units (the first calls may
+	// run before the always-on consumer has read them: fail-closed 409)
+	hdr := func(k string) map[string]string { return map[string]string{"Idempotency-Key": k} }
+	var stowBody string
+	e2eWaitFor(t, ctx, 60*time.Second, "stow into the case bin", func() bool {
+		code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000017:stow"), fmt.Sprintf(`{"bin":%q}`, e2eCaseBin), hdr("e2e-stow-1"))
+		stowBody = resp
+		return code == http.StatusOK
+	})
+	if !strings.Contains(stowBody, `"siteId":"S1"`) || !strings.Contains(stowBody, `"state":"SEALED"`) {
+		t.Fatalf("stow response = %s", stowBody)
+	}
+	for _, lpn := range []string{"003400000000000024", "003400000000000031"} {
+		if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/"+lpn+":stow"), fmt.Sprintf(`{"bin":%q}`, e2eCaseBin), hdr("e2e-stow-"+lpn)); code != http.StatusOK {
+			t.Fatalf("stow %s = %d %s", lpn, code, resp)
+		}
+	}
+	// an each bin refuses a case
+	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000017:stow"), fmt.Sprintf(`{"bin":%q}`, e2eLooseBin), hdr("e2e-stow-each")); code != http.StatusConflict || !strings.Contains(resp, "bin-handling-unit-mismatch") {
+		t.Fatalf("stow into an each bin = %d %s, want 409 bin-handling-unit-mismatch", code, resp)
+	}
+
+	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031:break"), fmt.Sprintf(`{"looseBin":%q}`, e2eLooseBin), hdr("e2e-break-1")); code != http.StatusOK || !strings.Contains(resp, `"state":"EMPTY"`) {
+		t.Fatalf("break = %d %s", code, resp)
+	}
+	// a second break of the now-EMPTY container is refused
+	if code, _ := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031:break"), fmt.Sprintf(`{"looseBin":%q}`, e2eLooseBin), hdr("e2e-break-2")); code != http.StatusConflict {
+		t.Fatalf("second break = %d, want 409", code)
+	}
+	if n := e2eCount(t, ctx, pool, `SELECT coalesce(sum(quantity),0) FROM stock_units WHERE bin_id = $1 AND owner_ref = 'seller-a' AND state <> 'REMOVED'`, e2eLooseBin); n != 12 {
+		t.Fatalf("loose eaches after the break = %d, want 12", n)
+	}
+
+	e2eWaitFor(t, ctx, 30*time.Second, "the outbox drains", func() bool {
+		return e2eCount(t, ctx, pool, `SELECT count(*) FROM outbox_events WHERE published_at IS NULL`) == 0
+	})
+	want := []string{
+		e2eContainerPfx + "ContainerRegistered|003400000000000017", e2eContainerPfx + "ContainerStowed|003400000000000017",
+		e2eContainerPfx + "CaseBroken|003400000000000031", e2eContainerPfx + "ContainerEmptied|003400000000000031",
+	}
+	events := e2eEventsOn(t, ctx, env.brokers, outboundkafka.Topic, want...)
+	broken := events[want[2]]
+	var data struct {
+		LPN       string `json:"lpn"`
+		SKU       string `json:"sku"`
+		QtyEaches int    `json:"qty_eaches"`
+		FromBin   string `json:"from_bin"`
+		LooseBin  string `json:"loose_bin"`
+	}
+	if err := json.Unmarshal(broken.Data(), &data); err != nil || data.SKU != sku || data.QtyEaches != 12 || data.FromBin != e2eCaseBin || data.LooseBin != e2eLooseBin {
+		t.Fatalf("CaseBroken data = %s (%v)", broken.Data(), err)
+	}
+	if n := e2eCount(t, ctx, pool, `SELECT count(*) FROM outbox_events WHERE event_type = $1`, e2eContainerPfx+"ContainerRegistered"); n != 3 {
+		t.Fatalf("ContainerRegistered rows = %d, want 3", n)
+	}
 }
