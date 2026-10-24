@@ -47,11 +47,29 @@ func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.
 // is stored on the Reservation so the TaskCompleted consumer can confirm
 // exactly the picked line.
 func (uc *ReserveStock) ExecuteForLine(ctx context.Context, sku shared.SKU, qty shared.Quantity, demandRef string, lineNo *int) (*reservation.Reservation, error) {
-	if err := validateReserveInput(qty, lineNo); err != nil {
+	return uc.ExecuteFor(ctx, ReserveRequest{SKU: sku, Quantity: qty, DemandRef: demandRef, LineNo: lineNo})
+}
+
+// ReserveRequest is one quantity reservation. OwnerRef selects whose stock
+// may be drawn on (ADR 0045): empty means fleet-owned stock ONLY, never "any
+// owner", so a legacy caller can never allocate a seller's stock.
+type ReserveRequest struct {
+	SKU       shared.SKU
+	Quantity  shared.Quantity
+	DemandRef string
+	LineNo    *int
+	OwnerRef  shared.OwnerRef
+}
+
+// ExecuteFor reserves req.Quantity eaches of req.SKU from loose stock of
+// req.OwnerRef. A sealed case is never drawn on: it is reserved whole by
+// ReserveFullCases. Stock of another owner never satisfies the request.
+func (uc *ReserveStock) ExecuteFor(ctx context.Context, req ReserveRequest) (*reservation.Reservation, error) {
+	if err := validateReserveInput(req.Quantity, req.LineNo); err != nil {
 		return nil, err
 	}
 
-	res, err := uc.activeReservationFor(ctx, demandRef, sku, qty, lineNo)
+	res, err := uc.activeReservationFor(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -59,12 +77,12 @@ func (uc *ReserveStock) ExecuteForLine(ctx context.Context, sku shared.SKU, qty 
 		return res, nil
 	}
 
-	units, err := uc.Stock.FindBySKU(ctx, sku)
+	units, err := uc.Stock.FindBySKU(ctx, req.SKU)
 	if err != nil {
 		return nil, err
 	}
 
-	allocations, touched, err := uc.allocate(units, qty)
+	allocations, touched, err := uc.allocate(units, req.Quantity, req.OwnerRef)
 	if err != nil {
 		return nil, err
 	}
@@ -74,48 +92,54 @@ func (uc *ReserveStock) ExecuteForLine(ctx context.Context, sku shared.SKU, qty 
 		return nil, err
 	}
 
-	timeout := uc.Timeout
-	if timeout <= 0 {
-		timeout = DefaultReservationTimeout
-	}
-
 	now := uc.Clock.Now()
-	res, err = reservation.NewForLine(id, sku, qty, demandRef, lineNo, allocations, now, timeout)
+	res, err = reservation.NewForLine(id, req.SKU, req.Quantity, req.DemandRef, req.LineNo, allocations, now, uc.timeout())
 	if err != nil {
 		return nil, err
 	}
+	res.ForOwner(req.OwnerRef)
 
-	// Every mutated StockUnit save, the Reservation save AND the event
-	// publish run inside ONE UnitOfWork scope (the audit's atomicity
-	// fix): a failure after the first stock decrement rolls back all of
-	// them, so a half-drawn reservation can never survive. Before this,
-	// the stock saves ran BEFORE the closure — a failed reservation save
-	// left the stock decremented with no reservation holding it.
-	// Atomicity therefore does not depend on an outer transaction (e.g.
-	// the HTTP idempotency middleware's) already being on ctx.
-	err = uc.Levels.Atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+	if err := uc.commit(ctx, res, touched, now); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+func (uc *ReserveStock) timeout() time.Duration {
+	if uc.Timeout <= 0 {
+		return DefaultReservationTimeout
+	}
+	return uc.Timeout
+}
+
+// commit persists a freshly decided reservation: every mutated StockUnit
+// save, the Reservation save AND the event publish run inside ONE UnitOfWork
+// scope (the audit's atomicity fix): a failure after the first stock
+// decrement rolls back all of them, so a half-drawn reservation can never
+// survive. Atomicity therefore does not depend on an outer transaction (e.g.
+// the HTTP idempotency middleware's) already being on ctx.
+func (uc *ReserveStock) commit(ctx context.Context, res *reservation.Reservation, touched []*stock.StockUnit, now time.Time) error {
+	err := uc.Levels.Atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		for _, unit := range touched {
 			if err := uc.Stock.Save(ctx, unit); err != nil {
 				return err
 			}
-			if err := uc.Levels.Track(ctx, shared.BinLevelReserve, unit.BinID(), sku); err != nil {
+			if err := uc.Levels.TrackFor(ctx, shared.BinLevelReserve, unit.BinID(), res.SKU(), unit.OwnerRef()); err != nil {
 				return err
 			}
 		}
 		if err := uc.Reservations.Save(ctx, res); err != nil {
 			return err
 		}
-		return uc.Events.Publish(ctx, shared.NewStockReserved(now, res.ID(), sku, qty, demandRef))
+		return uc.Events.Publish(ctx, shared.NewStockReserved(now, res.ID(), res.SKU(), res.Quantity(), res.DemandRef()))
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-
 	if uc.Metrics != nil {
 		uc.Metrics.ReservationCreated(ctx)
 	}
-
-	return res, nil
+	return nil
 }
 
 // validateReserveInput rejects a reserve request that can never succeed, before
@@ -150,8 +174,8 @@ func validateReserveInput(qty shared.Quantity, lineNo *int) error {
 // pass it before either has saved. Closing that window would need a DB-level
 // constraint; see REST_AUDIT.md's idempotency notes for the accepted scope
 // here. It returns nil when no ACTIVE reservation remains for demandRef.
-func (uc *ReserveStock) activeReservationFor(ctx context.Context, demandRef string, sku shared.SKU, qty shared.Quantity, lineNo *int) (*reservation.Reservation, error) {
-	existing, err := uc.Reservations.FindByDemandRef(ctx, demandRef)
+func (uc *ReserveStock) activeReservationFor(ctx context.Context, req ReserveRequest) (*reservation.Reservation, error) {
+	existing, err := uc.Reservations.FindByDemandRef(ctx, req.DemandRef)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +190,7 @@ func (uc *ReserveStock) activeReservationFor(ctx context.Context, demandRef stri
 		return nil, err
 	}
 	for _, res := range existing {
-		if res.Status() == reservation.StatusActive && isReplayOf(res, sku, qty, lineNo) {
+		if res.Status() == reservation.StatusActive && isReplayOf(res, req.SKU, req.Quantity, req.LineNo, req.OwnerRef) {
 			return res, nil
 		}
 	}
@@ -189,8 +213,8 @@ func (uc *ReserveStock) activeReservationFor(ctx context.Context, demandRef stri
 // answers a line-aware retry: handing it back is the conservative choice
 // over holding the same stock twice. A request without a line matches as it
 // always did.
-func isReplayOf(res *reservation.Reservation, sku shared.SKU, qty shared.Quantity, lineNo *int) bool {
-	if res.SKU() != sku || res.Quantity() != qty {
+func isReplayOf(res *reservation.Reservation, sku shared.SKU, qty shared.Quantity, lineNo *int, owner shared.OwnerRef) bool {
+	if res.SKU() != sku || res.Quantity() != qty || res.OwnerRef() != owner {
 		return false
 	}
 	have := res.LineNo()
@@ -207,7 +231,8 @@ func isReplayOf(res *reservation.Reservation, sku shared.SKU, qty shared.Quantit
 // partially-drawn reservation behind). It fails with ErrInsufficientUsable —
 // before any caller-visible state has been persisted — when the units'
 // combined usable quantity cannot cover qty.
-func (uc *ReserveStock) allocate(units []*stock.StockUnit, qty shared.Quantity) ([]reservation.Allocation, []*stock.StockUnit, error) {
+func (uc *ReserveStock) allocate(all []*stock.StockUnit, qty shared.Quantity, owner shared.OwnerRef) ([]reservation.Allocation, []*stock.StockUnit, error) {
+	units := reservableUnits(all, owner)
 	totalUsable := shared.Quantity(0)
 	for _, unit := range units {
 		totalUsable = totalUsable.Add(unit.Usable())
@@ -231,7 +256,7 @@ func (uc *ReserveStock) allocate(units []*stock.StockUnit, qty shared.Quantity) 
 		if !remaining.GreaterThan(usable) {
 			take = remaining
 		}
-		if err := unit.Reserve(take); err != nil {
+		if err := unit.ReserveFor(owner, take); err != nil {
 			return nil, nil, err
 		}
 		allocations = append(allocations, reservation.Allocation{StockUnitID: unit.ID(), BinID: unit.BinID(), Quantity: take})
@@ -244,4 +269,17 @@ func (uc *ReserveStock) allocate(units []*stock.StockUnit, qty shared.Quantity) 
 	}
 
 	return allocations, touched, nil
+}
+
+// reservableUnits keeps the loose units of owner: stock of another owner never
+// satisfies a reservation, and a sealed case is never split by a quantity
+// reservation (ADR 0045). An empty owner keeps fleet-owned stock only.
+func reservableUnits(units []*stock.StockUnit, owner shared.OwnerRef) []*stock.StockUnit {
+	out := make([]*stock.StockUnit, 0, len(units))
+	for _, unit := range units {
+		if unit.ReservableBy(owner) {
+			out = append(out, unit)
+		}
+	}
+	return out
 }

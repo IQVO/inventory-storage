@@ -44,13 +44,13 @@ func (r *ReservationRepo) Save(ctx context.Context, res *reservation.Reservation
 	defer func() { _ = rollback(ctx) }()
 
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO reservations (id, sku, quantity, demand_ref, status, created_at, expires_at, version, line_no)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10)
+		INSERT INTO reservations (id, sku, quantity, demand_ref, status, created_at, expires_at, version, line_no, owner_ref)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10, NULLIF($11, ''))
 		ON CONFLICT (id) DO UPDATE SET
 			status = EXCLUDED.status,
 			version = reservations.version + 1
 		WHERE reservations.version = $9
-	`, res.ID(), res.SKU().String(), res.Quantity().Int(), res.DemandRef(), string(res.Status()), res.CreatedAt(), res.ExpiresAt(), res.Version(), res.Version(), res.LineNo())
+	`, res.ID(), res.SKU().String(), res.Quantity().Int(), res.DemandRef(), string(res.Status()), res.CreatedAt(), res.ExpiresAt(), res.Version(), res.Version(), res.LineNo(), res.OwnerRef().String())
 	if err != nil {
 		return err
 	}
@@ -75,15 +75,15 @@ func (r *ReservationRepo) Save(ctx context.Context, res *reservation.Reservation
 }
 
 func (r *ReservationRepo) FindByID(ctx context.Context, id string) (*reservation.Reservation, error) {
-	var sku, demandRef, status string
+	var sku, demandRef, status, owner string
 	var quantity, version int
 	var lineNo *int
 	var createdAt, expiresAt time.Time
 	q := querierFrom(ctx, r.pool)
 	err := q.QueryRow(ctx, `
-		SELECT sku, quantity, demand_ref, status, created_at, expires_at, version, line_no
+		SELECT sku, quantity, demand_ref, status, created_at, expires_at, version, line_no, COALESCE(owner_ref, '')
 		FROM reservations WHERE id = $1
-	`, id).Scan(&sku, &quantity, &demandRef, &status, &createdAt, &expiresAt, &version, &lineNo)
+	`, id).Scan(&sku, &quantity, &demandRef, &status, &createdAt, &expiresAt, &version, &lineNo, &owner)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -96,14 +96,14 @@ func (r *ReservationRepo) FindByID(ctx context.Context, id string) (*reservation
 		return nil, err
 	}
 
-	return rehydrateReservation(id, sku, quantity, demandRef, lineNo, allocations, status, createdAt, expiresAt, version)
+	return rehydrateReservation(id, sku, quantity, demandRef, lineNo, shared.OwnerRef(owner), allocations, status, createdAt, expiresAt, version)
 }
 
 // rehydrateReservation rebuilds a Reservation from its row, returning a
 // wrapped error instead of embedding a zero-value SKU/Quantity when a column
 // violates a domain invariant. lineNo is nil for rows written before
 // migration 0035 (ADR 0036).
-func rehydrateReservation(id, sku string, quantity int, demandRef string, lineNo *int, allocations []reservation.Allocation, status string, createdAt, expiresAt time.Time, version int) (*reservation.Reservation, error) {
+func rehydrateReservation(id, sku string, quantity int, demandRef string, lineNo *int, owner shared.OwnerRef, allocations []reservation.Allocation, status string, createdAt, expiresAt time.Time, version int) (*reservation.Reservation, error) {
 	skuVO, err := rehydrateSKU(sku)
 	if err != nil {
 		return nil, fmt.Errorf("reservation %q: %w", id, err)
@@ -112,7 +112,7 @@ func rehydrateReservation(id, sku string, quantity int, demandRef string, lineNo
 	if err != nil {
 		return nil, fmt.Errorf("reservation %q: %w", id, err)
 	}
-	return reservation.RehydrateForLine(id, skuVO, qty, demandRef, lineNo, allocations, reservation.Status(status), createdAt, expiresAt, version), nil
+	return reservation.RehydrateForLine(id, skuVO, qty, demandRef, lineNo, allocations, reservation.Status(status), createdAt, expiresAt, version).ForOwner(owner), nil
 }
 
 func (r *ReservationRepo) NextID(_ context.Context) (string, error) {
@@ -127,7 +127,7 @@ func (r *ReservationRepo) NextID(_ context.Context) (string, error) {
 func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string) ([]*reservation.Reservation, error) {
 	q := querierFrom(ctx, r.pool)
 	rows, err := q.Query(ctx, `
-		SELECT id, sku, quantity, status, created_at, expires_at, version, line_no
+		SELECT id, sku, quantity, status, created_at, expires_at, version, line_no, COALESCE(owner_ref, '')
 		FROM reservations WHERE demand_ref = $1
 		ORDER BY created_at ASC
 	`, demandRef)
@@ -143,11 +143,12 @@ func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string)
 		createdAt, expiresAt time.Time
 		version              int
 		lineNo               *int
+		owner                string
 	}
 	var bases []base
 	for rows.Next() {
 		var b base
-		if err := rows.Scan(&b.id, &b.sku, &b.quantity, &b.status, &b.createdAt, &b.expiresAt, &b.version, &b.lineNo); err != nil {
+		if err := rows.Scan(&b.id, &b.sku, &b.quantity, &b.status, &b.createdAt, &b.expiresAt, &b.version, &b.lineNo, &b.owner); err != nil {
 			return nil, err
 		}
 		bases = append(bases, b)
@@ -163,7 +164,7 @@ func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string)
 			return nil, err
 		}
 
-		r, err := rehydrateReservation(b.id, b.sku, b.quantity, demandRef, b.lineNo, allocations, b.status, b.createdAt, b.expiresAt, b.version)
+		r, err := rehydrateReservation(b.id, b.sku, b.quantity, demandRef, b.lineNo, shared.OwnerRef(b.owner), allocations, b.status, b.createdAt, b.expiresAt, b.version)
 		if err != nil {
 			return nil, err
 		}

@@ -222,6 +222,12 @@ func (u *StockUnit) ReserveFor(owner shared.OwnerRef, qty shared.Quantity) error
 	return u.Reserve(qty)
 }
 
+// CanReserveWhole reports whether this is a sealed case of owner that no
+// reservation touches, so it can be reserved whole.
+func (u *StockUnit) CanReserveWhole(owner shared.OwnerRef) bool {
+	return u.PackState() == PackSealedCase && u.ownerRef == owner && u.quantity.Int() > 0 && u.Usable() == u.quantity
+}
+
 // ReserveWhole binds the entire quantity of a sealed-case unit to demand. It
 // fails with ErrInsufficientUsable when any part is already reserved, so a
 // case is never partially allocated.

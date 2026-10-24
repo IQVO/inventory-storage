@@ -7,7 +7,9 @@ import (
 	"context"
 	"time"
 
+	"github.com/claudioed/inventory-storage/internal/domain/container"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
+	"github.com/claudioed/inventory-storage/internal/domain/packaging"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/relocation"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
@@ -128,7 +130,10 @@ type BinLevelLedger interface {
 	// concurrent changes of the same pair are serialised, the levels read
 	// include every change committed before the lock was granted, and a
 	// rolled-back change rolls its bump back (versions stay gapless).
-	Advance(ctx context.Context, bin shared.BinId, sku shared.SKU) (shared.BinLevel, error)
+	//
+	// owner scopes the level to one owner's stock (ADR 0045); the empty owner
+	// is fleet-owned stock. Each (bin, sku, owner) has its own version series.
+	Advance(ctx context.Context, bin shared.BinId, sku shared.SKU, owner shared.OwnerRef) (shared.BinLevel, error)
 }
 
 // Clock abstracts current time so use cases and tests are deterministic.
@@ -247,4 +252,79 @@ type InventoryExceptionRepo interface {
 // ADR 0009 and the facility-layout GetSlotAttributes call).
 type LocationClassificationLookup interface {
 	GetSlotAttributes(ctx context.Context, binID shared.BinId) (product.SlotAttributes, error)
+}
+
+// ContainerRepo persists Container aggregates (ADR 0045). FindBy* return nil
+// for an unknown container.
+type ContainerRepo interface {
+	// Add inserts a freshly registered container. It reports false, writing
+	// nothing, when the LPN is already taken (a redelivery, or a duplicate
+	// SSCC): registration is create-only so it can never overwrite.
+	Add(ctx context.Context, c *container.Container) (bool, error)
+	// Save updates an existing container, version-guarded (ADR 0019): a stale
+	// version fails with usecases.ErrConcurrentModification.
+	Save(ctx context.Context, c *container.Container) error
+	FindByLPN(ctx context.Context, lpn string) (*container.Container, error)
+	FindByStockUnitID(ctx context.Context, stockUnitID string) (*container.Container, error)
+	// FindByBin returns the containers stowed in binID (SEALED or OPEN),
+	// ordered by LPN.
+	FindByBin(ctx context.Context, binID shared.BinId) ([]*container.Container, error)
+	// FindStowedBySKU returns the SEALED containers of sku and owner that
+	// are in a bin, oldest first, then by LPN.
+	FindStowedBySKU(ctx context.Context, sku shared.SKU, owner shared.OwnerRef) ([]*container.Container, error)
+	// SumQuantity is the eaches held by every container registered for the
+	// receipt line, whatever its state.
+	SumQuantity(ctx context.Context, receiptID string, lineNo int) (shared.Quantity, error)
+}
+
+// PackagingViewRepo reads the local copy of product-master's pack levels
+// (the PackagingView, contract R8). Lookups return nil for an unknown level.
+type PackagingViewRepo interface {
+	// FindByGTIN resolves any GTIN ever declared, including a retired one.
+	FindByGTIN(ctx context.Context, gtin string) (*packaging.PackLevel, error)
+	// FindActive returns the level of sku in force at instant at.
+	FindActive(ctx context.Context, sku shared.SKU, level packaging.Level, at time.Time) (*packaging.PackLevel, error)
+}
+
+// PackagingProjection writes the PackagingView from product-master events.
+type PackagingProjection interface {
+	// ApplyDeclared upserts the level when p.Version is newer than the stored
+	// one (an absent row is older than anything). It reports whether the row
+	// was written.
+	ApplyDeclared(ctx context.Context, p packaging.PackLevel) (bool, error)
+	// ApplyRetired end-dates the level of gtin when version is not older than
+	// the stored one. It reports whether a row was changed; an unknown GTIN is
+	// a no-op (false, nil).
+	ApplyRetired(ctx context.Context, gtin string, effectiveTo time.Time, version int64) (bool, error)
+}
+
+// ReceiptBookingRepo stores what ReceiptLineReceived booked per receipt line,
+// the bound on containers (ADR 0045 section 6).
+type ReceiptBookingRepo interface {
+	// AddBooking adds qty eaches to the line's booked total (creating it).
+	AddBooking(ctx context.Context, receiptID string, lineNo int, sku shared.SKU, owner shared.OwnerRef, qty shared.Quantity) error
+	// Booked returns the line's booked eaches, 0 when none.
+	Booked(ctx context.Context, receiptID string, lineNo int) (shared.Quantity, error)
+}
+
+// PendingLinkRepo stores cartons that could not become Containers yet,
+// keyed (receipt id, line no, lpn).
+type PendingLinkRepo interface {
+	// Add records the link; an existing key is left untouched (idempotent).
+	Add(ctx context.Context, l container.PendingLink) error
+	// FindPendingByLine returns the PENDING links of a receipt line, oldest first.
+	FindPendingByLine(ctx context.Context, receiptID string, lineNo int) ([]container.PendingLink, error)
+	// FindPendingBySKU returns the PENDING links of sku, oldest first.
+	FindPendingBySKU(ctx context.Context, sku shared.SKU) ([]container.PendingLink, error)
+	// Remove deletes a link that became a Container.
+	Remove(ctx context.Context, receiptID string, lineNo int, lpn string) error
+	// Reject marks a link that can never become a Container, keeping it for audit.
+	Reject(ctx context.Context, receiptID string, lineNo int, lpn, reason string) error
+}
+
+// BinHandlingUnitLookup answers what a bin accepts, from the event-fed local
+// copy of facility-layout's bin attribute (ADR 0045 section 4). A bin with no
+// recorded handling unit answers HandlingUnknown.
+type BinHandlingUnitLookup interface {
+	HandlingUnit(ctx context.Context, bin shared.BinId) (container.HandlingUnit, error)
 }

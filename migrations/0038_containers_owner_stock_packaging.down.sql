@@ -1,0 +1,12 @@
+DROP TABLE IF EXISTS container_pending_links;
+DROP TABLE IF EXISTS receipt_line_bookings;
+DROP TABLE IF EXISTS containers;
+DROP TABLE IF EXISTS pack_levels;
+ALTER TABLE bin_sku_levels DROP CONSTRAINT bin_sku_levels_pkey;
+DELETE FROM bin_sku_levels WHERE owner_ref <> '';
+ALTER TABLE bin_sku_levels DROP COLUMN owner_ref;
+ALTER TABLE bin_sku_levels ADD PRIMARY KEY (bin_id, sku);
+ALTER TABLE reservations DROP COLUMN owner_ref;
+DROP INDEX IF EXISTS idx_stock_units_sku_owner;
+ALTER TABLE stock_units DROP COLUMN pack_state;
+ALTER TABLE stock_units DROP COLUMN owner_ref;
