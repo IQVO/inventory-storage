@@ -1624,6 +1624,9 @@ paths:
           description: The container's license plate (the carton SSCC, or an internal `LPN-<site>-<id>`).
           schema:
             type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[A-Za-z0-9._-]+$'
             example: "003400000000000017"
       responses:
         "200":
@@ -1689,6 +1692,9 @@ paths:
           description: The container's license plate (the carton SSCC, or an internal `LPN-<site>-<id>`).
           schema:
             type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[A-Za-z0-9._-]+$'
             example: "003400000000000017"
       requestBody:
         required: true
@@ -1809,6 +1815,9 @@ paths:
           description: The container's license plate (the carton SSCC, or an internal `LPN-<site>-<id>`).
           schema:
             type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[A-Za-z0-9._-]+$'
             example: "003400000000000017"
       requestBody:
         required: true
@@ -2327,6 +2336,7 @@ components:
           example: 2
         ownerRef:
           type: string
+          nullable: true
           maxLength: 64
           pattern: '^[A-Za-z0-9._-]*$'
           description: >-

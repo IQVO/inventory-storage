@@ -3,6 +3,12 @@
 // boundary.
 package http
 
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+)
+
 type receiveStockRequest struct {
 	SKU      string `json:"sku"`
 	Quantity int    `json:"quantity"`
@@ -40,8 +46,29 @@ type reserveStockRequest struct {
 	// means fleet-owned stock only.
 	OwnerRef string `json:"ownerRef"`
 	// Cases, instead of Quantity, reserves whole sealed cases (ReserveFullCases).
-	// A pointer so absent is distinguishable from an invalid 0.
-	Cases *int `json:"cases"`
+	// casesField keeps absent distinguishable from an invalid 0 and rejects an
+	// explicit null (the schema does not declare cases nullable).
+	Cases casesField `json:"cases"`
+}
+
+// casesField is an optional integer: the zero value is "absent", a JSON null
+// is a malformed body.
+type casesField struct {
+	set bool
+	n   int
+}
+
+var errCasesNotInteger = errors.New("cases must be an integer")
+
+func (c *casesField) UnmarshalJSON(b []byte) error {
+	if bytes.Equal(bytes.TrimSpace(b), []byte("null")) {
+		return errCasesNotInteger
+	}
+	if err := json.Unmarshal(b, &c.n); err != nil {
+		return errCasesNotInteger
+	}
+	c.set = true
+	return nil
 }
 
 type allocationResponse struct {

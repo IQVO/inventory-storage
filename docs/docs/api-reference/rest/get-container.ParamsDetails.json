@@ -1,1 +1,1 @@
-{"parameters":[{"name":"lpn","in":"path","required":true,"description":"The container's license plate (the carton SSCC, or an internal `LPN-<site>-<id>`).","schema":{"type":"string","example":"003400000000000017"}}]}
+{"parameters":[{"name":"lpn","in":"path","required":true,"description":"The container's license plate (the carton SSCC, or an internal `LPN-<site>-<id>`).","schema":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[A-Za-z0-9._-]+$","example":"003400000000000017"}}]}

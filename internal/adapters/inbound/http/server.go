@@ -116,6 +116,12 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	}
 
 	r := chi.NewRouter()
+
+	// An unmatched path (for example a container lpn outside [A-Za-z0-9._-])
+	// answers RFC 7807 like every other error, not chi's text/plain 404.
+	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		writeProblem(w, http.StatusNotFound, problemInfo{"route-not-found", "No such resource"}, "no route matches "+req.Method+" "+req.URL.Path, req.URL.Path)
+	})
 	metricCfg := otelchimetric.NewBaseConfig(serviceName)
 
 	// rejectNUL is first: a NUL (U+0000) in the path, query or body is a
@@ -327,7 +333,7 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if req.Cases != nil && req.Quantity != 0 {
+	if req.Cases.set && req.Quantity != 0 {
 		writeProblem(w, http.StatusBadRequest, problemInfo{"quantity-and-cases-exclusive", "quantity and cases are mutually exclusive"}, "send either quantity (eaches) or cases (whole sealed cases), not both", r.URL.Path)
 		return
 	}
@@ -360,9 +366,9 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 // reserve runs the quantity reservation, or the whole-case one when the body
 // carries `cases` (ADR 0045).
 func (s *Server) reserve(r *http.Request, req reserveStockRequest, sku shared.SKU, owner shared.OwnerRef) (*reservation.Reservation, error) {
-	if req.Cases != nil {
+	if req.Cases.set {
 		return s.ReserveFullCases.Execute(r.Context(), usecases.ReserveFullCasesCommand{
-			SKU: sku, Cases: *req.Cases, DemandRef: req.DemandRef, LineNo: req.LineNo, OwnerRef: owner,
+			SKU: sku, Cases: req.Cases.n, DemandRef: req.DemandRef, LineNo: req.LineNo, OwnerRef: owner,
 		})
 	}
 	qty, err := shared.NewPositiveQuantity(req.Quantity)
