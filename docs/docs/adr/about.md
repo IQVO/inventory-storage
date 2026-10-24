@@ -101,6 +101,8 @@ Typos, broken links and formatting are of course fair game.
 | [0041](./0041-apply-replenish-task-as-replenishment-relocation.md) | A completed REPLENISH task (`TaskCompleted` with `request_ref`) is applied as a `REPLENISHMENT` relocation: `StockRelocated` + `BinStockLevelChanged` (pick-face-replenishment) | Accepted |
 | [0042](./0042-postgres-and-kafka-are-the-only-runtime.md) | Postgres and Kafka are the only runtime: no in-memory mode, log publisher or permissive lookup; the relay and all four consumers are always on; a dead consumer ends the process; `/readyz` checks Postgres and Kafka | Accepted |
 | [0043](./0043-promote-exception-facts-to-integration-topic.md) | Promote `DiscrepancyDetected`, `ItemUnlocated` and `ItemStowed` to `warehouse.inventory.events` with byte-identical data, for exception-management and returns-processing | Accepted |
+| [0044](./0044-consume-return-line-staged.md) | Consume returns-processing's `ReturnLineStaged` through the same staged-receipt use case | Accepted |
+| [0045](./0045-container-lpn-sealed-cases-breakcase-owner-segregated-stock.md) | Container (LPN), sealed cases and `BreakCase`; stock and reservations segregated by `ownerRef` | Proposed |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic
