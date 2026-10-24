@@ -139,6 +139,7 @@ const sidebars: SidebarsConfig = {
         'adr/0044-consume-return-line-staged',
         'adr/0045-container-lpn-sealed-cases-breakcase-owner-segregated-stock',
         'adr/0046-containers-no-site-on-carton-local-packaging-view',
+        'adr/0047-bin-handling-unit-declared-event',
       ],
     },
   ],

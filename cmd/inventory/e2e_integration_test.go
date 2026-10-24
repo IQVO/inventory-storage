@@ -458,6 +458,7 @@ const (
 	e2eEachGTIN     = "04006381333931"
 	e2eCaseBin      = "S1-A-Z-1-1-1-1"
 	e2eLooseBin     = "S1-A-Z-1-1-1-2"
+	e2eLateBin      = "S1-A-Z-1-1-1-3" // registered WITHOUT a handling unit, declared CASE later
 	e2eContainerPfx = "com.warehouse.wms.inventory-storage.container."
 )
 
@@ -473,9 +474,12 @@ func e2eContainersFlow(t *testing.T, ctx context.Context, env e2eEnv, pool *pgxp
 		"sku": sku, "level": "CASE", "gtin": e2eCaseGTIN, "child_gtin": e2eEachGTIN, "qty_of_child": 12, "units_per_pack": 12,
 		"is_orderable": true, "is_despatch_unit": true, "effective_from": "2026-10-01T00:00:00Z", "version": 2, "future_field": "tolerated",
 	})
-	for bin, unit := range map[string]string{e2eCaseBin: "CASE", e2eLooseBin: "EACH"} {
-		e2ePublish(t, ctx, env, facilitycache.Topic, bin, "slot-"+bin, "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered", "/warehouse/facility-layout",
-			map[string]any{"locationCode": bin, "zoneId": "S1-A-Z", "handlingUnit": unit})
+	for bin, unit := range map[string]string{e2eCaseBin: "CASE", e2eLooseBin: "EACH", e2eLateBin: ""} {
+		slot := map[string]any{"locationCode": bin, "zoneId": "S1-A-Z"}
+		if unit != "" { // facility-layout omits handlingUnit when none was recorded
+			slot["handlingUnit"] = unit
+		}
+		e2ePublish(t, ctx, env, facilitycache.Topic, bin, "slot-"+bin, "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered", "/warehouse/facility-layout", slot)
 		if code, resp := e2eDo(t, ctx, http.MethodPut, env.url("/bins/"+bin), `{"capacity":1000}`, nil); code != http.StatusCreated && code != http.StatusOK {
 			t.Fatalf("register bin %s = %d %s", bin, code, resp)
 		}
@@ -526,6 +530,23 @@ func e2eContainersFlow(t *testing.T, ctx context.Context, env e2eEnv, pool *pgxp
 	// an each bin refuses a case
 	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000017:stow"), fmt.Sprintf(`{"bin":%q}`, e2eLooseBin), hdr("e2e-stow-each")); code != http.StatusConflict || !strings.Contains(resp, "bin-handling-unit-mismatch") {
 		t.Fatalf("stow into an each bin = %d %s, want 409 bin-handling-unit-mismatch", code, resp)
+	}
+
+	// a bin registered without a handling unit refuses a case (409) until
+	// facility-layout declares one; the declaration (a real CloudEvent over
+	// real Kafka) is what makes the same stow succeed (200). The container is
+	// then moved back so the break below still starts from the case bin.
+	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031:stow"), fmt.Sprintf(`{"bin":%q}`, e2eLateBin), hdr("e2e-stow-late-0")); code != http.StatusConflict || !strings.Contains(resp, "bin-handling-unit-mismatch") {
+		t.Fatalf("stow into a bin with no handling unit = %d %s, want 409 bin-handling-unit-mismatch", code, resp)
+	}
+	e2ePublish(t, ctx, env, facilitycache.Topic, e2eLateBin, "declared-"+e2eLateBin, "com.warehouse.wms.facility-layout.locationslot.LocationSlotHandlingUnitDeclared", "/warehouse/facility-layout",
+		map[string]any{"locationCode": e2eLateBin, "handlingUnit": "CASE", "declaredAt": "2026-10-24T12:00:00Z", "future_field": "tolerated"})
+	e2eWaitFor(t, ctx, 60*time.Second, "stow into the bin once its handling unit is declared", func() bool {
+		code, _ := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031:stow"), fmt.Sprintf(`{"bin":%q}`, e2eLateBin), hdr("e2e-stow-late-1"))
+		return code == http.StatusOK
+	})
+	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031:stow"), fmt.Sprintf(`{"bin":%q}`, e2eCaseBin), hdr("e2e-stow-back")); code != http.StatusOK {
+		t.Fatalf("move back to the case bin = %d %s", code, resp)
 	}
 
 	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031:break"), fmt.Sprintf(`{"looseBin":%q}`, e2eLooseBin), hdr("e2e-break-1")); code != http.StatusOK || !strings.Contains(resp, `"state":"EMPTY"`) {
