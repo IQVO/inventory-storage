@@ -1,18 +1,18 @@
 # Inventory & Storage
 
-> **⚠️ Study project.** This repository is an educational exercise in
-> Domain-Driven Design applied to warehouse management/execution systems. It
-> follows real industry-standard patterns and terminology (WMS/WES/WCS,
-> chaotic storage, CloudEvents, RFC 7807, hexagonal architecture) but is
-> **not a production system** and is **not affiliated with, endorsed by, or
-> representative of any real-world company**.
-
 The WMS-tier authoritative record of **what is held where, and what portion
 is usable**. Implements e-commerce-retailer-style **chaotic (random) stow**: no fixed
 product location — an item goes to any free bin, and the system records the
 exact bin. Supplies "stock reality" to Work Planning and makes allocation a
 **revocable reservation** so a failed physical delivery never strands an
 order.
+
+## Disclaimer
+
+This project is a domain-driven design study. It is not associated with,
+endorsed by or affiliated with any company, and it uses no company's code,
+data, logos or trademarks. All names, figures and examples are illustrative
+or synthetic.
 
 ## Documentation
 
@@ -37,7 +37,7 @@ Page index (source paths under `docs/docs/`):
 | Development | [Testing](docs/docs/development/testing.md) (test pyramid, `make` targets, CI jobs) |
 | Ecosystem | [Context map](docs/docs/ecosystem/context-map.md), [Integration](docs/docs/ecosystem/integration.md) |
 | DDD | [Use cases](docs/docs/ddd/use-cases.md), [Subdomain classification](docs/docs/ddd/subdomain-classification.md), and the artifact pack under [`docs/docs/ddd/`](docs/docs/ddd/) |
-| APIs | [REST reference](docs/docs/api-reference/overview.md), [Integration events](docs/docs/api-reference/events.md), [MCP tools](docs/docs/mcp/tools.md), [MCP governance charter](docs/docs/mcp/governance-charter.md), [Flow & Accuracy report](docs/docs/analytics/inventory-flow-accuracy-report.md) |
+| APIs | [REST reference](docs/docs/api-reference/overview.md), [Integration events](docs/docs/api-reference/events.md), [MCP tools](docs/docs/mcp/tools.md), [MCP governance charter](docs/docs/mcp/governance-charter.md), [A2A inbound adapter (ADR-0048)](docs/docs/adr/0048-a2a-inbound-adapter.md), [Flow & Accuracy report](docs/docs/analytics/inventory-flow-accuracy-report.md) |
 | Decisions | [ADR index](docs/docs/adr/about.md) (42 ADRs; [ADR-0042](docs/docs/adr/0042-postgres-and-kafka-are-the-only-runtime.md): Postgres and Kafka are the only runtime) |
 
 ## Layering (hexagonal / ports & adapters)
@@ -50,6 +50,7 @@ cmd/inventory/               composition root (main.go)
 cmd/inventory-projector/     analytics WRITER: consumes the analytics topic, projects
 cmd/inventory-reports/       analytics READER: read-only report REST
 cmd/mcp/                      MCP inbound adapter (Streamable HTTP)
+cmd/a2a/                      A2A agent (JSON-RPC over HTTP, Agent Card at /.well-known/agent-card.json)
 internal/
   domain/                    pure Go — no framework, no SQL types
     location/                Bin aggregate (capacity, occupancy)
@@ -65,6 +66,7 @@ internal/
     inbound/http/            chi router, DTOs, domain-error -> HTTP mapping; reports REST
     inbound/kafka/           analytics consumer (projector)
     inbound/mcp/             MCP tools incl. the read-only report tool
+    inbound/a2a/             A2A skills: check_availability (read), revoke_reservation (write)
     outbound/postgres/       pgxpool repos + golang-migrate migrations
     outbound/memory/         thread-safe in-memory repos: unit/BDD test doubles ONLY (no cmd/ binary imports them, ADR-0042)
     outbound/events/         log publisher + buffered + multi (fan-out) publisher: test doubles ONLY (events leave through the outbox)
@@ -154,6 +156,40 @@ helm upgrade --install inventory-storage charts/inventory-storage \
   --set mcp.enabled=true
 # in-cluster endpoint for MCP clients (e.g. warehouse-ops-agent):
 #   http://inventory-storage-mcp.<namespace>.svc.cluster.local:8090/mcp
+```
+
+### Running the A2A agent in Kubernetes
+
+The A2A agent (`cmd/a2a`, [ADR-0048](docs/docs/adr/0048-a2a-inbound-adapter.md))
+ships in the same image as `/app/a2a` and is deployed by the Helm chart as a
+separate Deployment + ClusterIP Service (`<release>-a2a`, port `8093`) when
+`a2a.enabled=true` (default `false`). It runs the same use cases over the same
+`DATABASE_URL` Secret as the HTTP service and reads `A2A_ADDR` (default
+`:8093`) and the mandatory `A2A_AGENT_URL`, the absolute http(s) URL advertised
+on the Agent Card (the chart defaults it to the in-cluster Service DNS; set
+`a2a.agentUrl` to override). `GET /healthz` serves the probes, the Agent Card is
+at `/.well-known/agent-card.json`, and the JSON-RPC endpoint is mounted at both
+`/` and `/a2a`. Like `cmd/mcp` it never runs the outbox relay and never dials a
+broker.
+
+Two skills, called as a `SendMessage` data part
+`{"skill": "<id>", "arguments": {...}}`:
+
+- `check_availability` (read): `{sku}` returns the usable quantity of the SKU.
+- `revoke_reservation` (write): `{reservationId}` revokes the reservation,
+  returns its quantity to usable and publishes `ReservationRevoked` through the
+  transactional outbox. A second call on the same reservation is a `409`.
+
+Domain rejections come back as an in-band RFC 7807 `problem` with the same
+status classification as REST (404/400/409/500). A2A carries delegation only;
+the facts still leave as CloudEvents on Kafka.
+
+```sh
+helm upgrade --install inventory-storage charts/inventory-storage \
+  --set database.url='postgres://…' \
+  --set a2a.enabled=true
+# in-cluster endpoint for A2A clients:
+#   http://inventory-storage-a2a.<namespace>.svc.cluster.local:8093/
 ```
 
 ## Endpoints
@@ -841,6 +877,17 @@ go test ./... -run TestFeatures -v
 
 They also run as the `bdd` job in CI.
 
+## Helm chart
+
+`charts/inventory-storage` deploys the OLTP service with optional components behind
+values flags: the analytics projector and reports reader (`analytics.enabled`), the read-only MCP server (`mcp.enabled`, ClusterIP on `:8090`) and the operator micro-frontend (`frontend.enabled`). Mandatory values are the Postgres secret and the Kafka
+broker list; the deployed consumer-group ids and mode flags come from
+`warehouse-infra`'s helm-values.
+
+The chart is linted in CI (`helm-lint`, `chart-tests`) and its invariants are
+asserted by the tests in `charts/inventory-storage/tests/` — `render_test.sh`,
+`test_service_selectors.py` (every Service selects exactly one Deployment) and
+`test_kong_config.py`.
 ## Operator micro-frontend (`web/`)
 
 `web/` is `inventory_mfe`, this context's Module Federation remote. It talks only to
@@ -906,3 +953,7 @@ python3 charts/inventory-storage/tests/test_service_selectors.py
 
 which proves every Service selects exactly one Deployment — the OLTP Service
 must never select the frontend, analytics or MCP pods.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

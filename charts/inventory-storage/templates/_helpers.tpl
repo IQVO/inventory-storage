@@ -103,6 +103,13 @@ Fully qualified name of the MCP server deployment/service (ADR-0008).
 {{- end }}
 
 {{/*
+Fully qualified name of the A2A agent Deployment/Service (<release>-a2a, ADR-0048).
+*/}}
+{{- define "inventory-storage.a2aFullname" -}}
+{{- include "inventory-storage.fullname" . }}-a2a
+{{- end }}
+
+{{/*
 Fully qualified name of the frontend Module Federation remote deployment/service.
 
 The remote is served by its own nginx pod and reached through warehouse-infra's
@@ -118,8 +125,8 @@ select it.
 Postgres and Kafka are the only runtime. cmd/inventory (loadConfig) exits at
 boot without DATABASE_URL, KAFKA_BROKERS, LOCATION_LOOKUP_MODE in {kafka,http}
 and the four consumer-group ids; EVENT_PUBLISHER and the two *_CONSUMER_MODE
-variables are accepted only unset or "kafka". cmd/mcp needs DATABASE_URL (and
-accepts EVENT_PUBLISHER only unset/kafka); cmd/inventory-projector needs
+variables are accepted only unset or "kafka". cmd/mcp and cmd/a2a need DATABASE_URL (and
+accept EVENT_PUBLISHER only unset/kafka; cmd/a2a also needs A2A_AGENT_URL); cmd/inventory-projector needs
 ANALYTICS_DATABASE_URL and KAFKA_BROKERS. The chart therefore refuses to render
 a release that would produce a pod that cannot boot, naming the value.
 */}}
@@ -192,7 +199,7 @@ ANALYTICS_DATABASE_URL; the projector also needs KAFKA_BROKERS (requireKafka).
 {{- end }}
 
 {{/*
-extraEnv / mcp.extraEnv must not override a guarded variable with a value the
+extraEnv / mcp.extraEnv / a2a.extraEnv must not override a guarded variable with a value the
 binary rejects at boot (or with an empty literal for a mandatory one).
 valueFrom entries are not inspected. Call with (dict "env" <list> "where" <name>).
 */}}
@@ -231,6 +238,7 @@ release fails whichever optional component is enabled.
 {{- include "inventory-storage.requireAnalytics" . -}}
 {{- include "inventory-storage.requireRealEnv" (dict "env" .Values.extraEnv "where" "extraEnv") -}}
 {{- include "inventory-storage.requireRealEnv" (dict "env" .Values.mcp.extraEnv "where" "mcp.extraEnv") -}}
+{{- include "inventory-storage.requireRealEnv" (dict "env" .Values.a2a.extraEnv "where" "a2a.extraEnv") -}}
 {{- end }}
 
 {{/*

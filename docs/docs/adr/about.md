@@ -105,6 +105,7 @@ Typos, broken links and formatting are of course fair game.
 | [0045](./0045-container-lpn-sealed-cases-breakcase-owner-segregated-stock.md) | Container (LPN), sealed cases and `BreakCase`; stock and reservations segregated by `ownerRef` | Accepted (amended by 0046, 0047 s4) |
 | [0046](./0046-containers-no-site-on-carton-local-packaging-view.md) | Containers as built: the container site comes from the bin (no `site_id` on the carton), a local PackagingView of product-master pack levels, snake_case wire shapes, per-owner `BinStockLevelChanged` versions (amends 0045) | Accepted |
 | [0047](./0047-bin-handling-unit-declared-event.md) | The bin handling unit arrives on `LocationSlotRegistered` (optional `handlingUnit`) and the new `LocationSlotHandlingUnitDeclared`; the facility cache reads both; amends 0045 section 4 (fail-closed unchanged) | Accepted |
+| [0048](./0048-a2a-inbound-adapter.md) | A2A inbound adapter: a third driving adapter over the same use cases as REST and MCP; two curated skills derived from the MCP tools, `check_availability` (read) and `revoke_reservation` (write), in a message-only agent served by `cmd/a2a` on 8093; in-band RFC 7807 problems with REST's classification; A2A carries delegation only, facts still leave through the outbox | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

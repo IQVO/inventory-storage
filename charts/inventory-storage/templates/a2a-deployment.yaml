@@ -1,0 +1,131 @@
+{{- if .Values.a2a.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "inventory-storage.a2aFullname" . }}
+  labels:
+    {{- include "inventory-storage.labels" . | nindent 4 }}
+    app.kubernetes.io/component: a2a
+spec:
+  replicas: {{ .Values.a2a.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "inventory-storage.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: a2a
+  template:
+    metadata:
+      labels:
+        {{- include "inventory-storage.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: a2a
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "inventory-storage.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: a2a
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/a2a"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.a2a.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: A2A_ADDR
+              value: {{ .Values.a2a.httpAddr | quote }}
+            # cmd/a2a runs the same use cases over the same OLTP database as
+            # cmd/inventory, and (like it) applies migrations on start —
+            # idempotent, so both binaries may point at the same directory.
+            - name: MIGRATIONS_PATH
+              value: {{ .Values.config.migrationsPath | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            # Same publisher selection as the API deployment (ADR-0017): with
+            # EVENT_PUBLISHER=kafka and a database, A2A-initiated writes
+            # (the revoke_reservation skill) enqueue transactional-outbox rows that the
+            # API pod's relay drains onto Kafka. The A2A pod runs no relay.
+            - name: EVENT_PUBLISHER
+              value: {{ .Values.config.eventPublisher | quote }}
+            # KAFKA_BROKERS is always set and required (the render fails when
+            # kafka.brokers is empty or kafka.enabled is false).
+            - name: KAFKA_BROKERS
+              value: {{ .Values.kafka.brokers | quote }}
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: SERVICE_VERSION
+              value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+            {{- if .Values.otel.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: "inventory-storage-a2a"
+            {{- end }}
+            # DATABASE_URL is always set and required (the api Deployment's
+            # guard fails the render without database.url or
+            # database.existingSecret).
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "inventory-storage.databaseSecretName" . }}
+                  key: {{ .Values.database.existingSecretKey }}
+            {{- if .Values.database.migrationsExistingSecretKey }}
+            # See values.yaml's database.migrationsExistingSecretKey comment
+            # and ADR-0023: cmd/a2a also runs migrations on start (see the
+            # comment above), so it needs the same direct-connection split.
+            - name: MIGRATIONS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "inventory-storage.databaseSecretName" . }}
+                  key: {{ .Values.database.migrationsExistingSecretKey }}
+                  optional: true
+            {{- end }}
+            # The Agent Card must advertise a URL agent clients can dial
+            # (ADR-0048): default to this release's in-cluster Service DNS.
+            - name: A2A_AGENT_URL
+              value: {{ .Values.a2a.agentUrl | default (printf "http://%s.%s.svc.cluster.local:%d/" (include "inventory-storage.a2aFullname" .) .Release.Namespace (int .Values.a2a.service.port)) | quote }}
+            {{- range .Values.a2a.extraEnv }}
+            - {{ toYaml . | nindent 14 | trim }}
+            {{- end }}
+          # GET /healthz is served by cmd/a2a, so the probes have a cheap target.
+          # startupProbe covers this fleet's known ~10s post-start
+          # first-outbound-dial reset (Istio native sidecars); see
+          # values.yaml's startupProbe comment for the full rationale.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.a2a.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
