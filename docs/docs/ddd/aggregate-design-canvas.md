@@ -2,14 +2,15 @@
 title: Aggregate Design Canvas
 sidebar_label: Aggregate Design Canvas
 sidebar_position: 4
-description: The ddd-crew Aggregate Design Canvas v1.1 for each of the four aggregate roots — state transitions, enforced invariants with their Err values and failing-path tests, handled commands, created events, throughput and size.
+description: The ddd-crew Aggregate Design Canvas v1.1 for each of the six aggregate roots — state transitions, enforced invariants with their Err values and failing-path tests, handled commands, created events, throughput and size.
 ---
 
 # Aggregate Design Canvas
 
 Following the [ddd-crew Aggregate Design Canvas](https://github.com/ddd-crew/aggregate-design-canvas)
 (v1.1), one canvas per aggregate root found in `internal/domain/`. There
-are **four**: `StockUnit`, `Bin`, `Reservation`, `ProductClassification`.
+are **six**: `StockUnit`, `Bin`, `Reservation`, `ProductClassification`,
+`Container`, `Relocation`.
 Every invariant below is enforced **in the domain layer** (or, where noted,
 in the use case that owns the cross-aggregate rule) and has a failing-path
 test.
@@ -18,7 +19,8 @@ Aggregates reference each other **by identity, never by pointer**: a
 `Reservation` holds `Allocation{StockUnitID, BinID}` values, a `StockUnit`
 holds a `BinId`. Each aggregate is loaded, changed and saved through its own
 repository port, and every `Save` is version-guarded (ADR 0019). A use case
-that touches several aggregates (stow, revoke, confirm-pick, expiry) keeps
+that touches several aggregates (stow, revoke, confirm-pick, expiry,
+relocate, break-case) keeps
 them consistent inside one `UnitOfWork` transaction (ADR 0017) — the one
 place this context deliberately trades "one aggregate per transaction" for
 a single database transaction.
@@ -327,7 +329,7 @@ returns `ErrAlreadyResolved`.
 
 ### 8. Throughput (estimate)
 
-Highest of the four: one reservation per order line, plus one revoke or
+Highest of the six: one reservation per order line, plus one revoke or
 confirm each, plus reads by `demandRef` from the Order Lifecycle console.
 Each reservation is written by one caller at a time, so per-instance
 contention is low; contention moves to the `StockUnit`s it draws from.
@@ -440,6 +442,232 @@ stage E.
 
 Tiny: four fields. Lives as long as the SKU; a handful of re-classifications
 over its life.
+
+---
+
+## Container
+
+### 1. Name
+
+`Container` — `internal/domain/container.Container`
+
+### 2. Description
+
+The identity of one physical sealed case in storage, keyed by its LPN —
+the carton's SSCC, or an internal LPN minted by inbound-receiving for an
+unlabelled carton ([ADR 0045](/docs/adr/0045), as built per
+[ADR 0046](/docs/adr/0046)). A Container does **not** hold stock: the
+eaches stay on a `StockUnit` in the ledger; the Container adds identity
+and a pack state on top of it, linked 1:1 through `stockUnitID` while the
+case is stowed. The receipt carries no site: the first stow sets the
+container's site from the bin's site.
+
+| Field | Meaning |
+| --- | --- |
+| `lpn` | Identity — 1 to 64 characters of `[A-Za-z0-9._-]` |
+| `sku`, `gtin`, `unitsPerPack` | What the case holds and how it packs |
+| `quantity` | Eaches in the case; in v1 always equals `unitsPerPack` (one case) |
+| `ownerRef` | Owner of the stock (owner-segregated stock, ADR 0045) |
+| `siteID` | Set at the first stow from the bin; never changes afterwards |
+| `binID` | Where the case sits; empty until stowed and after emptying |
+| `state` | `SEALED` / `OPEN` / `EMPTY` |
+| `lot`, `expiry` | Carried from the receipt (AI 10 / AI 17), never interpreted |
+| `stockUnitID` | The 1:1 link to the backing `SEALED_CASE` `StockUnit` |
+| `receiptID`, `lineNo` | Provenance: the receipt line the carton arrived on |
+| `version` | Optimistic-concurrency metadata (ADR 0019) |
+
+### 3. State Transitions
+
+```mermaid
+stateDiagram-v2
+    [*] --> SEALED: Register, a settled receipt carton link
+    SEALED --> SEALED: Stow into another bin of the same site
+    SEALED --> OPEN: Break, eaches move to loose stock
+    OPEN --> EMPTY: Decant
+    SEALED --> EMPTY: EmptyWhole, whole-case pick or count shortfall
+    EMPTY --> [*]
+```
+
+Source: `internal/domain/container/container.go`,
+`internal/application/usecases/stow_container.go`, `break_case.go`,
+`container_unit_exit.go`. In v1 `OPEN` exists only inside one break
+transaction: `BreakCase` runs `Break` and `Decant` in one `UnitOfWork`, so
+a stored container is always `SEALED` or `EMPTY`. Omitted: the rejected
+transitions (they return errors and leave state unchanged).
+
+### 4. Enforced Invariants
+
+| # | Invariant | Enforced by | Failing-path test |
+| --- | --- | --- | --- |
+| C1 | A sealed container holds exactly one case: `quantity == unitsPerPack` (cases is 1 in v1) | `Register` → `container.ErrContainerQuantityMismatch` | `TestRegisterEnforcesQuantityEqualsUnitsPerPackTimesOneCase` |
+| C2 | The LPN is 1–64 characters of `[A-Za-z0-9._-]` | `Register` → `container.ErrInvalidLPN` | `TestRegisterRejectsInvalidIdentity` |
+| C3 | Provenance is complete: receipt id present, line no ≥ 1, lot ≤ 20 and expiry ≤ 32 characters | `Register` → `container.ErrInvalidContainer` | `TestRegisterRejectsInvalidIdentity` |
+| C4 | Only a `SEALED` container can be stowed, broken or emptied whole | `Stow` / `Break` / `EmptyWhole` → `container.ErrContainerNotSealed` | `TestStowRequiresASealedContainer`, `TestBreakNeedsSealedAndStowed` |
+| C5 | A break needs a stowed container and conserves eaches: the produced quantity equals the container quantity, no more and no fewer | `Break` → `container.ErrContainerNotStowed`, `container.ErrBreakNotConserving` | `TestBreakNeedsSealedAndStowed`, `TestBreakConservesQuantity` |
+| C6 | Only an `OPEN` container decants | `Decant` → `container.ErrContainerNotOpen` | `TestDecantNeedsAnOpenContainer` |
+| C7 | A container never changes site: the first stow sets it from the bin, a later stow must stay in that site | `Stow` → `container.ErrContainerNotAtSite` | `TestRestowToAnotherSiteIsRejected`, `TestRestowMovesTheUnitWithinTheSiteAndRefusesAnotherSite` |
+| C8 | A sealed case stows only in a `CASE` or `PALLET` bin — a bin with no recorded handling unit fails closed; loose eaches go to `EACH` or unrecorded bins | `StowContainer` via `ports.BinHandlingUnitLookup` → `container.ErrBinHandlingUnitMismatch` | `TestHandlingUnitAcceptance`, `TestStowContainerRejections` |
+| C9 | A reserved case is never re-stowed or broken: the reservation names the case, not its eaches | `StowContainer` / `BreakCase` → `container.ErrContainerReserved` | `TestReservedContainerCannotBeRestowed` |
+| C10 | No lost update | `postgres.ContainerRepo.Save` version guard → `usecases.ErrConcurrentModification` | `container_integration_test.go` |
+
+### 5. Corrective Policies
+
+- **Double-count guard.** `ContainerLinker` settles a pending carton link
+  only while `sum(container qty)` per (receipt id, line no) stays within
+  the booked quantity, so a container can never exist for units the ledger
+  has not counted — whichever of `ReceiptLineReceived` and
+  `ReceiptCartonReceived` arrives first. A rejected link keeps its reason
+  on the row for audit (`QUANTITY_MISMATCH`, `GTIN_BELONGS_TO_OTHER_SKU`,
+  `GTIN_IS_NOT_A_CASE`, `LPN_REGISTERED_AT_ANOTHER_RECEIPT_LINE`,
+  `INVALID_CONTAINER`).
+- **Idempotent stow.** Stowing a container into the bin it already
+  occupies changes nothing; re-stowing within the same site moves its
+  `SEALED_CASE` unit.
+- **Rejected break changes nothing.** Conservation is checked before any
+  stock moves; a rejected break leaves the sealed case and the ledger
+  untouched.
+
+### 6. Handled Commands
+
+| Command | Method | Use case / entry point |
+| --- | --- | --- |
+| Register | `Register` | `ContainerLinker.Settle` — pending links from inbound-receiving's `ReceiptCartonReceived` (Kafka), settled once the receipt line is booked |
+| Stow | `Stow` | `StowContainer` — `POST /containers/{lpn}:stow` |
+| Break case | `Break`, `Decant` | `BreakCase` — `POST /containers/{lpn}:break` |
+| Empty whole | `EmptyWhole` | `container_unit_exit` — a confirmed whole-case pick or a cycle-count shortfall, inside the caller's `UnitOfWork` |
+| Read | — | `GetContainer` — `GET /containers/{lpn}`, MCP `get_container`; `ListBinContainers` — `GET /bins/{binId}/containers` |
+
+### 7. Created Events
+
+All four go to the integration topic `warehouse.inventory.events`, keyed
+by LPN (ADR 0045/0046).
+
+| Event | Full CloudEvents `type` | Raised by |
+| --- | --- | --- |
+| ContainerRegistered | `com.warehouse.wms.inventory-storage.container.ContainerRegistered` | `ContainerLinker` on settle (no quantity booked, no site yet) |
+| ContainerStowed | `com.warehouse.wms.inventory-storage.container.ContainerStowed` | `StowContainer` |
+| CaseBroken | `com.warehouse.wms.inventory-storage.container.CaseBroken` | `BreakCase` — eaches conserved from `fromBin` to `looseBin` |
+| ContainerEmptied | `com.warehouse.wms.inventory-storage.container.ContainerEmptied` | `BreakCase` (reason `BROKEN`), whole-case exit (`PICKED`, `UNLOCATED`) |
+
+### 8. Throughput (estimate)
+
+Moderate: one container per received sealed carton, one stow each, and a
+break or whole-case exit per case consumed. Registration rate follows
+inbound receiving; breaks follow each-picking demand for case-packed SKUs.
+
+### 9. Size (estimate)
+
+Small: fifteen fields, most set once at registration. A container lives
+from receipt until the case is empty — days to weeks — with one stow, at
+most a few re-stows inside its site, and one terminal break or whole-case
+exit.
+
+---
+
+## Relocation
+
+### 1. Name
+
+`Relocation` — `internal/domain/relocation.Relocation`
+
+### 2. Description
+
+One intra-site move of a quantity of one SKU from a source bin to a
+destination bin of the same site ([ADR 0039](/docs/adr/0039)). It is the
+stock ledger's record of slot-plan execution (slotting-optimization's
+approved plans, normally via `RELOCATE` tasks) and of manual re-slotting —
+and, since [ADR 0041](/docs/adr/0041), of pick-face replenishment: a
+completed `REPLENISH` task is applied as a `REPLENISHMENT` relocation.
+Both bins and every touched `StockUnit` change in one transaction, the
+ledger never goes negative, and the record answers
+`GET /relocations/{id}`.
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Identity, minted by `RelocationRepo.NextID` |
+| `siteID` | The site both bins must belong to; a relocation never crosses sites |
+| `sku`, `quantity` | What moves |
+| `fromBin`, `toBin` | Source and destination; always different |
+| `reason` | `SLOTTING` / `CONSOLIDATION` / `MANUAL` (operator-requested), `REPLENISHMENT` (system-set only, ADR 0041) |
+| `sourceRef` | Caller's correlation reference, ≤ 200 characters (`request_ref` of a REPLENISH task) |
+| `legs` | Once applied: which source `StockUnit`s contributed how much |
+| `destinationStockUnitID` | Once applied: the new destination `StockUnit` |
+| `occurredAt` | Once applied: when the move happened |
+
+### 3. State Transitions
+
+No status enum: a relocation is requested, then applied exactly once.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Requested: New, spec validated
+    Requested --> Applied: Apply moves units and bin occupancy
+    Applied --> [*]
+```
+
+Source: `internal/domain/relocation/relocation.go`. Every rule is checked
+before anything changes, so a rejected `Apply` leaves the units, the bins
+and the relocation untouched.
+
+### 4. Enforced Invariants
+
+| # | Invariant | Enforced by | Failing-path test |
+| --- | --- | --- | --- |
+| L1 | Source and destination bins differ | `New` → `relocation.ErrSameBin` | `TestNew_RejectsInvalidSpecs` |
+| L2 | The reason is in the closed set; `REPLENISHMENT` is system-set only — `New` accepts it, the operator-facing `ParseReason` behind `POST /relocations` rejects it | `New` / `ParseReason` → `relocation.ErrUnknownReason` | `TestParseReason`, `TestReplenishmentReason_AcceptedByNewRejectedByParseReason` |
+| L3 | The moved quantity is positive | `New` → `shared.ErrZeroQuantity` | `TestNew_RejectsInvalidSpecs` |
+| L4 | `sourceRef` is at most 200 characters | `New` → `relocation.ErrSourceRefTooLong` | `TestNew_RejectsInvalidSpecs`, `TestNew_SourceRefAtTheLimitIsAccepted` |
+| L5 | Both bins are the ones the relocation names and belong to its site | `Apply` → `relocation.ErrBinMismatch`, `relocation.ErrBinNotAtSite` | `TestApply_BinsMustBeTheOnesNamed`, `TestApply_BinsMustBelongToTheSite` |
+| L6 | A relocation moves stock exactly once | `Apply` → `relocation.ErrAlreadyApplied` | `TestApply_TwiceIsRejected` |
+| L7 | The usable quantity covers the move, the destination has room and the source occupancy covers the move — all checked before any change | `Apply` → `stock.ErrInsufficientUsable`, `location.ErrBinFull`, `location.ErrReleaseExceedsOccupancy` | `TestApply_InsufficientUsableChangesNothing`, `TestApply_DestinationFullChangesNothing`, `TestApply_SourceOccupancyBelowTheQuantityIsRejected`, `TestApply_NoUnitsIsInsufficient` |
+| L8 | Only usable units of the SKU in the source bin are drawn, in ascending unit id, so concurrent movers lock rows alike | `Apply` draw plan | `TestApply_SkipsReservedQuantityOtherSKUsOtherBinsAndDeadUnits`, `TestApply_StopsDrawingOnceTheQuantityIsCovered`, `TestRelocation_ConcurrentMoversOfTheSameStock` |
+
+### 5. Corrective Policies
+
+- **Check before change.** A rejected `Apply` mutates nothing: when the
+  source release fails after the destination was occupied, the occupancy
+  is restored, so neither bin changes.
+- **Dead-letter the hopeless.** A `RELOCATE` or `REPLENISH` task
+  completion that can never apply (missing field, unknown bin, other site,
+  same bin, insufficient usable, destination full) is dead-lettered at
+  once rather than retried.
+- **Replenishment closes the loop.** `ApplyReplenishTask` applies the move
+  with `sourceRef` = the replenishment request id, so
+  pick-face-replenishment can close its request from `StockRelocated`.
+
+### 6. Handled Commands
+
+| Command | Method | Use case / entry point |
+| --- | --- | --- |
+| Request a move | `New`, `Apply` | `RelocateStock` — `POST /relocations` |
+| Apply a completed RELOCATE task | `New`, `Apply` | `ApplyRelocationTask` — Kafka `TaskCompleted` (`task_type=RELOCATE`, additive `relocation_ref`), consumer `task-completed-relocate` ([ADR 0039](/docs/adr/0039)) |
+| Apply a completed REPLENISH task | `New`, `Apply` | `ApplyReplenishTask` — Kafka `TaskCompleted` (`task_type=REPLENISH`, required `request_ref`), consumer `task-completed-replenish` ([ADR 0041](/docs/adr/0041)) |
+| Read | — | `GetRelocation` — `GET /relocations/{id}`, MCP `get_relocation` |
+
+### 7. Created Events
+
+| Event | Full CloudEvents `type` | Topic | Raised by |
+| --- | --- | --- | --- |
+| StockRelocated | `com.warehouse.wms.inventory-storage.stock.StockRelocated` | `warehouse.inventory.events`, keyed by relocation id | `Relocation.Event()` from the applied relocation, published by `RelocateStock` |
+
+`RelocateStock` also raises two `BinStockLevelChanged` (source then
+destination, ADR 0040) from the same transaction. Known consumers of
+`StockRelocated`: slotting-optimization (slot-plan execution progress;
+acts only on `SLOTTING`) and pick-face-replenishment (closes a request
+when `reason=REPLENISHMENT` and `source_ref` is its request id).
+
+### 8. Throughput (estimate)
+
+Low to moderate: one relocation per executed slot-plan move, replenishment
+or manual re-slot — far below reservation traffic, but each move writes
+both bins, every source unit it draws from and the new destination unit in
+one transaction.
+
+### 9. Size (estimate)
+
+Small: the spec plus, once applied, one leg per contributing source unit
+(usually one) and the destination unit id. Rows are never deleted; the
+record is the audit trail of every intra-site move.
 
 ---
 
