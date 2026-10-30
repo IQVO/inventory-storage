@@ -1,5 +1,7 @@
 # Inventory & Storage
 
+[![CI](https://github.com/IQVO/inventory-storage/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/IQVO/inventory-storage/actions/workflows/ci.yml?query=branch%3Adevelop) [![coverage gate](https://img.shields.io/badge/coverage%20gate-90%25-brightgreen)](https://github.com/IQVO/inventory-storage/blob/develop/Makefile) [![Go](https://img.shields.io/badge/go-1.26.10-00ADD8?logo=go&logoColor=white)](https://github.com/IQVO/inventory-storage/blob/develop/go.mod) [![release](https://img.shields.io/github/v/release/IQVO/inventory-storage?sort=semver)](https://github.com/IQVO/inventory-storage/releases) [![docs](https://img.shields.io/badge/docs-iqvo.github.io-blue)](https://iqvo.github.io/inventory-storage/) [![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/IQVO/inventory-storage/blob/develop/LICENSE)
+
 The WMS-tier authoritative record of **what is held where, and what portion
 is usable**. Implements e-commerce-retailer-style **chaotic (random) stow**: no fixed
 product location — an item goes to any free bin, and the system records the
