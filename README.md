@@ -1,18 +1,18 @@
 # Inventory & Storage
 
-> **⚠️ Study project.** This repository is an educational exercise in
-> Domain-Driven Design applied to warehouse management/execution systems. It
-> follows real industry-standard patterns and terminology (WMS/WES/WCS,
-> chaotic storage, CloudEvents, RFC 7807, hexagonal architecture) but is
-> **not a production system** and is **not affiliated with, endorsed by, or
-> representative of any real-world company**.
-
 The WMS-tier authoritative record of **what is held where, and what portion
 is usable**. Implements e-commerce-retailer-style **chaotic (random) stow**: no fixed
 product location — an item goes to any free bin, and the system records the
 exact bin. Supplies "stock reality" to Work Planning and makes allocation a
 **revocable reservation** so a failed physical delivery never strands an
 order.
+
+## Disclaimer
+
+This project is a domain-driven design study. It is not associated with,
+endorsed by or affiliated with any company, and it uses no company's code,
+data, logos or trademarks. All names, figures and examples are illustrative
+or synthetic.
 
 ## Documentation
 
@@ -877,6 +877,17 @@ go test ./... -run TestFeatures -v
 
 They also run as the `bdd` job in CI.
 
+## Helm chart
+
+`charts/inventory-storage` deploys the OLTP service with optional components behind
+values flags: the analytics projector and reports reader (`analytics.enabled`), the read-only MCP server (`mcp.enabled`, ClusterIP on `:8090`) and the operator micro-frontend (`frontend.enabled`). Mandatory values are the Postgres secret and the Kafka
+broker list; the deployed consumer-group ids and mode flags come from
+`warehouse-infra`'s helm-values.
+
+The chart is linted in CI (`helm-lint`, `chart-tests`) and its invariants are
+asserted by the tests in `charts/inventory-storage/tests/` — `render_test.sh`,
+`test_service_selectors.py` (every Service selects exactly one Deployment) and
+`test_kong_config.py`.
 ## Operator micro-frontend (`web/`)
 
 `web/` is `inventory_mfe`, this context's Module Federation remote. It talks only to
@@ -942,3 +953,7 @@ python3 charts/inventory-storage/tests/test_service_selectors.py
 
 which proves every Service selects exactly one Deployment — the OLTP Service
 must never select the frontend, analytics or MCP pods.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
