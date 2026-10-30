@@ -31,6 +31,10 @@ mcp:
   route:
     parentRefs: *gateway
 
+a2a:
+  route:
+    parentRefs: *gateway
+
 analytics:
   reports:
     route:
