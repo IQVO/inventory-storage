@@ -130,6 +130,19 @@ use `GET /healthz`.
 | `SERVICE_VERSION` | `dev` | no | `service.version`. |
 | `ENVIRONMENT` | `local` | no | `deployment.environment.name`. |
 
+## `cmd/a2a` (A2A agent, [ADR 0048](../adr/0048-a2a-inbound-adapter.md))
+
+Same composition as `cmd/mcp` (Postgres only; every write goes through the
+transactional outbox and the relay stays in `cmd/inventory`), plus the Agent
+Card identity.
+
+| Variable | Default | Required? | Meaning |
+| --- | --- | --- | --- |
+| `A2A_ADDR` | `:8093` | no | Listen address (JSON-RPC at `/` and `/a2a`, the Agent Card at `/.well-known/agent-card.json`, `GET /healthz`). |
+| `A2A_AGENT_URL` | *(none)* | **yes** | Absolute http(s) URL of this agent's JSON-RPC endpoint, advertised on the Agent Card. The process exits with `A2A_AGENT_URL is required` when it is empty and refuses a relative or schemeless URL. |
+| `DATABASE_URL` | *(none)* | **yes** | The same OLTP database as `cmd/inventory`. |
+| `MIGRATIONS_DATABASE_URL` / `MIGRATIONS_PATH` / `EVENT_PUBLISHER` / `LOG_LEVEL` / `OTEL_*` / `SERVICE_VERSION` | as `cmd/mcp` | no | Identical semantics; `OTEL_SERVICE_NAME` defaults to `inventory-storage-a2a`. |
+
 ## Compiled-in limits (not configurable)
 
 These are constants in code; changing them is a code change.
@@ -187,6 +200,10 @@ those variables with a value the binary rejects.
 | `analytics.reports.httpAddr` | see `values.yaml` | no | `HTTP_ADDR` (reports) |
 | `analytics.database.*` | *(empty)* | **yes** while `analytics.enabled` | `ANALYTICS_DATABASE_URL` (projector: read-write key; reports: reader key) |
 | `mcp.httpAddr` | see `values.yaml` | no | `MCP_ADDR`; with `analytics.enabled` the chart also sets `REPORTS_BASE_URL` to the reports Service |
+| `a2a.enabled` | `false` | no | Deploy `cmd/a2a` (ADR 0048) as `<release>-a2a` on port 8093 |
+| `a2a.httpAddr` | `:8093` | no | `A2A_ADDR` |
+| `a2a.agentUrl` | *(empty)* | no | `A2A_AGENT_URL`; empty defaults to `http://<release>-a2a.<ns>.svc.cluster.local:8093/` |
+| `a2a.route.*` | off | no | Kong route `/api/a2a/inventory-storage` rewritten to `/` |
 
 `CORS_ALLOWED_ORIGINS` has no values key: set it through `extraEnv` when the
 console is served from another origin.
