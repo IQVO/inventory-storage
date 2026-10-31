@@ -1,0 +1,1 @@
+{"title":"Body","body":{"required":true,"content":{"application/json":{"schema":{"type":"object","required":["looseBin"],"properties":{"looseBin":{"type":"string","minLength":1,"description":"The bin that receives the loose eaches.","example":"WH1-PICK-AMB-B01-01-01-A"}}},"example":{"looseBin":"WH1-PICK-AMB-B01-01-01-A"}}}}}

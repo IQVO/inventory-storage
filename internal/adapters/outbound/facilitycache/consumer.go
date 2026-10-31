@@ -48,6 +48,7 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
+	"github.com/claudioed/inventory-storage/internal/domain/container"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
@@ -89,6 +90,9 @@ const (
 	typeZoneRegistered             = "com.warehouse.wms.facility-layout.zone.ZoneRegistered"
 	typeLocationSlotRegistered     = "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered"
 	typeLocationSlotDecommissioned = "com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned"
+	// typeLocationSlotHandlingUnitDeclared sets or changes a bin's handling
+	// unit after registration (facility-layout ADR 0040; this repo's ADR 0047).
+	typeLocationSlotHandlingUnitDeclared = "com.warehouse.wms.facility-layout.locationslot.LocationSlotHandlingUnitDeclared"
 )
 
 // zoneData is facility-layout's ZoneRegistered payload. Only the
@@ -99,11 +103,18 @@ type zoneData struct {
 	Hazmat           bool   `json:"hazmat"`
 }
 
-// slotData is facility-layout's LocationSlot{Registered,Decommissioned}
-// payload.
+// slotData is facility-layout's LocationSlot{Registered,Decommissioned,
+// HandlingUnitDeclared} payload. Unknown fields (declaredAt, role, ...) are
+// ignored by encoding/json, so additive evolution on their side is harmless.
 type slotData struct {
 	LocationCode string `json:"locationCode"`
 	ZoneID       string `json:"zoneId"`
+	// HandlingUnit is the optional handling unit the bin accepts (EACH, CASE
+	// or PALLET), published by facility-layout on LocationSlotRegistered
+	// (omitted when none was recorded) and always present on
+	// LocationSlotHandlingUnitDeclared (ADR 0047). Wire name: camelCase,
+	// like every other facility-layout slot field.
+	HandlingUnit string `json:"handlingUnit"`
 }
 
 // Reader is the subset of *kafkago.Reader this Consumer needs, so tests
@@ -154,6 +165,9 @@ type Consumer struct {
 	mu    sync.RWMutex
 	zones map[string]product.SlotAttributes
 	slots map[string]string // locationCode -> zoneID
+	// handlingUnits is the event-fed copy of each bin's handling unit
+	// (locationCode -> unit). A bin absent from it has none recorded.
+	handlingUnits map[string]container.HandlingUnit
 
 	ready   bool
 	readyCh chan struct{}
@@ -493,6 +507,8 @@ func (c *Consumer) apply(value []byte) error {
 		return c.applyZoneRegistered(e.DataAs)
 	case typeLocationSlotRegistered:
 		return c.applySlotRegistered(e.DataAs)
+	case typeLocationSlotHandlingUnitDeclared:
+		return c.applyHandlingUnitDeclared(e.DataAs)
 	case typeLocationSlotDecommissioned:
 		var data slotData
 		if err := e.DataAs(&data); err != nil {
@@ -500,6 +516,7 @@ func (c *Consumer) apply(value []byte) error {
 		}
 		c.mu.Lock()
 		delete(c.slots, data.LocationCode)
+		delete(c.handlingUnits, data.LocationCode)
 		c.mu.Unlock()
 	default:
 		// Every other event on this topic (SiteRegistered, AisleRegistered,
@@ -553,8 +570,52 @@ func (c *Consumer) applySlotRegistered(dataAs func(any) error) error {
 	}
 	c.mu.Lock()
 	c.slots[data.LocationCode] = zoneID
+	c.setHandlingUnit(data.LocationCode, container.ParseHandlingUnit(data.HandlingUnit))
 	c.mu.Unlock()
 	return nil
+}
+
+// applyHandlingUnitDeclared updates a bin's handling unit from a
+// LocationSlotHandlingUnitDeclared event. It is an idempotent last-write-wins
+// upsert on the bin's code, so a redelivery re-applies harmlessly. A value
+// that is not EACH/CASE/PALLET is stored as "none recorded", the fail-closed
+// answer for a sealed case (the same reading ParseHandlingUnit gives a
+// registration), rather than poisoning the partition.
+func (c *Consumer) applyHandlingUnitDeclared(dataAs func(any) error) error {
+	var data slotData
+	if err := dataAs(&data); err != nil {
+		return fmt.Errorf("facilitycache: decode %s: %w", typeLocationSlotHandlingUnitDeclared, err)
+	}
+	if data.LocationCode == "" {
+		return fmt.Errorf("facilitycache: %s with empty locationCode", typeLocationSlotHandlingUnitDeclared)
+	}
+	c.mu.Lock()
+	c.setHandlingUnit(data.LocationCode, container.ParseHandlingUnit(data.HandlingUnit))
+	c.mu.Unlock()
+	return nil
+}
+
+// setHandlingUnit records (or clears) a bin's handling unit. The caller holds
+// c.mu. A registration that carries none clears a stale value.
+func (c *Consumer) setHandlingUnit(code string, hu container.HandlingUnit) {
+	if hu == container.HandlingUnknown {
+		delete(c.handlingUnits, code)
+		return
+	}
+	if c.handlingUnits == nil {
+		c.handlingUnits = make(map[string]container.HandlingUnit)
+	}
+	c.handlingUnits[code] = hu
+}
+
+// HandlingUnit satisfies ports.BinHandlingUnitLookup from the local copy. It
+// never performs I/O. A bin with no recorded handling unit (every bin before
+// facility-layout ships the attribute, or an unknown bin) answers
+// HandlingUnknown, which fails closed for a sealed case.
+func (c *Consumer) HandlingUnit(_ context.Context, bin shared.BinId) (container.HandlingUnit, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.handlingUnits[bin.String()], nil
 }
 
 // zoneIDFromLocationCode mirrors facility-layout's LocationCode.ZoneID():

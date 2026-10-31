@@ -139,7 +139,7 @@ func run(ctx context.Context) error {
 		lookup.close()
 		return err
 	}
-	server := buildServer(adapters, system.Clock{}, lookup.lookup, reservationMetrics, readiness)
+	server := buildServer(adapters, system.Clock{}, lookup.lookup, lookup.handlingUnits, reservationMetrics, readiness)
 	httpServer := &http.Server{
 		Addr:              cfg.httpAddr,
 		Handler:           inboundhttp.NewRouter(server, logger, cfg.serviceName),

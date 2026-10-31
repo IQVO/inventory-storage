@@ -87,7 +87,7 @@ published as a new event, never a mutation of the old one.
 ### This service's types
 
 Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
-`stock` (StockUnit), `reservation`, `bin`.
+`stock` (StockUnit), `reservation`, `bin`, `container` (ADR 0045, 0046).
 
 | topic | `type` | `subject` |
 | --- | --- | --- |
@@ -98,6 +98,10 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged` (ADR 0040) | `<bin>:<sku>` |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.ContainerRegistered` (ADR 0046) | LPN |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.ContainerStowed` (ADR 0046) | LPN |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.CaseBroken` (ADR 0046) | LPN |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.ContainerEmptied` (ADR 0046) | LPN |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.StockReceived` | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | stock unit id |
@@ -137,6 +141,7 @@ product-master ADR 0003 stage E.
 2. Dispatch on the **full** `type`, byte-identical to the publisher. Unknown
    types are ignored. This service consumes:
    - `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`
+   - `com.warehouse.wms.facility-layout.locationslot.LocationSlotHandlingUnitDeclared` (ADR 0047)
    - `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned`
    - `com.warehouse.wms.facility-layout.zone.ZoneRegistered`
    - `com.warehouse.wms.product-master.product.ProductClassified` (topic
@@ -161,6 +166,7 @@ These strings must be byte-identical on both sides:
 
 ```text
 com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered       -> inventory-storage
+com.warehouse.wms.facility-layout.locationslot.LocationSlotHandlingUnitDeclared  -> inventory-storage
 com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned   -> inventory-storage
 com.warehouse.wms.facility-layout.zone.ZoneRegistered                       -> inventory-storage
 com.warehouse.wms.product-master.product.ProductClassified                  -> inventory-storage (ADR 0034)

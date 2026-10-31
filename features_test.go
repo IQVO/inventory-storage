@@ -79,6 +79,9 @@ type world struct {
 	// wave2 holds the extra fixtures and consumer use cases the wave-2
 	// scenarios drive (features_wave2_test.go).
 	wave2 wave2State
+
+	// containers holds the container-slice wiring (features_containers_test.go).
+	containers containerState
 }
 
 // start builds the composition root the way cmd/inventory does, but with the
@@ -113,6 +116,7 @@ func (w *world) start() {
 	w.publisher = publisher
 	w.applyClassification = &usecases.ApplyProductClassification{Classifications: classificationRepo, ProcessedEvents: memory.NewProcessedEventRepo()}
 	w.wireWave2(s, reservationRepo)
+	w.wireContainers(s, reservationRepo)
 	w.status = 0
 	w.body = nil
 	w.headers = nil
@@ -721,5 +725,6 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^the Usable inventory for SKU "([^"]*)" is (\d+)$`, w.theUsableInventoryForSKUIs)
 
 	w.registerWave2Steps(sc)
+	w.registerContainerSteps(sc)
 	w.registerTransferSagaSteps(sc)
 }

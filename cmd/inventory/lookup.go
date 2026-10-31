@@ -11,6 +11,8 @@ import (
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/facilitycache"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/facilitylayout"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
+	"github.com/claudioed/inventory-storage/internal/domain/container"
+	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/resilience"
 )
 
@@ -23,9 +25,21 @@ import (
 // moving on immediately. close releases the Kafka reader when one was
 // started, and is a no-op otherwise (nil only on a startup error).
 type locationLookupHandle struct {
-	lookup  ports.LocationClassificationLookup
-	runDone chan struct{}
-	close   func()
+	lookup ports.LocationClassificationLookup
+	// handlingUnits answers what a bin accepts (ADR 0045 section 4). Only the
+	// kafka mode has the event-fed copy; the http mode answers HandlingUnknown
+	// for every bin, so a sealed case cannot be stowed (fail closed).
+	handlingUnits ports.BinHandlingUnitLookup
+	runDone       chan struct{}
+	close         func()
+}
+
+// noHandlingUnits is the BinHandlingUnitLookup of a configuration without the
+// facility-layout event feed: no bin has a recorded handling unit.
+type noHandlingUnits struct{}
+
+func (noHandlingUnits) HandlingUnit(context.Context, shared.BinId) (container.HandlingUnit, error) {
+	return container.HandlingUnknown, nil
 }
 
 // buildLocationLookup selects the outbound LocationClassificationLookup
@@ -58,7 +72,7 @@ func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string
 		}
 		logger.Info("location classification lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL, "circuit_breaker", "enabled", "retry", "enabled")
 		client := facilitylayout.NewBreakerClient(facilitylayout.NewClient(facilityLayoutBaseURL, nil), recorder)
-		return locationLookupHandle{lookup: client, close: func() {}}, nil
+		return locationLookupHandle{lookup: client, handlingUnits: noHandlingUnits{}, close: func() {}}, nil
 
 	default:
 		return locationLookupHandle{}, fmt.Errorf("LOCATION_LOOKUP_MODE=%q is not supported (kafka or http)", mode)
@@ -83,7 +97,7 @@ func kafkaLocationLookup(ctx context.Context, brokers []string, logger *slog.Log
 		_ = consumer.Close()
 		return locationLookupHandle{runDone: runDone}, err
 	}
-	return locationLookupHandle{lookup: consumer, runDone: runDone, close: func() { _ = consumer.Close() }}, nil
+	return locationLookupHandle{lookup: consumer, handlingUnits: consumer, runDone: runDone, close: func() { _ = consumer.Close() }}, nil
 }
 
 // dialFacilityCache is retried for the same reason the Postgres dials are:

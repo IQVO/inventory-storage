@@ -26,7 +26,7 @@ planning is per-SKU and legible.
 there is free space; the associate scans the item, scans the location, and the
 system records the exact bin.
 
-The reference model (`amazon-fulfillment-ddd.md`) documents chaotic stow as the
+The reference model (`fulfillment-reference-ddd.md`) documents chaotic stow as the
 approach used at fulfillment-centre scale, and states the reasoning as a
 first-class domain rule rather than an operational accident:
 

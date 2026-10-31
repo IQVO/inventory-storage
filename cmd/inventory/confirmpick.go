@@ -73,7 +73,7 @@ func buildTaskCompletedConsumer(
 		Clock:        clock,
 		Confirm: &usecases.ConfirmPick{
 			Stock: set.stock, Locations: set.locations, Reservations: set.reservations,
-			Events: set.publisher, Clock: clock, UnitOfWork: set.uow, Levels: levels,
+			Events: set.publisher, Clock: clock, UnitOfWork: set.uow, Levels: levels, Containers: set.containers,
 		},
 		ProcessedEvents: processed,
 		PickProgress:    postgres.NewOrderPickProgressRepo(set.pool),

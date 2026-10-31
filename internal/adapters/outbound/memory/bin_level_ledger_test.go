@@ -46,7 +46,7 @@ func seedLedgerWorld(t *testing.T) *memory.StockRepo {
 func TestBinLevelLedger_LevelsExcludeUnlocatedAndRemovedUnits(t *testing.T) {
 	ledger := memory.NewBinLevelLedger(seedLedgerWorld(t))
 
-	level, err := ledger.Advance(context.Background(), ledgerBin, "SKU-1")
+	level, err := ledger.Advance(context.Background(), ledgerBin, "SKU-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,9 +60,9 @@ func TestBinLevelLedger_VersionsRisePerBinSKU(t *testing.T) {
 	ledger := memory.NewBinLevelLedger(seedLedgerWorld(t))
 	ctx := context.Background()
 
-	first, _ := ledger.Advance(ctx, ledgerBin, "SKU-1")
-	second, _ := ledger.Advance(ctx, ledgerBin, "SKU-1")
-	otherSKU, _ := ledger.Advance(ctx, ledgerBin, "SKU-2")
+	first, _ := ledger.Advance(ctx, ledgerBin, "SKU-1", "")
+	second, _ := ledger.Advance(ctx, ledgerBin, "SKU-1", "")
+	otherSKU, _ := ledger.Advance(ctx, ledgerBin, "SKU-2", "")
 
 	if first.Version != 1 || second.Version != 2 {
 		t.Fatalf("versions %d, %d, want 1, 2", first.Version, second.Version)

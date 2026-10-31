@@ -8,7 +8,7 @@ description: Why the Inventory & Storage bounded context exists, and the busines
 
 ## The platform-level vision
 
-From `amazon-fulfillment-ddd.md`, the vision statement for the whole
+From `fulfillment-reference-ddd.md`, the vision statement for the whole
 fulfillment domain:
 
 > Fulfil customer orders from many disparate SKUs at massive scale by receiving

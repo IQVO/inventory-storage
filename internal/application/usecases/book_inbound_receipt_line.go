@@ -38,6 +38,14 @@ type InboundReceiptLine struct {
 	Quantity  int
 	// Condition is "Good" or "Damaged".
 	Condition string
+	// OwnerRef, PackGTIN, Cases and SSCC are the optional pack provenance of
+	// the line (ADR 0045). OwnerRef is recorded on the receipt booking;
+	// PackGTIN, Cases and SSCC are provenance only and are NEVER added to the
+	// booked quantity: Quantity, in eaches, is the sole authority.
+	OwnerRef string
+	PackGTIN string
+	Cases    int
+	SSCC     string
 }
 
 // BookOutcome says what BookInboundReceiptLine did with one line.
@@ -75,13 +83,19 @@ type BookInboundReceiptLine struct {
 	UnitOfWork ports.UnitOfWork
 	// Metrics counts booked and damaged units after commit. Optional.
 	Metrics ports.InboundReceiptMetrics
+	// Bookings stores the eaches booked per (receipt id, line no), the bound
+	// on containers (ADR 0045). Optional with Linker: nil records nothing.
+	Bookings ports.ReceiptBookingRepo
+	// Linker settles the cartons waiting for this line's booking, in the same
+	// transaction. Optional.
+	Linker ContainerLinkSettler
 }
 
 // Execute validates l and books it. It returns an error wrapping
 // ErrMalformedInboundReceiptLine for a deterministic problem, and the
 // repository error unchanged for a transient one.
 func (uc *BookInboundReceiptLine) Execute(ctx context.Context, l InboundReceiptLine) (BookOutcome, error) {
-	sku, qty, err := l.validate()
+	sku, qty, owner, err := l.validate()
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrMalformedInboundReceiptLine, err)
 	}
@@ -104,7 +118,7 @@ func (uc *BookInboundReceiptLine) Execute(ctx context.Context, l InboundReceiptL
 			return err
 		}
 		outcome = LineBooked
-		return nil
+		return uc.recordBooking(ctx, l, sku, owner, qty)
 	})
 	if err != nil {
 		return "", err
@@ -112,6 +126,23 @@ func (uc *BookInboundReceiptLine) Execute(ctx context.Context, l InboundReceiptL
 
 	uc.record(ctx, outcome, qty)
 	return outcome, nil
+}
+
+// recordBooking stores the booked eaches of a line and settles the cartons
+// that were waiting for it. A line without a receipt id or line number (an
+// event from before they were mandatory) records nothing.
+func (uc *BookInboundReceiptLine) recordBooking(ctx context.Context, l InboundReceiptLine, sku shared.SKU, owner shared.OwnerRef, qty shared.Quantity) error {
+	if uc.Bookings == nil || l.ReceiptID == "" || l.LineNo < 1 {
+		return nil
+	}
+	if err := uc.Bookings.AddBooking(ctx, l.ReceiptID, l.LineNo, sku, owner, qty); err != nil {
+		return err
+	}
+	if uc.Linker == nil {
+		return nil
+	}
+	_, err := uc.Linker.Settle(ctx, l.ReceiptID, l.LineNo)
+	return err
 }
 
 // record counts the units after the transaction committed, so a rolled-back
@@ -132,20 +163,24 @@ func (uc *BookInboundReceiptLine) record(ctx context.Context, outcome BookOutcom
 
 // validate checks the wire fields through the domain constructors, so only a
 // valid (sku, quantity, condition) ever reaches ReceiveStock.
-func (l InboundReceiptLine) validate() (shared.SKU, shared.Quantity, error) {
+func (l InboundReceiptLine) validate() (shared.SKU, shared.Quantity, shared.OwnerRef, error) {
 	if l.EventID == "" {
-		return "", 0, errors.New("empty event id")
+		return "", 0, "", errors.New("empty event id")
 	}
 	sku, err := shared.NewSKU(l.SKU)
 	if err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
 	qty, err := shared.NewPositiveQuantity(l.Quantity)
 	if err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
 	if l.Condition != InboundConditionGood && l.Condition != InboundConditionDamaged {
-		return "", 0, fmt.Errorf("unknown condition %q", l.Condition)
+		return "", 0, "", fmt.Errorf("unknown condition %q", l.Condition)
 	}
-	return sku, qty, nil
+	owner, err := shared.NewOwnerRef(l.OwnerRef)
+	if err != nil {
+		return "", 0, "", err
+	}
+	return sku, qty, owner, nil
 }

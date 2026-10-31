@@ -5,7 +5,7 @@ info:
   description: >
     The WMS-tier authoritative record of what is held where, and what
     portion of it is usable, for the warehouse-systems platform. This
-    bounded context implements Amazon-style chaotic (random) stow: there is
+    bounded context implements chaotic (random) stow: there is
     no fixed product location — an inbound item may be stowed into any free
     bin, and this service records the exact bin it landed in. It supplies
     "stock reality" to the Work Planning bounded context and makes
@@ -45,6 +45,13 @@ tags:
       (item-scan + location-scan), which is the only way a StockUnit
       aggregate comes into existence. RelocateStock moves usable stock of
       one SKU between two bins of the same site (ADR 0039).
+  - name: Containers
+    description: >
+      Sealed cases with an identity (ADR 0045, 0046). A Container is a case
+      licence plate (LPN, the carton SSCC) created from inbound-receiving's
+      `ReceiptCartonReceived`; it is stowed into a case bin, and broken
+      (`BreakCase`) into loose eaches. The ledger stays in eaches. Quantity
+      is booked once, by `ReceiptLineReceived`, never by a container.
   - name: Reservations
     description: >
       Revocable bindings of usable stock to demand. A Reservation can be
@@ -830,9 +837,21 @@ paths:
       tags: [Inventory]
       parameters:
         - $ref: "#/components/parameters/Sku"
+        - name: ownerRef
+          in: query
+          required: false
+          description: >-
+            The owner whose stock to count (ADR 0045). Omitted means
+            fleet-owned stock only, never "any owner". A malformed value is
+            400 `invalid-owner-ref`.
+          schema:
+            type: string
+            maxLength: 64
+            pattern: '^[A-Za-z0-9._-]*$'
+            example: seller-a
       responses:
         "200":
-          description: Usable quantity for the SKU (0 if the SKU is unknown).
+          description: Usable quantity for the SKU and owner (0 if the SKU is unknown).
           content:
             application/json:
               schema:
@@ -840,6 +859,8 @@ paths:
               example:
                 sku: SKU-1
                 usable: 7
+                looseUsable: 7
+                reservableCases: 0
         "400":
           description: SKU path segment missing/empty.
           content:
@@ -1586,6 +1607,359 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /containers/{lpn}:
+    get:
+      operationId: getContainer
+      summary: Read one container
+      description: >-
+        The container (sealed case, ADR 0045) with this license plate: SKU,
+        case GTIN, units per pack, quantity in eaches, owner, site and bin
+        (empty until it is stowed), state (SEALED, OPEN or EMPTY), lot,
+        expiry and the receipt line it came from. Side-effect-free.
+      tags: [Containers]
+      parameters:
+        - name: lpn
+          in: path
+          required: true
+          description: The container's license plate (the carton SSCC, or an internal `LPN-<site>-<id>`).
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[A-Za-z0-9._-]+$'
+            example: "003400000000000017"
+      responses:
+        "200":
+          description: The container.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+              example:
+                lpn: "003400000000000017"
+                sku: SKU-1
+                gtin: "24006381333935"
+                unitsPerPack: 12
+                qtyEaches: 12
+                ownerRef: seller-a
+                siteId: WH1
+                binId: WH1-STOR-AMB-A01-01-01-A
+                state: SEALED
+                lot: L1
+                expiry: "2027-03-01"
+                stockUnitId: su-9a1e0f3c-2b4d-4c6e-8f00-112233445566
+                receiptId: rcpt-1
+                lineNo: 1
+        "404":
+          description: No container has this LPN.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/container-not-found
+                title: Container not found
+                status: 404
+                detail: container not found
+                instance: /containers/NOPE
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /containers/{lpn}:stow:
+    post:
+      operationId: stowContainer
+      summary: Stow a sealed case into a case bin
+      description: >-
+        Scan the LPN, scan the location (ADR 0045). The bin must accept
+        sealed cases (handling unit CASE or PALLET, as published by
+        facility-layout); a bin whose handling unit is unknown or EACH is
+        409 `bin-handling-unit-mismatch` (fail closed). The first stow sets
+        the container's site from the bin's site (a carton event carries no
+        site) and creates the SEALED_CASE stock unit holding the case's
+        eaches; moving a stowed container to another bin of the same site
+        is allowed, to another site is 409 `container-not-at-site`.
+        Stowing into the bin it is already in is a no-op.
+
+
+        Behind the Idempotency-Key middleware like the other creating POSTs
+        (ADR 0018).
+      tags: [Containers]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: lpn
+          in: path
+          required: true
+          description: The container's license plate (the carton SSCC, or an internal `LPN-<site>-<id>`).
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[A-Za-z0-9._-]+$'
+            example: "003400000000000017"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bin]
+              properties:
+                bin:
+                  type: string
+                  minLength: 1
+                  description: The case bin to stow into.
+                  example: WH1-STOR-AMB-A01-01-01-A
+            example:
+              bin: WH1-STOR-AMB-A01-01-01-A
+      responses:
+        "200":
+          description: The stowed container.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+              example:
+                lpn: "003400000000000017"
+                sku: SKU-1
+                gtin: "24006381333935"
+                unitsPerPack: 12
+                qtyEaches: 12
+                ownerRef: seller-a
+                siteId: WH1
+                binId: WH1-STOR-AMB-A01-01-01-A
+                state: SEALED
+                lot: L1
+                expiry: "2027-03-01"
+                stockUnitId: su-9a1e0f3c-2b4d-4c6e-8f00-112233445566
+                receiptId: rcpt-1
+                lineNo: 1
+        "400":
+          description: Malformed body, an empty bin, or the Idempotency-Key header absent.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/empty-bin-id
+                title: Bin ID must not be empty
+                status: 400
+                detail: bin id must not be empty
+                instance: /containers/003400000000000017:stow
+        "404":
+          description: The container or the bin is unknown.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/container-not-found
+                title: Container not found
+                status: 404
+                detail: container not found
+                instance: /containers/NOPE:stow
+        "409":
+          description: >-
+            The bin does not accept sealed cases (bin-handling-unit-mismatch),
+            the container is not SEALED (container-not-sealed), the bin is in
+            another site (container-not-at-site), the bin has no room
+            (bin-full), or a concurrent writer changed it
+            (concurrent-modification).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/bin-handling-unit-mismatch
+                title: Bin does not accept this kind of handling unit
+                status: 409
+                detail: bin does not accept this handling unit
+                instance: /containers/003400000000000017:stow
+        "422":
+          description: The Idempotency-Key was already used with a different body (idempotency-key-reused).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/idempotency-key-reused
+                title: Idempotency-Key reused with a different request
+                status: 422
+                detail: idempotency key reused
+                instance: /containers/003400000000000017:stow
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /containers/{lpn}:break:
+    post:
+      operationId: breakCase
+      summary: Break a sealed case into loose eaches
+      description: >-
+        BreakCase (ADR 0045): the whole sealed case is opened and its eaches
+        move to loose stock of the same owner in `looseBin`. Full-quantity
+        and conserving: exactly `unitsPerPack` eaches leave the SEALED_CASE
+        unit and arrive as loose stock, and the container goes SEALED, OPEN,
+        EMPTY in one transaction, with `CaseBroken` and `ContainerEmptied`
+        in the transactional outbox. A case that is reserved (a `cases`
+        reservation) cannot be broken; a container that is not SEALED and
+        stowed cannot either; `looseBin` must accept loose eaches and be in
+        the container's site.
+
+
+        Behind the Idempotency-Key middleware (ADR 0018).
+      tags: [Containers]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: lpn
+          in: path
+          required: true
+          description: The container's license plate (the carton SSCC, or an internal `LPN-<site>-<id>`).
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[A-Za-z0-9._-]+$'
+            example: "003400000000000017"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [looseBin]
+              properties:
+                looseBin:
+                  type: string
+                  minLength: 1
+                  description: The bin that receives the loose eaches.
+                  example: WH1-PICK-AMB-B01-01-01-A
+            example:
+              looseBin: WH1-PICK-AMB-B01-01-01-A
+      responses:
+        "200":
+          description: The container, now EMPTY.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+              example:
+                lpn: "003400000000000017"
+                sku: SKU-1
+                gtin: "24006381333935"
+                unitsPerPack: 12
+                qtyEaches: 12
+                ownerRef: seller-a
+                siteId: WH1
+                state: EMPTY
+                lot: L1
+                expiry: "2027-03-01"
+                stockUnitId: su-9a1e0f3c-2b4d-4c6e-8f00-112233445566
+                receiptId: rcpt-1
+                lineNo: 1
+        "400":
+          description: Malformed body, an empty looseBin, or the Idempotency-Key header absent.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/empty-bin-id
+                title: Bin ID must not be empty
+                status: 400
+                detail: bin id must not be empty
+                instance: /containers/003400000000000017:break
+        "404":
+          description: The container or the bin is unknown.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/container-not-found
+                title: Container not found
+                status: 404
+                detail: container not found
+                instance: /containers/NOPE:break
+        "409":
+          description: >-
+            The container is not SEALED (container-not-sealed) or not stowed
+            (container-not-stowed), it is reserved (container-reserved), the
+            unit does not hold exactly the case (break-not-conserving),
+            looseBin does not accept loose eaches (bin-handling-unit-mismatch),
+            looseBin is in another site (container-not-at-site) or has no
+            room (bin-full), or a concurrent writer changed it
+            (concurrent-modification).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/container-reserved
+                title: Container is reserved
+                status: 409
+                detail: container is reserved
+                instance: /containers/003400000000000017:break
+        "422":
+          description: The Idempotency-Key was already used with a different body (idempotency-key-reused).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/idempotency-key-reused
+                title: Idempotency-Key reused with a different request
+                status: 422
+                detail: idempotency key reused
+                instance: /containers/003400000000000017:break
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /bins/{binId}/containers:
+    get:
+      operationId: listBinContainers
+      summary: List the containers stowed in a bin
+      description: >-
+        The sealed or open containers stowed in the bin (ADR 0045), ordered
+        by LPN. Empty containers have no bin and are not listed.
+        Side-effect-free.
+      tags: [Containers]
+      parameters:
+        - name: binId
+          in: path
+          required: true
+          description: The bin to inspect.
+          schema:
+            type: string
+            example: WH1-STOR-AMB-A01-01-01-A
+      responses:
+        "200":
+          description: The containers in the bin (possibly none).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  binId:
+                    type: string
+                    example: WH1-STOR-AMB-A01-01-01-A
+                  containers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Container"
+        "404":
+          description: The bin is not registered.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/bin-not-found
+                title: Bin not found
+                status: 404
+                detail: bin not found
+                instance: /bins/NOPE/containers
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /reports/flow-accuracy:
     get:
       operationId: getFlowAccuracyReport
@@ -1929,7 +2303,15 @@ components:
 
     ReserveStockRequest:
       type: object
-      required: [sku, quantity, demandRef]
+      required: [sku, demandRef]
+      oneOf:
+        - required: [quantity]
+        - required: [cases]
+      description: >-
+        Send exactly one of `quantity` (eaches, drawn from loose stock) or
+        `cases` (whole sealed cases, ADR 0045); sending both is 400
+        `quantity-and-cases-exclusive`, sending neither is 422
+        `zero-quantity`.
       properties:
         sku:
           type: string
@@ -1939,8 +2321,30 @@ components:
           type: integer
           format: int32
           minimum: 1
-          description: Quantity to reserve. Must be a positive integer.
+          description: Eaches to reserve from loose stock. A positive integer; mutually exclusive with `cases`.
           example: 6
+        cases:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >-
+            Whole sealed cases to reserve (ReserveFullCases, ADR 0045),
+            oldest stowed container first. The reservation quantity is the
+            cases' eaches (cases x unitsPerPack). Mutually exclusive with
+            `quantity`. A sealed case is never split by a `quantity`
+            reservation.
+          example: 2
+        ownerRef:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[A-Za-z0-9._-]*$'
+          description: >-
+            Whose stock the reservation draws on (ADR 0045). A reservation
+            never spans owners. Omitted means fleet-owned stock only, never
+            "any owner": a seller's stock cannot satisfy it. A malformed
+            value is 400 `invalid-owner-ref`.
+          example: seller-a
         demandRef:
           type: string
           minLength: 1
@@ -2189,6 +2593,10 @@ components:
         demandRef:
           type: string
           example: order-42
+        ownerRef:
+          type: string
+          description: Owner whose stock the reservation holds (ADR 0045). Omitted for fleet-owned stock.
+          example: seller-a
         lineNo:
           type: integer
           format: int32
@@ -2262,11 +2670,96 @@ components:
         sku:
           type: string
           example: SKU-1
+        ownerRef:
+          type: string
+          description: The owner the figures are for (ADR 0045). Omitted for fleet-owned stock.
+          example: seller-a
         usable:
           type: integer
           format: int32
-          description: On-hand minus active reservations minus held/unlocated stock, summed across all StockUnits for this SKU.
+          description: >-
+            On-hand minus active reservations minus held/unlocated stock,
+            summed across the StockUnits of this SKU owned by `ownerRef`
+            (loose stock and sealed cases alike, in eaches).
           example: 7
+        looseUsable:
+          type: integer
+          format: int32
+          description: The part of `usable` a `quantity` reservation can draw on (loose stock only).
+          example: 7
+        reservableCases:
+          type: integer
+          format: int32
+          description: How many whole sealed cases can still be reserved with `cases`.
+          example: 0
+
+    Container:
+      type: object
+      description: >-
+        A sealed case with an identity (ADR 0045). The ledger stays in
+        eaches: `qtyEaches` is the case's content, held by the 1:1
+        SEALED_CASE stock unit `stockUnitId` once stowed.
+      required: [lpn, sku, gtin, unitsPerPack, qtyEaches, state, receiptId, lineNo]
+      properties:
+        lpn:
+          type: string
+          description: License plate - the carton SSCC, or an internal `LPN-<site>-<id>`.
+          example: "003400000000000017"
+        sku:
+          type: string
+          example: SKU-1
+        gtin:
+          type: string
+          description: GTIN-14 of the case pack level, resolved in the local PackagingView.
+          example: "24006381333935"
+        unitsPerPack:
+          type: integer
+          format: int32
+          minimum: 1
+          example: 12
+        qtyEaches:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Eaches in the case; always equals `unitsPerPack` for a sealed case.
+          example: 12
+        ownerRef:
+          type: string
+          description: Owner of the case's stock. Omitted for fleet-owned stock.
+          example: seller-a
+        siteId:
+          type: string
+          description: Site, set by the first stow from the bin's site. Omitted until then.
+          example: WH1
+        binId:
+          type: string
+          description: Bin the container is stowed in. Omitted until stowed, and once EMPTY.
+          example: WH1-STOR-AMB-A01-01-01-A
+        state:
+          type: string
+          enum: [SEALED, OPEN, EMPTY]
+          example: SEALED
+        lot:
+          type: string
+          example: L1
+        expiry:
+          type: string
+          description: Expiry date (YYYY-MM-DD) when the carton declared one.
+          example: "2027-03-01"
+        stockUnitId:
+          type: string
+          description: The SEALED_CASE stock unit holding the eaches, created at the first stow.
+          example: su-9a1e0f3c-2b4d-4c6e-8f00-112233445566
+        receiptId:
+          type: string
+          description: The inbound receipt the case arrived on.
+          example: rcpt-1
+        lineNo:
+          type: integer
+          format: int32
+          minimum: 1
+          description: The receipt line whose booking bounds the container.
+          example: 1
 
     CycleCountRequest:
       type: object

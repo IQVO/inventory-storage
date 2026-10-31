@@ -132,6 +132,11 @@ kongPlugins:
     enabled: true
   prometheus:
     enabled: true
+a2a:
+  enabled: true
+  route:
+    enabled: true
+    path: /api/a2a/inventory-storage
 mcp:
   enabled: true
   route:

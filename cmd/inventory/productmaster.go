@@ -7,6 +7,7 @@ import (
 
 	inboundkafka "github.com/claudioed/inventory-storage/internal/adapters/inbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/system"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 )
 
@@ -37,6 +38,15 @@ func buildProductMasterConsumer(
 		UnitOfWork:      set.uow,
 	}
 	consumer := inboundkafka.NewProductMasterConsumer(cfg.kafkaBrokers, cfg.productMasterConsumerGroup, apply, logger)
+	// ProductPackLevelDeclared/Retired feed the local PackagingView (contract
+	// R8) on the same consumer, group and topic; a newly declared level also
+	// settles the cartons that were waiting for their GTIN.
+	consumer.Packaging = &usecases.ApplyPackLevel{
+		Projection:      set.packaging,
+		ProcessedEvents: postgres.NewProcessedEventRepo(set.pool),
+		Linker:          set.containerLinker(system.Clock{}),
+		UnitOfWork:      set.uow,
+	}
 	logger.Info("product-master classification consumer configured",
 		"topic", inboundkafka.ProductMasterTopic, "consumer_group", cfg.productMasterConsumerGroup)
 

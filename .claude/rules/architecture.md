@@ -17,6 +17,7 @@ cmd/inventory/               main.go — composition root (OLTP REST API)
 cmd/inventory-projector/     analytics WRITER: consumes analytics topic, projects
 cmd/inventory-reports/       analytics READER: read-only report REST
 cmd/mcp/                     MCP inbound adapter (Streamable HTTP)
+cmd/a2a/                     A2A inbound adapter (JSON-RPC over HTTP, ADR-0048)
 internal/
   domain/
     location/                Bin/Location aggregate (capacity, occupancy)
@@ -35,6 +36,7 @@ internal/
     kafka/cloudevents/       the ONLY CloudEvents envelope builder/decoder (ADR-0024)
     inbound/kafka/           analytics consumer (projector)
     inbound/mcp/             MCP tools incl. the read-only report tool
+    inbound/a2a/             A2A skills: check_availability (read), revoke_reservation (write)
     outbound/postgres/       pgxpool repos + migrations
     outbound/memory/         in-memory repos for tests/local
     outbound/events/         log/buffered/multi (fan-out) publisher
@@ -55,9 +57,10 @@ structs across the wire; every response is a DTO.
 
 ## Processes and contracts
 
-- Four binaries: `cmd/inventory` (OLTP REST API), `cmd/inventory-projector`
-  (analytics writer), `cmd/inventory-reports` (analytics reader) and
-  `cmd/mcp` (MCP inbound adapter, Streamable HTTP). Plus `web/` (a standalone
+- Five binaries: `cmd/inventory` (OLTP REST API), `cmd/inventory-projector`
+  (analytics writer), `cmd/inventory-reports` (analytics reader),
+  `cmd/mcp` (MCP inbound adapter, Streamable HTTP) and `cmd/a2a` (A2A inbound
+  adapter, JSON-RPC over HTTP, ADR-0048). Plus `web/` (a standalone
   Vite/React micro-frontend remote — see `.claude/rules/frontend-mfe.md`).
 - Publishes `StockReserved`/`ReservationRevoked` to `warehouse.inventory.events`
   (plus the analytics stream `warehouse.inventory.analytics`), all as

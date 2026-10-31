@@ -450,6 +450,51 @@ mcp:
       cpu: 100m
       memory: 128Mi
 
+# --- A2A agent (ADR-0048) ---
+# The Agent2Agent agent (cmd/a2a): the third driving adapter over the SAME use
+# cases and OLTP database as the REST and MCP surfaces, served as JSON-RPC at
+# "/" and "/a2a" with the Agent Card at /.well-known/agent-card.json and a GET
+# /healthz for the probes. Skills: check_availability (read) and
+# revoke_reservation (write). A2A carries DELEGATION only; the fact a write
+# raises still leaves as a CloudEvent through the transactional outbox that the
+# api Deployment's relay drains (this pod runs no relay).
+# Off by default so existing releases are unaffected; warehouse-infra turns it on.
+a2a:
+  enabled: false
+  replicaCount: 1
+  # A2A_ADDR the binary listens on; keep in sync with service.targetPort.
+  # (8090 is the MCP server, 8091 the projector admin port and 8092 the
+  # reports API, so 8093.)
+  httpAddr: ":8093"
+  # Absolute URL advertised on the Agent Card. Empty defaults to this
+  # release's in-cluster Service DNS
+  # (http://<release>-a2a.<ns>.svc.cluster.local:8093/); warehouse-infra can
+  # override it with the Kong path when the agent must be reachable off-cluster.
+  agentUrl: ""
+  service:
+    type: ClusterIP
+    port: 8093
+    targetPort: 8093
+  # Kong exposure of the A2A agent (a2a-route.yaml): host path
+  # /api/a2a/<context> rewritten to / (JSON-RPC root; the well-known agent card
+  # stays reachable under the same prefix). Off by default; warehouse-infra
+  # turns it on with the real parentRefs and path.
+  route:
+    enabled: false
+    path: "/api/a2a/inventory-storage"
+    parentRefs:
+      - name: ""
+        namespace: ""
+        sectionName: "http"
+  extraEnv: []
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
 # --- frontend (REMOTE Module Federation remote) ---
 # The operator SPA remote, built from web/ and served by its own
 # nginx-unprivileged pod. In the kind cluster it is reached through

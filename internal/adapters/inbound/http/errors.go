@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
+	"github.com/claudioed/inventory-storage/internal/domain/container"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/relocation"
@@ -20,12 +21,14 @@ func statusFor(err error) int {
 		errors.Is(err, usecases.ErrBinNotFound),
 		errors.Is(err, usecases.ErrReservationNotFound),
 		errors.Is(err, usecases.ErrRelocationNotFound),
+		errors.Is(err, usecases.ErrContainerNotFound),
 		errors.Is(err, usecases.ErrProductClassificationNotFound):
 		return http.StatusNotFound
 
 	case errors.Is(err, shared.ErrEmptySKU),
 		errors.Is(err, shared.ErrEmptySiteID),
 		errors.Is(err, shared.ErrEmptyBinID),
+		errors.Is(err, shared.ErrInvalidOwnerRef),
 		errors.Is(err, reservation.ErrInvalidLineNo),
 		errors.Is(err, stock.ErrStowRequiresItemAndLocation),
 		errors.Is(err, product.ErrUnknownHandlingTag),
@@ -65,7 +68,15 @@ func statusFor(err error) int {
 		errors.Is(err, usecases.ErrReceiptNotStaged),
 		errors.Is(err, usecases.ErrBinWrongSite),
 		errors.Is(err, relocation.ErrBinNotAtSite),
-		errors.Is(err, usecases.ErrStowQuantityMismatch):
+		errors.Is(err, usecases.ErrStowQuantityMismatch),
+		errors.Is(err, shared.ErrOwnerMismatch),
+		errors.Is(err, container.ErrContainerNotSealed),
+		errors.Is(err, container.ErrContainerNotStowed),
+		errors.Is(err, container.ErrContainerNotAtSite),
+		errors.Is(err, container.ErrContainerReserved),
+		errors.Is(err, container.ErrBreakNotConserving),
+		errors.Is(err, container.ErrContainerQuantityMismatch),
+		errors.Is(err, container.ErrBinHandlingUnitMismatch):
 		return http.StatusConflict
 
 	default:
@@ -104,10 +115,12 @@ func problemCatalog() []struct {
 		{usecases.ErrReservationNotFound, problemInfo{"reservation-not-found", "Reservation not found"}},
 		{usecases.ErrRelocationNotFound, problemInfo{"relocation-not-found", "Relocation not found"}},
 		{usecases.ErrProductClassificationNotFound, problemInfo{"product-classification-not-found", "Product classification not found"}},
+		{usecases.ErrContainerNotFound, problemInfo{"container-not-found", "Container not found"}},
 
 		{shared.ErrEmptySKU, problemInfo{"empty-sku", "SKU must not be empty"}},
 		{shared.ErrEmptySiteID, problemInfo{"empty-site-id", "Site ID must not be empty"}},
 		{shared.ErrEmptyBinID, problemInfo{"empty-bin-id", "Bin ID must not be empty"}},
+		{shared.ErrInvalidOwnerRef, problemInfo{"invalid-owner-ref", "ownerRef must be at most 64 characters of [A-Za-z0-9._-]"}},
 		{reservation.ErrInvalidLineNo, problemInfo{"invalid-line-no", "lineNo must be between 1 and 2147483647"}},
 		{stock.ErrStowRequiresItemAndLocation, problemInfo{"stow-requires-item-and-location", "Stow requires both an item scan and a location scan"}},
 		{product.ErrUnknownHandlingTag, problemInfo{"unknown-handling-tag", "Unknown handling tag"}},
@@ -146,6 +159,14 @@ func problemCatalog() []struct {
 		{usecases.ErrBinWrongSite, problemInfo{"bin-wrong-site", "Bin does not belong to the transfer's destination site"}},
 		{relocation.ErrBinNotAtSite, problemInfo{"bin-not-at-site", "Bin is not in the relocation's site"}},
 		{usecases.ErrStowQuantityMismatch, problemInfo{"stow-quantity-mismatch", "Stow quantities must sum exactly to the receipt's received quantity"}},
+		{shared.ErrOwnerMismatch, problemInfo{"owner-mismatch", "Stock owner does not match the reservation owner"}},
+		{container.ErrContainerNotSealed, problemInfo{"container-not-sealed", "Container is not sealed"}},
+		{container.ErrContainerNotStowed, problemInfo{"container-not-stowed", "Container is not stowed in a bin"}},
+		{container.ErrContainerNotAtSite, problemInfo{"container-not-at-site", "Container and bin are not at the same site"}},
+		{container.ErrContainerReserved, problemInfo{"container-reserved", "Container is reserved"}},
+		{container.ErrBreakNotConserving, problemInfo{"break-not-conserving", "A case break must produce exactly the container quantity"}},
+		{container.ErrContainerQuantityMismatch, problemInfo{"container-quantity-mismatch", "A sealed container must hold exactly one case"}},
+		{container.ErrBinHandlingUnitMismatch, problemInfo{"bin-handling-unit-mismatch", "Bin does not accept this kind of handling unit"}},
 	}
 }
 

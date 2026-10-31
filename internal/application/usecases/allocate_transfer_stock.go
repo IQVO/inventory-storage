@@ -176,7 +176,7 @@ func (uc *AllocateTransferStock) decideNew(ctx context.Context, cmd TransferComm
 		return err
 	}
 
-	allocations, touched, reason := drawFromUnits(units, cmd.Quantity)
+	allocations, touched, reason := drawFromUnits(reservableUnits(units, ""), cmd.Quantity)
 	if reason != "" {
 		return uc.reject(ctx, cmd, reason)
 	}

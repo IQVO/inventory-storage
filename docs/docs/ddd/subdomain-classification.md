@@ -8,7 +8,7 @@ description: Why Inventory & Storage is a Core subdomain, with the justification
 
 ## Verdict: **Core subdomain**, WMS tier
 
-`amazon-fulfillment-ddd.md` classifies the subdomains of a fulfillment
+`fulfillment-reference-ddd.md` classifies the subdomains of a fulfillment
 operation by competitive differentiation. This context maps to
 **Inventory & Slotting**:
 

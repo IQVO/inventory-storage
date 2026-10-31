@@ -41,6 +41,10 @@ type Deps struct {
 	// same use case as GET /relocations/{id}. The tool is always advertised;
 	// nil makes it answer a clean "not configured" tool error.
 	GetRelocation *usecases.GetRelocation
+	// GetContainer backs the read-only get_container tool (ADR 0045): the same
+	// use case as GET /containers/{lpn}. The tool is always advertised; nil
+	// makes it answer a clean "not configured" tool error.
+	GetContainer *usecases.GetContainer
 }
 
 // --- check_availability -------------------------------------------------------
@@ -132,6 +136,9 @@ func (d Deps) registerTools(server *mcp.Server) {
 
 	// Read-only relocation lookup (ADR 0039).
 	d.registerRelocationTool(server)
+
+	// Read-only container lookup (ADR 0045).
+	d.registerContainerTool(server)
 
 	// Write tool: revokes a reservation, returning its quantity to usable.
 	// Annotated destructive (non-read-only) so a host can see it changes

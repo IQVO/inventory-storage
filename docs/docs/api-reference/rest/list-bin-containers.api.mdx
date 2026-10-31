@@ -1,0 +1,70 @@
+---
+id: list-bin-containers
+title: "List the containers stowed in a bin"
+description: "The sealed or open containers stowed in the bin (ADR 0045), ordered by LPN. Empty containers have no bin and are not listed. Side-effect-free."
+sidebar_label: "List the containers stowed in a bin"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"List the containers stowed in a bin"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/bins/{binId}/containers"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The sealed or open containers stowed in the bin (ADR 0045), ordered by LPN. Empty containers have no bin and are not listed. Side-effect-free.
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./list-bin-containers.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./list-bin-containers.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./list-bin-containers.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

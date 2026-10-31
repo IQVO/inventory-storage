@@ -1,7 +1,7 @@
 ---
 id: inventory-storage-api
 title: "Inventory & Storage API"
-description: "The WMS-tier authoritative record of what is held where, and what portion of it is usable, for the warehouse-systems platform. This bounded context implements Amazon-style chaotic (random) stow: there is no fixed product location — an inbound item may be stowed into any free bin, and this service records the exact bin it landed in. It supplies 'stock reality' to the Work Planning bounded context and makes allocation a revocable reservation, so a failed physical pick or delivery never strands an order: a reservation can always be revoked and re-satisfied from a different physical holding."
+description: "The WMS-tier authoritative record of what is held where, and what portion of it is usable, for the warehouse-systems platform. This bounded context implements chaotic (random) stow: there is no fixed product location — an inbound item may be stowed into any free bin, and this service records the exact bin it landed in. It supplies 'stock reality' to the Work Planning bounded context and makes allocation a revocable reservation, so a failed physical pick or delivery never strands an order: a reservation can always be revoked and re-satisfied from a different physical holding."
 sidebar_label: Introduction
 sidebar_position: 0
 hide_title: true
@@ -29,7 +29,7 @@ import Export from "@theme/ApiExplorer/Export";
 
 
 
-The WMS-tier authoritative record of what is held where, and what portion of it is usable, for the warehouse-systems platform. This bounded context implements Amazon-style chaotic (random) stow: there is no fixed product location — an inbound item may be stowed into any free bin, and this service records the exact bin it landed in. It supplies "stock reality" to the Work Planning bounded context and makes allocation a revocable reservation, so a failed physical pick or delivery never strands an order: a reservation can always be revoked and re-satisfied from a different physical holding.
+The WMS-tier authoritative record of what is held where, and what portion of it is usable, for the warehouse-systems platform. This bounded context implements chaotic (random) stow: there is no fixed product location — an inbound item may be stowed into any free bin, and this service records the exact bin it landed in. It supplies "stock reality" to the Work Planning bounded context and makes allocation a revocable reservation, so a failed physical pick or delivery never strands an order: a reservation can always be revoked and re-satisfied from a different physical holding.
 
 Its aggregates are **StockUnit** (a quantity of a SKU at a specific bin — every physical item has exactly one known bin, or is flagged Unlocated), **Bin/Location** (a coded slot with fixed capacity; any SKU may occupy any free bin, chaotic-storage style), and **Reservation** (a revocable binding of quantity to demand, with a timeout). "Usable" inventory — on-hand minus active reservations minus held/unlocated stock — is what constrains what this service will let you reserve, not raw on-hand quantity.
 

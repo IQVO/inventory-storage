@@ -62,7 +62,10 @@ type Reservation struct {
 	// lineNo is the order line this reservation is for (decision 18, ADR
 	// 0036); nil when unknown (a reservation made before the field existed,
 	// or by a client that does not send it).
-	lineNo      *int
+	lineNo *int
+	// ownerRef is the single owner whose stock this reservation draws on
+	// (ADR 0045); empty = fleet-owned. A reservation never spans owners.
+	ownerRef    shared.OwnerRef
 	allocations []Allocation
 	status      Status
 	createdAt   time.Time
@@ -120,6 +123,16 @@ func RehydrateForLine(id string, sku shared.SKU, quantity shared.Quantity, deman
 		version: version,
 	}
 }
+
+// ForOwner binds a freshly created or rehydrated reservation to owner and
+// returns it. Empty owner = fleet-owned.
+func (r *Reservation) ForOwner(owner shared.OwnerRef) *Reservation {
+	r.ownerRef = owner
+	return r
+}
+
+// OwnerRef is the owner this reservation draws on; empty = fleet-owned.
+func (r *Reservation) OwnerRef() shared.OwnerRef { return r.ownerRef }
 
 func copyLineNo(n *int) *int {
 	if n == nil {
