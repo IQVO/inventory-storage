@@ -41,13 +41,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
 
-	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/inventory-storage/internal/domain/container"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -123,29 +121,6 @@ type Reader interface {
 	ReadMessage(ctx context.Context) (kafkago.Message, error)
 	Close() error
 }
-
-// dlqTopicSuffix names the dead-letter topic this consumer publishes an
-// unparseable/malformed message to, relative to its OWN source topic
-// (never a fixed constant): NewConsumerForTopic's isolated test topics
-// each get their own matching "<topic>.dlq".
-//
-// Unlike order-management's RepromiseConsumer (ADR-0025 §DLQ over
-// there), this consumer does NOT retry apply() before dead-lettering:
-// apply()'s only failure mode is a permanently-malformed JSON payload
-// (bad envelope/data shape, an empty required field) — a deterministic
-// parse failure that would fail identically on every retry attempt,
-// never a transient infrastructure error. Retrying it would just burn
-// CPU for zero benefit. The value this DLQ still adds (ADR-0020) is
-// pure visibility/replay: today a malformed message is logged and
-// silently skipped forever; now it is ALSO preserved on
-// Topic+dlqTopicSuffix (raw payload plus x-dlq-* headers) so an operator
-// can inspect and, if facility-layout ever fixes its own publish bug,
-// replay it. Readiness still advances past it either way (observe()
-// runs unconditionally) — this consumer was already fail-open/
-// non-blocking on a bad message before this change, unlike
-// RepromiseConsumer's redelivery-blocking risk that originally
-// motivated retry-then-DLQ there.
-const dlqTopicSuffix = ".dlq"
 
 // Consumer maintains the local location-classification view by replaying
 // Topic from its earliest offset and applying facility-layout's events.
@@ -453,29 +428,6 @@ func (c *Consumer) Run(ctx context.Context) error {
 	}
 }
 
-// dlqPublish writes the raw, unmodified message payload plus error
-// context (as headers, so the raw body stays byte-identical for a
-// manual replay tool) to the dead-letter topic. A nil dlqWriter (the
-// zero-value Consumer every existing unit test constructs directly via
-// newTestConsumer, which never exercises this path) is a documented
-// no-op rather than a nil-pointer panic.
-func (c *Consumer) dlqPublish(ctx context.Context, msg kafkago.Message, cause error) error {
-	if c.dlqWriter == nil {
-		return nil
-	}
-	headers := append([]kafkago.Header{}, msg.Headers...)
-	headers = append(headers,
-		kafkago.Header{Key: "x-dlq-source-topic", Value: []byte(c.topic)},
-		kafkago.Header{Key: "x-dlq-error", Value: []byte(cause.Error())},
-		kafkago.Header{Key: "x-dlq-failed-at", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
-	)
-	return writeDLQ(ctx, c.dlqWriter, kafkago.Message{
-		Key:     msg.Key,
-		Value:   msg.Value,
-		Headers: headers,
-	})
-}
-
 // observe records that a message was processed and flips readiness once
 // every tracked partition has reached its captured startup target.
 func (c *Consumer) observe(partition int, offset int64) {
@@ -489,222 +441,3 @@ func (c *Consumer) observe(partition int, offset int64) {
 		c.markReady()
 	}
 }
-
-// apply decodes one CloudEvents 1.0 event and updates the cache. Anything
-// cloudevents.Decode rejects (the retired flat envelope, bad JSON, missing
-// required attributes) is returned as an error so Run dead-letters it —
-// it is never parsed as a legacy shape. Every update is an idempotent
-// upsert/delete keyed by the aggregate, so a redelivered event (same
-// CloudEvents id) re-applies harmlessly and needs no separate id dedupe.
-func (c *Consumer) apply(value []byte) error {
-	e, err := cloudevents.Decode(value)
-	if err != nil {
-		return fmt.Errorf("facilitycache: %w", err)
-	}
-
-	switch e.Type() {
-	case typeZoneRegistered:
-		return c.applyZoneRegistered(e.DataAs)
-	case typeLocationSlotRegistered:
-		return c.applySlotRegistered(e.DataAs)
-	case typeLocationSlotHandlingUnitDeclared:
-		return c.applyHandlingUnitDeclared(e.DataAs)
-	case typeLocationSlotDecommissioned:
-		var data slotData
-		if err := e.DataAs(&data); err != nil {
-			return fmt.Errorf("facilitycache: decode %s: %w", typeLocationSlotDecommissioned, err)
-		}
-		c.mu.Lock()
-		delete(c.slots, data.LocationCode)
-		delete(c.handlingUnits, data.LocationCode)
-		c.mu.Unlock()
-	default:
-		// Every other event on this topic (SiteRegistered, AisleRegistered,
-		// LocationTypeRegistered, PlacementRuleDefined, FacilityLayoutImported)
-		// carries nothing this cache needs. Ignoring them is correct, not a
-		// gap: they still count toward the readiness target because observe()
-		// runs for every message regardless.
-	}
-	return nil
-}
-
-// applyZoneRegistered caches a zone's classification attributes.
-func (c *Consumer) applyZoneRegistered(dataAs func(any) error) error {
-	var data zoneData
-	if err := dataAs(&data); err != nil {
-		return fmt.Errorf("facilitycache: decode %s: %w", typeZoneRegistered, err)
-	}
-	if data.ZoneID == "" {
-		return fmt.Errorf("facilitycache: %s with empty zoneId", typeZoneRegistered)
-	}
-	temperatureClass, err := product.ParseTemperatureClass(data.TemperatureClass)
-	if err != nil {
-		temperatureClass = ""
-	}
-	c.mu.Lock()
-	c.zones[data.ZoneID] = product.SlotAttributes{
-		Hazmat:           data.Hazmat,
-		TemperatureClass: temperatureClass,
-		Known:            true,
-	}
-	c.mu.Unlock()
-	return nil
-}
-
-// applySlotRegistered caches a location slot -> zone binding.
-func (c *Consumer) applySlotRegistered(dataAs func(any) error) error {
-	var data slotData
-	if err := dataAs(&data); err != nil {
-		return fmt.Errorf("facilitycache: decode %s: %w", typeLocationSlotRegistered, err)
-	}
-	if data.LocationCode == "" {
-		return fmt.Errorf("facilitycache: %s with empty locationCode", typeLocationSlotRegistered)
-	}
-	zoneID := data.ZoneID
-	if zoneID == "" {
-		// Derive the zone identity from the code itself, mirroring
-		// facility-layout's own LocationCode.ZoneID() (site-area-zone,
-		// the first three of seven hyphen-separated segments), so a
-		// payload that omits the field still resolves.
-		zoneID = zoneIDFromLocationCode(data.LocationCode)
-	}
-	c.mu.Lock()
-	c.slots[data.LocationCode] = zoneID
-	c.setHandlingUnit(data.LocationCode, container.ParseHandlingUnit(data.HandlingUnit))
-	c.mu.Unlock()
-	return nil
-}
-
-// applyHandlingUnitDeclared updates a bin's handling unit from a
-// LocationSlotHandlingUnitDeclared event. It is an idempotent last-write-wins
-// upsert on the bin's code, so a redelivery re-applies harmlessly. A value
-// that is not EACH/CASE/PALLET is stored as "none recorded", the fail-closed
-// answer for a sealed case (the same reading ParseHandlingUnit gives a
-// registration), rather than poisoning the partition.
-func (c *Consumer) applyHandlingUnitDeclared(dataAs func(any) error) error {
-	var data slotData
-	if err := dataAs(&data); err != nil {
-		return fmt.Errorf("facilitycache: decode %s: %w", typeLocationSlotHandlingUnitDeclared, err)
-	}
-	if data.LocationCode == "" {
-		return fmt.Errorf("facilitycache: %s with empty locationCode", typeLocationSlotHandlingUnitDeclared)
-	}
-	c.mu.Lock()
-	c.setHandlingUnit(data.LocationCode, container.ParseHandlingUnit(data.HandlingUnit))
-	c.mu.Unlock()
-	return nil
-}
-
-// setHandlingUnit records (or clears) a bin's handling unit. The caller holds
-// c.mu. A registration that carries none clears a stale value.
-func (c *Consumer) setHandlingUnit(code string, hu container.HandlingUnit) {
-	if hu == container.HandlingUnknown {
-		delete(c.handlingUnits, code)
-		return
-	}
-	if c.handlingUnits == nil {
-		c.handlingUnits = make(map[string]container.HandlingUnit)
-	}
-	c.handlingUnits[code] = hu
-}
-
-// HandlingUnit satisfies ports.BinHandlingUnitLookup from the local copy. It
-// never performs I/O. A bin with no recorded handling unit (every bin before
-// facility-layout ships the attribute, or an unknown bin) answers
-// HandlingUnknown, which fails closed for a sealed case.
-func (c *Consumer) HandlingUnit(_ context.Context, bin shared.BinId) (container.HandlingUnit, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.handlingUnits[bin.String()], nil
-}
-
-// zoneIDFromLocationCode mirrors facility-layout's LocationCode.ZoneID():
-// the site, area and zone segments joined, e.g.
-// "WH1-STOR-AMB-A07-03-02-B" -> "WH1-STOR-AMB". A code that does not have
-// at least three segments yields "", which resolves to Known=false.
-func zoneIDFromLocationCode(code string) string {
-	parts := strings.Split(code, "-")
-	if len(parts) < 3 {
-		return ""
-	}
-	return strings.Join(parts[:3], "-")
-}
-
-// newDLQWriter builds the dead-letter writer for topic. The fleet
-// auto-creates every topic on first write (warehouse-infra kafka.tf);
-// without AllowAutoTopicCreation a missing "<topic>.dlq" fails the DLQ
-// publish with "Unknown Topic Or Partition" and stops the consumer,
-// freezing the facility cache.
-func newDLQWriter(brokers []string, topic string) *kafkago.Writer {
-	return &kafkago.Writer{
-		Addr:                   kafkago.TCP(brokers...),
-		Topic:                  topic + dlqTopicSuffix,
-		AllowAutoTopicCreation: true,
-		// BatchTimeout: a DLQ write is a synchronous single message; with
-		// kafka-go's 1s default the writer holds every write for a full second
-		// waiting to fill a batch, capping dead-lettering at ~1 msg/s/partition
-		// (observed live: a backlog of legacy messages took hours to drain while
-		// the consumer processed nothing else).
-		BatchTimeout: dlqBatchTimeout,
-		// Same synchronous-writer contract as the producer adapters in
-		// internal/adapters/outbound/kafka/writer_config.go (ADR-0020/0021):
-		// RequireAll so a DLQ write that returns nil really was stored (the
-		// consumer commits the source offset on success -- a RequireNone
-		// "success" the broker dropped would be silent message loss), and
-		// Hash so the source message Key keeps routing to one DLQ partition
-		// (kafka-go's default balancer ignores Key).
-		RequiredAcks: kafkago.RequireAll,
-		Balancer:     &kafkago.Hash{},
-	}
-}
-
-// dlqTopicReadyAttempts / dlqTopicReadyBackoff bound how long a DLQ publish
-// waits for an auto-created "<topic>.dlq" to become writable.
-const (
-	dlqTopicReadyAttempts = 40
-	dlqTopicReadyBackoff  = 250 * time.Millisecond
-)
-
-// dlqMessageWriter is the slice of *kafkago.Writer writeDLQ needs.
-type dlqMessageWriter interface {
-	WriteMessages(ctx context.Context, msgs ...kafkago.Message) error
-}
-
-// writeDLQ publishes msg to the dead-letter topic, retrying (bounded) while
-// the topic is still being auto-created. AllowAutoTopicCreation alone is not
-// enough: the first write races partition leader election and the broker
-// answers UnknownTopicOrPartition / LeaderNotAvailable for a few hundred
-// milliseconds. Any other error -- or exhausting the budget -- is returned,
-// so the caller still refuses to commit the offset (no message loss).
-func writeDLQ(ctx context.Context, w dlqMessageWriter, msg kafkago.Message) error {
-	var err error
-	for attempt := 0; attempt < dlqTopicReadyAttempts; attempt++ {
-		if err = w.WriteMessages(ctx, msg); err == nil || !isTopicNotReady(err) {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return errors.Join(err, ctx.Err())
-		case <-time.After(dlqTopicReadyBackoff):
-		}
-	}
-	return err
-}
-
-// isTopicNotReady reports whether err only means the (auto-created) topic
-// has no leader yet.
-func isTopicNotReady(err error) bool {
-	var werrs kafkago.WriteErrors
-	if errors.As(err, &werrs) {
-		for _, e := range werrs {
-			if e != nil && !isTopicNotReady(e) {
-				return false
-			}
-		}
-		return werrs.Count() > 0
-	}
-	return errors.Is(err, kafkago.UnknownTopicOrPartition) || errors.Is(err, kafkago.LeaderNotAvailable)
-}
-
-// dlqBatchTimeout flushes a dead-letter write almost immediately.
-const dlqBatchTimeout = 10 * time.Millisecond
