@@ -141,6 +141,7 @@ const sidebars: SidebarsConfig = {
         'adr/0046-containers-no-site-on-carton-local-packaging-view',
         'adr/0047-bin-handling-unit-declared-event',
         'adr/0048-a2a-inbound-adapter',
+        'adr/0049-adopt-the-fleet-rest-api-guideline',
       ],
     },
   ],

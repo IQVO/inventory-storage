@@ -50,7 +50,7 @@ Schemathesis contract run, which boots only the OLTP binary.
 
 Every `POST` also takes the `Idempotency-Key` header
 ([ADR 0018](/docs/adr/0018-idempotency-key-middleware),
-[ADR 0049](/docs/adr/0049-adopt-the-fleet-rest-api-guideline)): absent →
+[ADR 0049](/docs/adr/0049)): absent →
 `400 idempotency-key-required`; same key with a different method, path or body
 → `409 idempotency-key-reused`; a replay of the same request answers the stored
 response with `Idempotency-Replayed: true`. Every collection `GET`
