@@ -62,26 +62,35 @@ func Unknown(r *http.Request, allowed ...string) string {
 	return names[0]
 }
 
-// Limit parses `limit` from the query string. Absent -> DefaultLimit.
+// Limit parses `limit` from the query string. Absent -> DefaultLimit. A `limit` that is
+// present but empty, or repeated, is ErrInvalidLimit: the parameter is a single integer, and
+// silently taking the first value would accept a request the contract says is invalid.
 func Limit(r *http.Request) (int, error) {
-	raw := r.URL.Query().Get("limit")
-	if raw == "" {
+	vals, present := r.URL.Query()["limit"]
+	if !present {
 		return DefaultLimit, nil
 	}
-	n, err := strconv.Atoi(raw)
+	if len(vals) != 1 || vals[0] == "" {
+		return 0, ErrInvalidLimit
+	}
+	n, err := strconv.Atoi(vals[0])
 	if err != nil || n < 1 || n > MaxLimit {
 		return 0, ErrInvalidLimit
 	}
 	return n, nil
 }
 
-// After parses `cursor` from the query string. Absent -> nil (first page).
+// After parses `cursor` from the query string. Absent (or empty) -> nil (first page). A
+// repeated `cursor` is ErrInvalidCursor for the same reason a repeated `limit` is invalid.
 func After(r *http.Request) (*Position, error) {
-	raw := r.URL.Query().Get("cursor")
-	if raw == "" {
+	vals := r.URL.Query()["cursor"]
+	if len(vals) > 1 {
+		return nil, ErrInvalidCursor
+	}
+	if len(vals) == 0 || vals[0] == "" {
 		return nil, nil
 	}
-	return Decode(raw)
+	return Decode(vals[0])
 }
 
 // Encode makes the opaque cursor for a position.

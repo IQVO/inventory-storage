@@ -28,6 +28,9 @@ func TestLimit(t *testing.T) {
 		{"limit=501", 0, ErrInvalidLimit},
 		{"limit=-3", 0, ErrInvalidLimit},
 		{"limit=abc", 0, ErrInvalidLimit},
+		{"limit=", 0, ErrInvalidLimit},
+		{"limit=5&limit=6", 0, ErrInvalidLimit},
+		{"limit=&limit=7", 0, ErrInvalidLimit},
 	}
 	for _, c := range cases {
 		r := httptest.NewRequest(http.MethodGet, "/x?"+c.q, nil)
@@ -55,6 +58,9 @@ func TestCursorRoundTripAndRejection(t *testing.T) {
 	}
 	if p, err := After(httptest.NewRequest(http.MethodGet, "/x", nil)); p != nil || err != nil {
 		t.Fatalf("absent cursor is the first page")
+	}
+	if _, err := After(httptest.NewRequest(http.MethodGet, "/x?cursor="+Encode(p)+"&cursor="+Encode(p), nil)); !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("a repeated cursor must be rejected, got %v", err)
 	}
 }
 
