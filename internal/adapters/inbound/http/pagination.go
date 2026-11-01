@@ -12,11 +12,18 @@ import (
 var (
 	problemInvalidLimit  = problemInfo{"invalid-limit", "limit must be an integer between 1 and 500"}
 	problemInvalidCursor = problemInfo{"invalid-cursor", "cursor is not a valid page token"}
+	problemUnknownParam  = problemInfo{"unknown-query-parameter", "the collection does not declare this query parameter"}
 )
 
-// pageParams reads `limit` and `cursor`. On a bad value it has already written
-// the 400 problem and reports ok == false.
-func pageParams(w http.ResponseWriter, r *http.Request) (limit int, pos *page.Position, ok bool) {
+// pageParams reads `limit` and `cursor`; filters lists the other query parameters the
+// collection declares, and any further one is a 400 (a retired paging parameter such as
+// `after` must fail loudly, not read page one forever). On a bad value it has already
+// written the 400 problem and reports ok == false.
+func pageParams(w http.ResponseWriter, r *http.Request, filters ...string) (limit int, pos *page.Position, ok bool) {
+	if name := page.Unknown(r, filters...); name != "" {
+		writeProblem(w, http.StatusBadRequest, problemUnknownParam, "unknown query parameter: "+name, r.URL.Path)
+		return 0, nil, false
+	}
 	limit, err := page.Limit(r)
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, problemInvalidLimit, err.Error(), r.URL.Path)

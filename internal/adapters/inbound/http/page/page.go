@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 )
 
@@ -35,6 +36,30 @@ type Page[T any] struct {
 type Position struct {
 	Sort string `json:"s"`
 	ID   string `json:"i"`
+}
+
+// Unknown returns the first query parameter of r that the collection does not declare
+// (`limit` and `cursor` are always declared; allowed lists the filters), or "" when every
+// parameter is known. A collection GET answers 400 `unknown-query-parameter` for it: a
+// consumer still sending a retired paging parameter (`after`, `from`, `offset`, `nextToken`)
+// then fails loudly instead of silently reading page one forever. Names are checked in
+// sorted order so the error is deterministic.
+func Unknown(r *http.Request, allowed ...string) string {
+	known := map[string]bool{"limit": true, "cursor": true}
+	for _, a := range allowed {
+		known[a] = true
+	}
+	var names []string
+	for name := range r.URL.Query() {
+		if !known[name] {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return names[0]
 }
 
 // Limit parses `limit` from the query string. Absent -> DefaultLimit.

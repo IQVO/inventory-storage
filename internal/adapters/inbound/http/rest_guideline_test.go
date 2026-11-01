@@ -167,7 +167,8 @@ func TestListBinContainers_WalksEveryPageWithoutDuplicatesOrSkips(t *testing.T) 
 }
 
 // A bad limit is 400 invalid-limit and a cursor that does not decode (or whose
-// sort key is not this list's) is 400 invalid-cursor, on both collections.
+// sort key is not this list's) is 400 invalid-cursor, and any undeclared query parameter is
+// 400 unknown-query-parameter, on both collections.
 func TestCollections_RejectBadLimitAndCursor(t *testing.T) {
 	cs := newContainerServer(t)
 	for _, list := range []struct {
@@ -189,6 +190,10 @@ func TestCollections_RejectBadLimitAndCursor(t *testing.T) {
 			{"cursor=" + url.QueryEscape("not base64 !!"), "invalid-cursor"},
 			{"cursor=" + page.Encode(page.Position{Sort: "x"}), "invalid-cursor"}, // no id
 			{"cursor=" + page.Encode(list.foreign), "invalid-cursor"},
+			// A retired paging parameter fails loudly instead of reading page one forever.
+			{"after=anything", "unknown-query-parameter"},
+			{"offset=10", "unknown-query-parameter"},
+			{"nextToken=abc", "unknown-query-parameter"},
 		} {
 			t.Run(list.name+" "+tc.query, func(t *testing.T) {
 				rec := cs.do(t, http.MethodGet, list.base+sep+tc.query, nil)

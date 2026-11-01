@@ -127,3 +127,23 @@ func TestLastPageHasNoCursorAndItemsNeverNil(t *testing.T) {
 		t.Fatalf("cursor must point after the last RETURNED row, got %+v", p)
 	}
 }
+
+func TestUnknownNamesTheFirstUndeclaredParameter(t *testing.T) {
+	cases := []struct {
+		q    string
+		want string
+	}{
+		{"", ""},
+		{"limit=5&cursor=x", ""},
+		{"demandRef=o1&limit=5", ""},
+		{"after=x", "after"},
+		{"demandRef=o1&offset=3&after=x", "after"}, // sorted: after < offset
+		{"x-schemathesis-unknown-property=42", "x-schemathesis-unknown-property"},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(http.MethodGet, "/x?"+c.q, nil)
+		if got := Unknown(r, "demandRef"); got != c.want {
+			t.Fatalf("%q: got %q want %q", c.q, got, c.want)
+		}
+	}
+}

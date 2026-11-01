@@ -428,6 +428,16 @@ func TestIdempotency_FailedUseCaseLeavesNoPartialWrites(t *testing.T) {
 // POST /reservations/{id}/pick-confirmations
 // ---------------------------------------------------------------------
 
+// occupyBin marks the bin seedStock created for sku as holding qty units. seedStock writes the
+// stock unit only; a pick confirmation RELEASES that quantity from the bin, so the bin must
+// really hold it or the release is refused as release-exceeds-occupancy.
+func occupyBin(t *testing.T, pool *pgxpool.Pool, sku string, qty int) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `UPDATE bins SET occupied = $2 WHERE id = $1`, "IDEMP-BIN-"+sku, qty); err != nil {
+		t.Fatalf("occupy bin: %v", err)
+	}
+}
+
 func (f routesFixture) reserveOne(t *testing.T, sku, demandRef string) string {
 	t.Helper()
 	rec := f.post("/reservations", "seed-"+demandRef, `{"sku":"`+sku+`","quantity":6,"demandRef":"`+demandRef+`"}`)
@@ -441,6 +451,7 @@ func (f routesFixture) reserveOne(t *testing.T, sku, demandRef string) string {
 func TestIdempotency_ConfirmPick_ReplayConfirmsOnce(t *testing.T) {
 	fx := newRoutesFixture(t)
 	seedStock(t, fx.pool, "SKU-PICK-1", 10)
+	occupyBin(t, fx.pool, "SKU-PICK-1", 10)
 	id := fx.reserveOne(t, "SKU-PICK-1", "order-pick-1")
 	path := "/reservations/" + id + "/pick-confirmations"
 	before := fx.outboxRows(t)
@@ -485,6 +496,7 @@ func TestIdempotency_ConfirmPick_ReplayConfirmsOnce(t *testing.T) {
 func TestIdempotency_ConfirmPick_Concurrent_PicksOnce(t *testing.T) {
 	fx := newRoutesFixture(t)
 	seedStock(t, fx.pool, "SKU-PICK-2", 10)
+	occupyBin(t, fx.pool, "SKU-PICK-2", 10)
 	id := fx.reserveOne(t, "SKU-PICK-2", "order-pick-2")
 	path := "/reservations/" + id + "/pick-confirmations"
 	before := fx.outboxRows(t)

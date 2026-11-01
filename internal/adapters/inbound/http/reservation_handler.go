@@ -94,7 +94,7 @@ func (s *Server) handleGetReservationsByDemandRef(w http.ResponseWriter, r *http
 		writeProblem(w, http.StatusBadRequest, problemInfo{"missing-demand-ref", "demandRef query parameter is required"}, "demandRef query parameter must not be empty", r.URL.Path)
 		return
 	}
-	limit, pos, ok := pageParams(w, r)
+	limit, pos, ok := pageParams(w, r, "demandRef")
 	if !ok {
 		return
 	}

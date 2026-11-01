@@ -458,7 +458,10 @@ paths:
         (createdAt, id), `limit` (1-500, default 100) and the opaque
         `cursor` from the previous page's `nextCursor`; `demandRef` is
         repeated on every page request and `nextCursor` is absent on the
-        last page. This is the read side backing a cross-service
+        last page. Any query parameter other than `demandRef`, `limit` and
+        `cursor` is 400 `unknown-query-parameter` (a retired paging
+        parameter such as `after` fails loudly instead of reading page one
+        forever). This is the read side backing a cross-service
         order-lifecycle console screen that needs to answer "what did
         inventory-storage do for order X, line N". Side-effect-free.
       tags: [Reservations]
@@ -2112,7 +2115,8 @@ paths:
         listed. Keyset-paginated (REST guideline section 3): one page of
         `{items, nextCursor}`, `limit` (1-500, default 100) and the opaque
         `cursor` from the previous page's `nextCursor`; `nextCursor` is
-        absent on the last page. Side-effect-free.
+        absent on the last page. Any other query parameter is 400
+        `unknown-query-parameter`. Side-effect-free.
       tags: [Containers]
       parameters:
         - name: binId
