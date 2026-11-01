@@ -17,7 +17,7 @@ import (
 // warehouse.returns-processing.events and books every line as a staged
 // receipt through the existing ReceiveStock use case — the SAME seam an
 // inbound-receiving receipt line drives (the same effect as
-// POST /stock/receive) — claiming each CloudEvents id in
+// POST /stock-receipts) — claiming each CloudEvents id in
 // processed_events (consumer return-line-staged, the flow's provenance
 // record) in the SAME transaction as the StockReceived outbox row.
 //

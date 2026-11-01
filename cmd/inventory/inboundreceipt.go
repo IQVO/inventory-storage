@@ -16,7 +16,7 @@ import (
 // (ADR 0037, inbound-receiving ADR 0003): it consumes ReceiptLineReceived on
 // warehouse.inbound-receiving.events and books every Good line as a staged
 // receipt through the existing ReceiveStock use case (the same effect as
-// POST /stock/receive), claiming each CloudEvents id in processed_events in
+// POST /stock-receipts), claiming each CloudEvents id in processed_events in
 // the SAME transaction as the StockReceived outbox row. Damaged lines are
 // counted, not booked.
 //

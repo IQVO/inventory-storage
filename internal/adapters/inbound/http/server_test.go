@@ -127,12 +127,12 @@ func TestCORS_Preflight_AllowsDefaultOrigin(t *testing.T) {
 	}
 }
 
-// ADR-0018: a browser POST to /stock/receive or /reservations carries an
+// ADR-0018: a browser POST to /stock-receipts or /reservations carries an
 // Idempotency-Key header, so its CORS preflight must list it in
 // Access-Control-Allow-Headers or the browser blocks the request.
 func TestCORS_Preflight_AllowsIdempotencyKeyHeader(t *testing.T) {
 	ts := newTestServer()
-	for _, path := range []string{"/reservations", "/stock/receive"} {
+	for _, path := range []string{"/reservations", "/stock-receipts"} {
 		req := httptest.NewRequest(http.MethodOptions, path, nil)
 		req.Header.Set("Origin", "http://localhost:5173")
 		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
@@ -178,7 +178,7 @@ func TestCORS_Preflight_RejectsUnknownOrigin(t *testing.T) {
 
 func TestReceiveStock_Endpoint(t *testing.T) {
 	ts := newTestServer()
-	rec := ts.do(t, http.MethodPost, "/stock/receive", map[string]any{"sku": "SKU-1", "quantity": 10})
+	rec := ts.do(t, http.MethodPost, "/stock-receipts", map[string]any{"sku": "SKU-1", "quantity": 10})
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -186,7 +186,7 @@ func TestReceiveStock_Endpoint(t *testing.T) {
 
 func TestReceiveStock_Endpoint_InvalidQuantity(t *testing.T) {
 	ts := newTestServer()
-	rec := ts.do(t, http.MethodPost, "/stock/receive", map[string]any{"sku": "SKU-1", "quantity": 0})
+	rec := ts.do(t, http.MethodPost, "/stock-receipts", map[string]any{"sku": "SKU-1", "quantity": 0})
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -196,7 +196,7 @@ func TestStowStock_Endpoint(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 10)
 
-	rec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
+	rec := ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -209,16 +209,16 @@ func TestStowStock_Endpoint_CapacityExceeded(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 5)
 
-	rec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 6, "binId": "A-1-1"})
+	rec := ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 6, "binId": "A-1-1"})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
-	assertProblemDetails(t, rec, http.StatusConflict, "bin-full", "/stock/stow")
+	assertProblemDetails(t, rec, http.StatusConflict, "bin-full", "/stowages")
 }
 
 func TestStowStock_Endpoint_UnknownBin(t *testing.T) {
 	ts := newTestServer()
-	rec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 6, "binId": "A-1-1"})
+	rec := ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 6, "binId": "A-1-1"})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -227,7 +227,7 @@ func TestStowStock_Endpoint_UnknownBin(t *testing.T) {
 func TestReservationLifecycle_Endpoints(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 10)
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
 
 	reserveRec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 6, "demandRef": "order-1"})
 	if reserveRec.Code != http.StatusCreated {
@@ -248,7 +248,7 @@ func TestReservationLifecycle_Endpoints(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", usableRec.Code, usableRec.Body.String())
 	}
 
-	confirmRec := ts.do(t, http.MethodPost, "/reservations/"+reserved.ID+"/confirm-pick", nil)
+	confirmRec := ts.do(t, http.MethodPost, "/reservations/"+reserved.ID+"/pick-confirmations", nil)
 	if confirmRec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d: %s", confirmRec.Code, confirmRec.Body.String())
 	}
@@ -260,7 +260,7 @@ func TestReservationLifecycle_Endpoints(t *testing.T) {
 func TestGetReservationsByDemandRef_Endpoint_Found(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 10)
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
 
 	reserveRec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 6, "demandRef": "order-42-line-1"})
 	if reserveRec.Code != http.StatusCreated {
@@ -275,22 +275,29 @@ func TestGetReservationsByDemandRef_Endpoint_Found(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var body []struct {
-		ID          string `json:"id"`
-		SKU         string `json:"sku"`
-		Quantity    int    `json:"quantity"`
-		DemandRef   string `json:"demandRef"`
-		Status      string `json:"status"`
-		Allocations []struct {
-			StockUnitID string `json:"stockUnitId"`
-			BinID       string `json:"binId"`
+	var page struct {
+		Items []struct {
+			ID          string `json:"id"`
+			SKU         string `json:"sku"`
 			Quantity    int    `json:"quantity"`
-		} `json:"allocations"`
-		CreatedAt string `json:"createdAt"`
-		ExpiresAt string `json:"expiresAt"`
+			DemandRef   string `json:"demandRef"`
+			Status      string `json:"status"`
+			Allocations []struct {
+				StockUnitID string `json:"stockUnitId"`
+				BinID       string `json:"binId"`
+				Quantity    int    `json:"quantity"`
+			} `json:"allocations"`
+			CreatedAt string `json:"createdAt"`
+			ExpiresAt string `json:"expiresAt"`
+		} `json:"items"`
+		NextCursor string `json:"nextCursor"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
 		t.Fatalf("unexpected error decoding response: %v", err)
+	}
+	body := page.Items
+	if page.NextCursor != "" {
+		t.Fatalf("a single reservation is the last page, got nextCursor %q", page.NextCursor)
 	}
 	if len(body) != 1 {
 		t.Fatalf("expected 1 reservation, got %d", len(body))
@@ -314,8 +321,8 @@ func TestReserveStock_Endpoint_AllocationsCarryPickLocation(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 5)
 	ts.seedBin(t, "A-1-2", 5)
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-2"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-2"})
 
 	rec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 8, "demandRef": "order-pick-1"})
 	if rec.Code != http.StatusCreated {
@@ -343,21 +350,17 @@ func TestReserveStock_Endpoint_AllocationsCarryPickLocation(t *testing.T) {
 	}
 }
 
-// An unknown demandRef is a 200 with an empty array, not a 404 — there is
-// no single "resource" being looked up by id, just a filtered collection
-// that may legitimately be empty.
-func TestGetReservationsByDemandRef_Endpoint_NotFound_ReturnsEmptyArray(t *testing.T) {
+// An unknown demandRef is a 200 with an empty page ({"items":[]}, never null,
+// no nextCursor), not a 404 — there is no single "resource" being looked up by
+// id, just a filtered collection that may legitimately be empty.
+func TestGetReservationsByDemandRef_Endpoint_NotFound_ReturnsEmptyPage(t *testing.T) {
 	ts := newTestServer()
 	rec := ts.do(t, http.MethodGet, "/reservations?demandRef=does-not-exist", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var body []map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unexpected error decoding response: %v", err)
-	}
-	if len(body) != 0 {
-		t.Fatalf("expected empty array, got %d entries", len(body))
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"items":[]}` {
+		t.Fatalf("expected the empty page {\"items\":[]}, got %s", got)
 	}
 }
 
@@ -378,7 +381,7 @@ func TestGetReservationsByDemandRef_Endpoint_MissingParam_Rejected(t *testing.T)
 func TestGetReservationsByDemandRef_Endpoint_MultipleReservations(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 20)
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 20, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 20, "binId": "A-1-1"})
 
 	firstRec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 5, "demandRef": "order-1"})
 	var first struct {
@@ -400,12 +403,15 @@ func TestGetReservationsByDemandRef_Endpoint_MultipleReservations(t *testing.T) 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var body []struct {
-		Status string `json:"status"`
+	var page struct {
+		Items []struct {
+			Status string `json:"status"`
+		} `json:"items"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
 		t.Fatalf("unexpected error decoding response: %v", err)
 	}
+	body := page.Items
 	if len(body) != 2 {
 		t.Fatalf("expected 2 reservations (revoked + retry), got %d: %s", len(body), rec.Body.String())
 	}
@@ -414,7 +420,7 @@ func TestGetReservationsByDemandRef_Endpoint_MultipleReservations(t *testing.T) 
 func TestReserveStock_Endpoint_InsufficientUsable(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 5)
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
 
 	rec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 6, "demandRef": "order-1"})
 	if rec.Code != http.StatusConflict {
@@ -425,7 +431,7 @@ func TestReserveStock_Endpoint_InsufficientUsable(t *testing.T) {
 func TestRevokeReservation_Endpoint(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 10)
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
 	reserveRec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 6, "demandRef": "order-1"})
 	var reserved struct {
 		ID string `json:"id"`
@@ -449,13 +455,13 @@ func TestRevokeReservation_Endpoint_UnknownID(t *testing.T) {
 
 func TestReceiveStock_Endpoint_MalformedBody(t *testing.T) {
 	ts := newTestServer()
-	req := httptest.NewRequest(http.MethodPost, "/stock/receive", bytes.NewReader([]byte("{not-json")))
+	req := httptest.NewRequest(http.MethodPost, "/stock-receipts", bytes.NewReader([]byte("{not-json")))
 	rec := httptest.NewRecorder()
 	ts.handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
-	assertProblemDetails(t, rec, http.StatusBadRequest, "malformed-request-body", "/stock/receive")
+	assertProblemDetails(t, rec, http.StatusBadRequest, "malformed-request-body", "/stock-receipts")
 }
 
 // problemBody mirrors the RFC 7807 (application/problem+json) shape this
@@ -498,7 +504,7 @@ func assertProblemDetails(t *testing.T, rec *httptest.ResponseRecorder, wantStat
 func TestGetUsable_Endpoint(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 10)
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 7, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 7, "binId": "A-1-1"})
 
 	rec := ts.do(t, http.MethodGet, "/inventory/SKU-1/usable", nil)
 	if rec.Code != http.StatusOK {
@@ -516,9 +522,9 @@ func TestGetUsable_Endpoint(t *testing.T) {
 func TestRunCycleCount_Endpoint(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 10)
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
 
-	rec := ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-count", map[string]any{"countedQuantity": 10})
+	rec := ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-counts", map[string]any{"countedQuantity": 10})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -528,7 +534,7 @@ func TestRunCycleCount_Endpoint_MissingCountedQuantity_Rejected(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 10)
 
-	rec := ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-count", map[string]any{})
+	rec := ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-counts", map[string]any{})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for omitted countedQuantity, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -536,7 +542,7 @@ func TestRunCycleCount_Endpoint_MissingCountedQuantity_Rejected(t *testing.T) {
 		t.Fatalf("expected counted-quantity-required problem, got %s", rec.Body.String())
 	}
 
-	rec = ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-count", map[string]any{"countedQuantity": nil})
+	rec = ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-counts", map[string]any{"countedQuantity": nil})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for null countedQuantity, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -546,7 +552,7 @@ func TestRunCycleCount_Endpoint_ExplicitZeroCount_Accepted(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 10)
 
-	rec := ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-count", map[string]any{"countedQuantity": 0})
+	rec := ts.do(t, http.MethodPost, "/bins/A-1-1/cycle-counts", map[string]any{"countedQuantity": 0})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for explicit zero count, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -582,11 +588,11 @@ func TestStowStock_Endpoint_HazmatPlacementRejected(t *testing.T) {
 	ts := testServer{handler: handler, stock: stockRepo, locations: locationRepo}
 	seedClassification(t, classificationRepo, "SKU-1", []product.HandlingTag{product.Hazmat}, "", 0)
 
-	rec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
+	rec := ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
-	assertProblemDetails(t, rec, http.StatusConflict, "hazmat-zone-required", "/stock/stow")
+	assertProblemDetails(t, rec, http.StatusConflict, "hazmat-zone-required", "/stowages")
 }
 
 // stubLookup is a minimal ports.LocationClassificationLookup used only by
@@ -628,16 +634,16 @@ func TestStowStock_Endpoint_SegregationRejected(t *testing.T) {
 	seedClassification(t, classificationRepo, "SKU-1", []product.HandlingTag{product.Hazmat}, "", 1)
 	seedClassification(t, classificationRepo, "SKU-2", []product.HandlingTag{product.Hazmat}, "", 8)
 
-	stowRec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
+	stowRec := ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-1-1"})
 	if stowRec.Code != http.StatusCreated {
 		t.Fatalf("expected 201 stowing SKU-1, got %d: %s", stowRec.Code, stowRec.Body.String())
 	}
 
-	rec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-2", "quantity": 5, "binId": "A-1-1"})
+	rec := ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-2", "quantity": 5, "binId": "A-1-1"})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
-	assertProblemDetails(t, rec, http.StatusConflict, "hazmat-class-incompatible", "/stock/stow")
+	assertProblemDetails(t, rec, http.StatusConflict, "hazmat-class-incompatible", "/stowages")
 }
 
 // ---------------------------------------------------------------------------
@@ -709,7 +715,7 @@ func runRegisterBinEndpointCase(t *testing.T, tc registerBinEndpointCase) {
 		ts.seedBin(t, "A-9-9", tc.seed)
 	}
 	if tc.stow > 0 {
-		stowRec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": tc.stow, "binId": "A-9-9"})
+		stowRec := ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": tc.stow, "binId": "A-9-9"})
 		if stowRec.Code != http.StatusCreated {
 			t.Fatalf("expected 201 stowing, got %d: %s", stowRec.Code, stowRec.Body.String())
 		}
@@ -749,7 +755,7 @@ func TestRegisterBin_Endpoint_ThenStowSucceeds(t *testing.T) {
 	if rec := ts.do(t, http.MethodPut, "/bins/A-9-9", map[string]any{"capacity": 5}); rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201 registering bin, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if rec := ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-9-9"}); rec.Code != http.StatusCreated {
+	if rec := ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 5, "binId": "A-9-9"}); rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201 stowing into registered bin, got %d: %s", rec.Code, rec.Body.String())
 	}
 	rec := ts.do(t, http.MethodGet, "/bins/A-9-9", nil)
@@ -764,7 +770,7 @@ func TestRegisterBin_Endpoint_ThenStowSucceeds(t *testing.T) {
 func TestGetBin_Endpoint_Found(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 10)
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 4, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 4, "binId": "A-1-1"})
 
 	rec := ts.do(t, http.MethodGet, "/bins/A-1-1", nil)
 	if rec.Code != http.StatusOK {
@@ -790,7 +796,7 @@ func TestGetBin_Endpoint_NotFound(t *testing.T) {
 func TestReserveStock_Endpoint_EmptyDemandRef_Rejected(t *testing.T) {
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 10)
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 10, "binId": "A-1-1"})
 
 	rec := ts.do(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "quantity": 3, "demandRef": ""})
 	if rec.Code != http.StatusBadRequest {

@@ -79,6 +79,16 @@ func (r *ContainerRepo) FindByBin(ctx context.Context, binID shared.BinId) ([]*c
 	return r.findMany(ctx, `SELECT `+containerColumns+` FROM containers WHERE bin_id = $1 AND state <> 'EMPTY' ORDER BY lpn`, binID.String())
 }
 
+// FindByBinAfter is the keyset-paged FindByBin: at most limit containers whose
+// LPN sorts strictly after afterLPN (empty = from the start). LPN is the
+// primary key, so it is the whole keyset; the "C" collation makes the order
+// byte-wise, identical to the in-memory repository's.
+func (r *ContainerRepo) FindByBinAfter(ctx context.Context, binID shared.BinId, afterLPN string, limit int) ([]*container.Container, error) {
+	return r.findMany(ctx, `SELECT `+containerColumns+` FROM containers
+		WHERE bin_id = $1 AND state <> 'EMPTY' AND lpn COLLATE "C" > $2
+		ORDER BY lpn COLLATE "C" LIMIT $3`, binID.String(), afterLPN, limit)
+}
+
 func (r *ContainerRepo) FindStowedBySKU(ctx context.Context, sku shared.SKU, owner shared.OwnerRef) ([]*container.Container, error) {
 	return r.findMany(ctx, `SELECT `+containerColumns+` FROM containers
 		WHERE sku = $1 AND COALESCE(owner_ref, '') = $2 AND state = 'SEALED' AND bin_id IS NOT NULL

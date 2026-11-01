@@ -1,10 +1,7 @@
 package http
 
 import (
-	"encoding/json"
-	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -18,10 +15,6 @@ import (
 
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
-	"github.com/claudioed/inventory-storage/internal/domain/location"
-	"github.com/claudioed/inventory-storage/internal/domain/reservation"
-	"github.com/claudioed/inventory-storage/internal/domain/shared"
-	"github.com/claudioed/inventory-storage/internal/domain/stock"
 )
 
 // Server holds every use case the HTTP adapter depends on.
@@ -42,7 +35,7 @@ type Server struct {
 	// StageTransferReceipt backs POST /transfers/{transferLineId}/receipt
 	// (ADR 0031): destination scan -> STAGED receipt or quarantine.
 	StageTransferReceipt *usecases.StageTransferReceipt
-	// StowTransferStock backs POST /transfers/{transferLineId}/stow
+	// StowTransferStock backs POST /transfers/{transferLineId}/stowages
 	// (ADR 0031): STAGED receipt -> destination StockUnits (the only
 	// path that raises destination usable).
 	StowTransferStock *usecases.StowTransferStock
@@ -64,16 +57,15 @@ type Server struct {
 	// no dedicated use case because the read is a direct, no-invariant
 	// repo lookup.
 	Classifications ports.ProductClassificationRepo
-	// IdempotencyPool, when non-nil, wires RequireIdempotencyKey onto
-	// POST /stock/receive and POST /reservations (see idempotency.go) —
-	// this service's two true resource-creation endpoints (a StagedReceipt
-	// acknowledgment and a Reservation, both with server-generated
-	// identity). A nil pool means "no transactional Postgres backing
-	// wired" (in-memory dev/test configuration) — the idempotency
-	// middleware needs a real pgxpool.Pool to begin its own transaction,
-	// so it is simply not applied in that case, exactly this codebase's
-	// existing convention for every other optional Postgres-backed
-	// capability (UnitOfWork, the outbox relay).
+	// IdempotencyPool, when non-nil, puts RequireIdempotencyKey in front of
+	// EVERY POST route (see idempotency.go and keyed below): the key row, the
+	// aggregate write and the outbox rows then commit in one transaction. A
+	// nil pool means "no transactional Postgres backing wired" (in-memory
+	// dev/test configuration) — the middleware needs a real pgxpool.Pool to
+	// begin its own transaction, so it is simply not applied in that case,
+	// exactly this codebase's existing convention for every other optional
+	// Postgres-backed capability (UnitOfWork, the outbox relay). Production
+	// always wires it (ADR 0042: Postgres is the only runtime).
 	IdempotencyPool *pgxpool.Pool
 	// Readiness backs GET /readyz (ADR-0020 §graceful shutdown):
 	// flipped to not-ready as the FIRST step of shutdown, so a
@@ -143,84 +135,64 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   corsAllowedOrigins(),
 		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete},
-		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization", "Idempotency-Key"},
+		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization", IdempotencyKeyHeader},
 		AllowCredentials: false,
 	}))
+
+	// Every POST (this service has no PATCH) is route-scoped (r.With, not
+	// r.Use) behind RequireIdempotencyKey, so a client may retry any of them
+	// after a timeout and the effect happens once (REST API guideline
+	// section 2). PUT and DELETE are idempotent by method and stay bare.
+	post := s.keyed(r)
 
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
 
-	// POST /stock/receive and POST /reservations are route-scoped (r.With,
-	// not r.Use) behind RequireIdempotencyKey — they are the two mutating
-	// endpoints that create a NEW resource with a server-generated id
-	// (a StagedReceipt acknowledgment, a Reservation), so a lost response
-	// and a client retry would otherwise create a duplicate. The other
-	// mutating routes act on a caller-supplied {id}/{binId}/{sku} and are
-	// lower priority for v1 (see the ADR). IdempotencyPool nil (in-memory
-	// dev/test configuration, no transactional Postgres backing) skips
-	// the middleware entirely, mirroring every other optional
-	// Postgres-backed capability's nil convention in this repo.
-	if s.IdempotencyPool != nil {
-		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/stock/receive", s.handleReceiveStock)
-	} else {
-		r.Post("/stock/receive", s.handleReceiveStock)
-	}
-	r.Post("/stock/stow", s.handleStowStock)
-	if s.IdempotencyPool != nil {
-		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/reservations", s.handleReserveStock)
-	} else {
-		r.Post("/reservations", s.handleReserveStock)
-	}
+	post.Post("/stock-receipts", s.handleReceiveStock)
+	post.Post("/stowages", s.handleStowStock)
+	post.Post("/reservations", s.handleReserveStock)
 	r.Get("/reservations", s.handleGetReservationsByDemandRef)
 	r.Delete("/reservations/{id}", s.handleRevokeReservation)
-	r.Post("/reservations/{id}/confirm-pick", s.handleConfirmPick)
+	post.Post("/reservations/{id}/pick-confirmations", s.handleConfirmPick)
 	r.Get("/inventory/{sku}/usable", s.handleGetUsable)
 	r.Put("/bins/{binId}", s.handleRegisterBin)
 	r.Get("/bins/{binId}", s.handleGetBin)
-	r.Post("/bins/{binId}/cycle-count", s.handleRunCycleCount)
+	post.Post("/bins/{binId}/cycle-counts", s.handleRunCycleCount)
 
-	// The two destination transfer-custody endpoints (ADR 0031), both
-	// behind RequireIdempotencyKey when a transactional pool is wired:
-	// a stage creates a receipt (server-correlated state) and a stow
-	// creates destination StockUnits, so a lost response plus a client
-	// retry must never double-apply. The use cases are idempotent on
-	// transfer_line_id at the DATABASE level too — the middleware is
-	// defense in depth that also replays the original HTTP response.
-	if s.IdempotencyPool != nil {
-		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/transfers/{transferLineId}/receipt", s.handleStageTransferReceipt)
-		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/transfers/{transferLineId}/stow", s.handleStowTransferStock)
-	} else {
-		r.Post("/transfers/{transferLineId}/receipt", s.handleStageTransferReceipt)
-		r.Post("/transfers/{transferLineId}/stow", s.handleStowTransferStock)
-	}
+	// The two destination transfer-custody endpoints (ADR 0031): a stage
+	// creates a receipt (server-correlated state) and a stow creates
+	// destination StockUnits, so a lost response plus a client retry must
+	// never double-apply. The use cases are idempotent on transfer_line_id
+	// at the DATABASE level too — the middleware is defense in depth that
+	// also replays the original HTTP response.
+	post.Post("/transfers/{transferLineId}/receipt", s.handleStageTransferReceipt)
+	post.Post("/transfers/{transferLineId}/stowages", s.handleStowTransferStock)
 
 	// Intra-site relocation (ADR 0039): POST creates a relocation with a
-	// server-generated id and moves stock, so it sits behind
-	// RequireIdempotencyKey exactly like the other creating POSTs.
-	if s.IdempotencyPool != nil {
-		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/relocations", s.handleRelocateStock)
-	} else {
-		r.Post("/relocations", s.handleRelocateStock)
-	}
+	// server-generated id and moves stock.
+	post.Post("/relocations", s.handleRelocateStock)
 	r.Get("/relocations/{id}", s.handleGetRelocation)
 
-	// Containers (ADR 0045). The custom-method suffix is part of the path
-	// ("/containers/{lpn}:stow"); an LPN is [A-Za-z0-9._-] so it never holds
-	// a colon. Stow and break act on a caller-supplied lpn and are naturally
-	// idempotent (a repeat stow is a no-op, a repeat break is 409); the
-	// Idempotency-Key middleware (ADR 0018) is defence in depth that also
-	// replays the original response.
-	if s.IdempotencyPool != nil {
-		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/containers/{lpn:[A-Za-z0-9._-]+}:stow", s.handleStowContainer)
-		r.With(RequireIdempotencyKey(s.IdempotencyPool)).Post("/containers/{lpn:[A-Za-z0-9._-]+}:break", s.handleBreakCase)
-	} else {
-		r.Post("/containers/{lpn:[A-Za-z0-9._-]+}:stow", s.handleStowContainer)
-		r.Post("/containers/{lpn:[A-Za-z0-9._-]+}:break", s.handleBreakCase)
-	}
+	// Containers (ADR 0045). An LPN is [A-Za-z0-9._-] so it never holds a
+	// colon or a slash. Stow and break act on a caller-supplied lpn and are
+	// naturally idempotent (a repeat stow is a no-op, a repeat break is 409);
+	// the Idempotency-Key middleware (ADR 0018) also replays the original
+	// response.
+	post.Post("/containers/{lpn:[A-Za-z0-9._-]+}/stowages", s.handleStowContainer)
+	post.Post("/containers/{lpn:[A-Za-z0-9._-]+}/case-breaks", s.handleBreakCase)
 	r.Get("/containers/{lpn:[A-Za-z0-9._-]+}", s.handleGetContainer)
 	r.Get("/bins/{binId}/containers", s.handleListBinContainers)
 
 	return r
+}
+
+// keyed returns the router that POST routes register on: r itself behind
+// RequireIdempotencyKey, or plain r when no transactional pool is wired.
+func (s *Server) keyed(r chi.Router) chi.Router {
+	if s.IdempotencyPool == nil {
+		return r
+	}
+	return r.With(RequireIdempotencyKey(s.IdempotencyPool))
 }
 
 // RouterOption customises NewRouter without widening its signature for
@@ -248,377 +220,4 @@ func corsAllowedOrigins() []string {
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func (s *Server) handleReceiveStock(w http.ResponseWriter, r *http.Request) {
-	var req receiveStockRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-
-	sku, err := shared.NewSKU(req.SKU)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	qty, err := shared.NewPositiveQuantity(req.Quantity)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	receipt, err := s.ReceiveStock.Execute(r.Context(), sku, qty)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	// 202 Accepted, not 201 Created: a staged receipt has no durable
-	// identity of its own (no ID, no GET route) — it is an acknowledgment
-	// that stock has been accepted into the building, not yet a queryable
-	// resource. The addressable resource (a StockUnit) is created later, at
-	// StowStock.
-	writeJSON(w, http.StatusAccepted, stagedReceiptResponse{
-		SKU:        receipt.SKU.String(),
-		Quantity:   receipt.Quantity.Int(),
-		ReceivedAt: receipt.ReceivedAt.Format(timeFormat),
-	})
-}
-
-func (s *Server) handleStowStock(w http.ResponseWriter, r *http.Request) {
-	var req stowStockRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-
-	sku, err := shared.NewSKU(req.SKU)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	qty, err := shared.NewPositiveQuantity(req.Quantity)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	binID, err := shared.NewBinId(req.BinID)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	unit, err := s.StowStock.Execute(r.Context(), sku, qty, binID)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	w.Header().Set("Location", "/stock/"+unit.ID())
-	writeJSON(w, http.StatusCreated, toStockUnitResponse(unit))
-}
-
-func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
-	var req reserveStockRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-
-	sku, err := shared.NewSKU(req.SKU)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	owner, err := shared.NewOwnerRef(req.OwnerRef)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	if req.Cases.set && req.Quantity != 0 {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"quantity-and-cases-exclusive", "quantity and cases are mutually exclusive"}, "send either quantity (eaches) or cases (whole sealed cases), not both", r.URL.Path)
-		return
-	}
-
-	// demandRef is the idempotency key ReserveStock retries on and the key
-	// GET /reservations?demandRef= looks up by — an empty one would make
-	// every such reservation unreachable, so reject it like the GET does.
-	if req.DemandRef == "" {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"missing-demand-ref", "demandRef is required"}, "demandRef must not be empty", r.URL.Path)
-		return
-	}
-
-	// lineNo is optional (ADR 0036); when given it must be a line number,
-	// i.e. between 1 and 2147483647 (the 32-bit line_no column).
-	if req.LineNo != nil && !reservation.ValidLineNo(*req.LineNo) {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"invalid-line-no", "lineNo must be between 1 and 2147483647"}, "lineNo must be an integer between 1 and 2147483647 when present", r.URL.Path)
-		return
-	}
-
-	res, err := s.reserve(r, req, sku, owner)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	w.Header().Set("Location", "/reservations/"+res.ID())
-	writeJSON(w, http.StatusCreated, toReservationResponse(res))
-}
-
-// reserve runs the quantity reservation, or the whole-case one when the body
-// carries `cases` (ADR 0045).
-func (s *Server) reserve(r *http.Request, req reserveStockRequest, sku shared.SKU, owner shared.OwnerRef) (*reservation.Reservation, error) {
-	if req.Cases.set {
-		return s.ReserveFullCases.Execute(r.Context(), usecases.ReserveFullCasesCommand{
-			SKU: sku, Cases: req.Cases.n, DemandRef: req.DemandRef, LineNo: req.LineNo, OwnerRef: owner,
-		})
-	}
-	qty, err := shared.NewPositiveQuantity(req.Quantity)
-	if err != nil {
-		return nil, err
-	}
-	return s.ReserveStock.ExecuteFor(r.Context(), usecases.ReserveRequest{
-		SKU: sku, Quantity: qty, DemandRef: req.DemandRef, LineNo: req.LineNo, OwnerRef: owner,
-	})
-}
-
-func (s *Server) handleRevokeReservation(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if err := s.RevokeReservation.Execute(r.Context(), id); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleGetReservationsByDemandRef backs GET /reservations?demandRef=<ref>.
-// demandRef is required (400 if missing/empty) since this is a lookup-by-key
-// endpoint, not a list-all — there is no meaningful "give me everything"
-// response here.
-func (s *Server) handleGetReservationsByDemandRef(w http.ResponseWriter, r *http.Request) {
-	demandRef := r.URL.Query().Get("demandRef")
-	if demandRef == "" {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"missing-demand-ref", "demandRef query parameter is required"}, "demandRef query parameter must not be empty", r.URL.Path)
-		return
-	}
-
-	reservations, err := s.GetReservationsByDemandRef.Execute(r.Context(), demandRef)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	responses := make([]reservationResponse, 0, len(reservations))
-	for _, res := range reservations {
-		responses = append(responses, toReservationResponse(res))
-	}
-	writeJSON(w, http.StatusOK, responses)
-}
-
-func (s *Server) handleConfirmPick(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if err := s.ConfirmPick.Execute(r.Context(), id); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) handleGetUsable(w http.ResponseWriter, r *http.Request) {
-	skuParam := chi.URLParam(r, "sku")
-	sku, err := shared.NewSKU(skuParam)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	owner, err := shared.NewOwnerRef(r.URL.Query().Get("ownerRef"))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	usable, err := s.GetUsable.ExecuteFor(r.Context(), sku, owner)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, usableInventoryResponse{
-		SKU: usable.SKU.String(), OwnerRef: usable.OwnerRef.String(), Usable: usable.Usable.Int(),
-		LooseUsable: usable.LooseUsable.Int(), ReservableCases: usable.ReservableCases,
-	})
-}
-
-func (s *Server) handleRunCycleCount(w http.ResponseWriter, r *http.Request) {
-	binIDParam := chi.URLParam(r, "binId")
-	binID, err := shared.NewBinId(binIDParam)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	var req cycleCountRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.CountedQuantity == nil {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"counted-quantity-required", "countedQuantity is required"}, "countedQuantity must be present; an explicit 0 is a valid empty-bin count, omitting it is not", r.URL.Path)
-		return
-	}
-	countedQty, err := shared.NewQuantity(int(*req.CountedQuantity))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	result, err := s.RunCycleCount.Execute(r.Context(), binID, countedQty)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, cycleCountResponse{
-		BinID:       result.BinID.String(),
-		CountedQty:  result.CountedQty.Int(),
-		SystemQty:   result.SystemQty.Int(),
-		Discrepancy: result.Discrepancy,
-	})
-}
-
-// handleRegisterBin backs PUT /bins/{binId}. It is idempotent and
-// declarative: the body states the desired capacity and the response is
-// 201 when the bin was created, 200 when it already existed (unchanged or
-// resized). A capacity below current occupancy is a 409
-// (capacity-below-occupancy).
-func (s *Server) handleRegisterBin(w http.ResponseWriter, r *http.Request) {
-	binID, err := shared.NewBinId(chi.URLParam(r, "binId"))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	var req registerBinRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.Capacity == nil {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"capacity-required", "capacity is required"}, "capacity must be present in the request body", r.URL.Path)
-		return
-	}
-	if *req.Capacity > maxBinCapacity {
-		writeProblem(w, http.StatusUnprocessableEntity, problemInfo{"capacity-out-of-range", "Bin capacity is out of range"}, fmt.Sprintf("capacity must not exceed %d", maxBinCapacity), r.URL.Path)
-		return
-	}
-	capacity, err := shared.NewQuantity(*req.Capacity)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	bin, outcome, err := s.RegisterBin.Execute(r.Context(), binID, capacity)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	status := http.StatusOK
-	if outcome == usecases.BinCreated {
-		w.Header().Set("Location", "/bins/"+bin.ID().String())
-		status = http.StatusCreated
-	}
-	writeJSON(w, status, toBinResponse(bin))
-}
-
-// maxBinCapacity is the largest capacity the wire contract (int32) and the
-// bins.capacity INTEGER column can hold.
-const maxBinCapacity = math.MaxInt32
-
-// handleGetBin backs GET /bins/{binId}: the bin's capacity, occupancy and
-// remaining space, or 404 bin-not-found.
-func (s *Server) handleGetBin(w http.ResponseWriter, r *http.Request) {
-	binID, err := shared.NewBinId(chi.URLParam(r, "binId"))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	bin, err := s.GetBin.Execute(r.Context(), binID)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toBinResponse(bin))
-}
-
-const timeFormat = "2006-01-02T15:04:05Z07:00"
-
-func toStockUnitResponse(u *stock.StockUnit) stockUnitResponse {
-	return stockUnitResponse{
-		ID:       u.ID(),
-		SKU:      u.SKU().String(),
-		BinID:    u.BinID().String(),
-		Quantity: u.Quantity().Int(),
-		Reserved: u.Reserved().Int(),
-		State:    string(u.State()),
-	}
-}
-
-func toReservationResponse(res *reservation.Reservation) reservationResponse {
-	allocations := make([]allocationResponse, 0, len(res.Allocations()))
-	for _, a := range res.Allocations() {
-		allocations = append(allocations, allocationResponse{StockUnitID: a.StockUnitID, BinID: a.BinID.String(), Quantity: a.Quantity.Int()})
-	}
-	return reservationResponse{
-		ID:          res.ID(),
-		SKU:         res.SKU().String(),
-		Quantity:    res.Quantity().Int(),
-		DemandRef:   res.DemandRef(),
-		OwnerRef:    res.OwnerRef().String(),
-		LineNo:      res.LineNo(),
-		Status:      string(res.Status()),
-		Allocations: allocations,
-		CreatedAt:   res.CreatedAt().Format(timeFormat),
-		ExpiresAt:   res.ExpiresAt().Format(timeFormat),
-	}
-}
-
-func toBinResponse(b *location.Bin) binResponse {
-	return binResponse{
-		BinID:     b.ID().String(),
-		Capacity:  b.Capacity().Int(),
-		Occupied:  b.Occupied().Int(),
-		Available: b.Available().Int(),
-	}
-}
-
-func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
-	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"malformed-request-body", "The request body is not valid JSON"}, err.Error(), r.URL.Path)
-		return false
-	}
-	return true
-}
-
-// writeError writes a domain/application error as an RFC 7807
-// (application/problem+json) response. statusFor's status-code mapping is
-// unchanged; this only decides the body shape and Content-Type.
-func writeError(w http.ResponseWriter, r *http.Request, err error) {
-	writeProblem(w, statusFor(err), problemFor(err), err.Error(), r.URL.Path)
-}
-
-func writeProblem(w http.ResponseWriter, status int, info problemInfo, detail, instance string) {
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(problemDetails{
-		Type:     problemBaseURI + info.slug,
-		Title:    info.title,
-		Status:   status,
-		Detail:   detail,
-		Instance: instance,
-	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
 }

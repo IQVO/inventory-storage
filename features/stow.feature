@@ -27,7 +27,7 @@ Feature: Stow
     And the problem detail type is "bin-full"
     And the Usable inventory for SKU "SKU-2" is 5
 
-  # Derived from apis/openapi.yaml — POST /stock/stow (stowStock): 404
+  # Derived from apis/openapi.yaml — POST /stowages (stowStock): 404
   # bin-not-found, "The target bin does not exist." A location-scan
   # against a bin the system does not know is not a Stow: without a known
   # Bin there is no StockUnit, so nothing becomes usable.

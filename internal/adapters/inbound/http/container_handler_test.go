@@ -108,21 +108,21 @@ func TestContainersREST_GetStowBreakLifecycle(t *testing.T) {
 
 	status, body := cs.step(t, http.MethodGet, "/containers/"+cLPN, nil)
 	record("get", status, body, "state", "qtyEaches", "ownerRef", "gtin", "binId")
-	status, body = cs.step(t, http.MethodPost, "/containers/"+cLPN+":stow", map[string]any{"bin": cCaseBin})
+	status, body = cs.step(t, http.MethodPost, "/containers/"+cLPN+"/stowages", map[string]any{"bin": cCaseBin})
 	record("stow", status, body, "binId", "siteId", "state")
 	facts["stow.hasStockUnit"] = body["stockUnitId"] != "" && body["stockUnitId"] != nil
 	status, body = cs.step(t, http.MethodGet, "/bins/"+cCaseBin+"/containers", nil)
-	record("list", status, body, "binId")
-	facts["list.count"] = len(body["containers"].([]any))
-	status, body = cs.step(t, http.MethodPost, "/containers/"+cLPN+":break", map[string]any{"looseBin": cEachBin})
+	record("list", status, body)
+	facts["list.count"] = len(body["items"].([]any))
+	status, body = cs.step(t, http.MethodPost, "/containers/"+cLPN+"/case-breaks", map[string]any{"looseBin": cEachBin})
 	record("break", status, body, "state")
 	_, body = cs.step(t, http.MethodGet, "/bins/"+cCaseBin+"/containers", nil)
-	facts["afterBreak.count"] = len(body["containers"].([]any))
+	facts["afterBreak.count"] = len(body["items"].([]any))
 
 	want := map[string]any{
 		"get.status": 200, "get.state": "SEALED", "get.qtyEaches": float64(12), "get.ownerRef": "seller-a", "get.gtin": "24006381333935", "get.binId": nil,
 		"stow.status": 200, "stow.binId": cCaseBin, "stow.siteId": "S1", "stow.state": "SEALED", "stow.hasStockUnit": true,
-		"list.status": 200, "list.binId": cCaseBin, "list.count": 1,
+		"list.status": 200, "list.count": 1,
 		"break.status": 200, "break.state": "EMPTY", "afterBreak.count": 0,
 	}
 	if !reflect.DeepEqual(facts, want) {
@@ -139,12 +139,12 @@ func TestContainersREST_ErrorsAreProblemDetails(t *testing.T) {
 		slug               string
 	}{
 		{"unknown container", http.MethodGet, "/containers/NOPE", nil, 404, "container-not-found"},
-		{"stow unknown container", http.MethodPost, "/containers/NOPE:stow", map[string]any{"bin": cCaseBin}, 404, "container-not-found"},
-		{"stow to an each-only bin", http.MethodPost, "/containers/" + cLPN + ":stow", map[string]any{"bin": cEachBin}, 409, "bin-handling-unit-mismatch"},
-		{"stow to a bin at another site is fine until the site is set; unknown bin", http.MethodPost, "/containers/" + cLPN + ":stow", map[string]any{"bin": "S1-NO-BIN"}, 404, "bin-not-found"},
-		{"stow without a bin", http.MethodPost, "/containers/" + cLPN + ":stow", map[string]any{}, 400, "empty-bin-id"},
-		{"break an unstowed container", http.MethodPost, "/containers/" + cLPN + ":break", map[string]any{"looseBin": cEachBin}, 409, "container-not-stowed"},
-		{"break without a bin", http.MethodPost, "/containers/" + cLPN + ":break", map[string]any{}, 400, "empty-bin-id"},
+		{"stow unknown container", http.MethodPost, "/containers/NOPE/stowages", map[string]any{"bin": cCaseBin}, 404, "container-not-found"},
+		{"stow to an each-only bin", http.MethodPost, "/containers/" + cLPN + "/stowages", map[string]any{"bin": cEachBin}, 409, "bin-handling-unit-mismatch"},
+		{"stow to a bin at another site is fine until the site is set; unknown bin", http.MethodPost, "/containers/" + cLPN + "/stowages", map[string]any{"bin": "S1-NO-BIN"}, 404, "bin-not-found"},
+		{"stow without a bin", http.MethodPost, "/containers/" + cLPN + "/stowages", map[string]any{}, 400, "empty-bin-id"},
+		{"break an unstowed container", http.MethodPost, "/containers/" + cLPN + "/case-breaks", map[string]any{"looseBin": cEachBin}, 409, "container-not-stowed"},
+		{"break without a bin", http.MethodPost, "/containers/" + cLPN + "/case-breaks", map[string]any{}, 400, "empty-bin-id"},
 		{"list an unknown bin", http.MethodGet, "/bins/S1-NO-BIN/containers", nil, 404, "bin-not-found"},
 	}
 	for _, tc := range cases {
@@ -154,7 +154,7 @@ func TestContainersREST_ErrorsAreProblemDetails(t *testing.T) {
 			t.Errorf("%s: %d %v, want %d %s", tc.name, rec.Code, got, tc.status, tc.slug)
 		}
 	}
-	for _, path := range []string{"/containers/" + cLPN + ":stow", "/containers/" + cLPN + ":break"} {
+	for _, path := range []string{"/containers/" + cLPN + "/stowages", "/containers/" + cLPN + "/case-breaks"} {
 		req := httptest.NewRequest(http.MethodPost, path, nil)
 		req.Body = http.NoBody
 		rec := httptest.NewRecorder()
@@ -164,17 +164,17 @@ func TestContainersREST_ErrorsAreProblemDetails(t *testing.T) {
 		}
 	}
 	// a stowed container cannot be stowed at another site, nor broken twice
-	if rec := cs.do(t, http.MethodPost, "/containers/"+cLPN+":stow", map[string]any{"bin": cCaseBin}); rec.Code != http.StatusOK {
+	if rec := cs.do(t, http.MethodPost, "/containers/"+cLPN+"/stowages", map[string]any{"bin": cCaseBin}); rec.Code != http.StatusOK {
 		t.Fatal(rec.Body.String())
 	}
-	if rec := cs.do(t, http.MethodPost, "/containers/"+cLPN+":stow", map[string]any{"bin": cOtherBin}); rec.Code != http.StatusConflict ||
+	if rec := cs.do(t, http.MethodPost, "/containers/"+cLPN+"/stowages", map[string]any{"bin": cOtherBin}); rec.Code != http.StatusConflict ||
 		decodeMap(t, rec)["type"] != "https://errors.inventory-storage.warehouse-systems.dev/container-not-at-site" {
 		t.Fatalf("restow at another site = %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := cs.do(t, http.MethodPost, "/containers/"+cLPN+":break", map[string]any{"looseBin": cEachBin}); rec.Code != http.StatusOK {
+	if rec := cs.do(t, http.MethodPost, "/containers/"+cLPN+"/case-breaks", map[string]any{"looseBin": cEachBin}); rec.Code != http.StatusOK {
 		t.Fatal(rec.Body.String())
 	}
-	if rec := cs.do(t, http.MethodPost, "/containers/"+cLPN+":break", map[string]any{"looseBin": cEachBin}); rec.Code != http.StatusConflict ||
+	if rec := cs.do(t, http.MethodPost, "/containers/"+cLPN+"/case-breaks", map[string]any{"looseBin": cEachBin}); rec.Code != http.StatusConflict ||
 		decodeMap(t, rec)["type"] != "https://errors.inventory-storage.warehouse-systems.dev/container-not-sealed" {
 		t.Fatalf("second break = %d %s", rec.Code, rec.Body.String())
 	}
@@ -182,7 +182,7 @@ func TestContainersREST_ErrorsAreProblemDetails(t *testing.T) {
 
 func TestReservationsREST_FullCasesAndOwners(t *testing.T) {
 	cs := newContainerServer(t)
-	if status, body := cs.step(t, http.MethodPost, "/containers/"+cLPN+":stow", map[string]any{"bin": cCaseBin}); status != http.StatusOK {
+	if status, body := cs.step(t, http.MethodPost, "/containers/"+cLPN+"/stowages", map[string]any{"bin": cCaseBin}); status != http.StatusOK {
 		t.Fatal(body)
 	}
 	const insufficient = "https://errors.inventory-storage.warehouse-systems.dev/insufficient-usable"
@@ -203,7 +203,7 @@ func TestReservationsREST_FullCasesAndOwners(t *testing.T) {
 	status, res := cs.step(t, http.MethodPost, "/reservations", map[string]any{"sku": "SKU-1", "cases": 1, "demandRef": "D-a", "ownerRef": "seller-a"})
 	allocs := res["allocations"].([]any)
 	facts["reserve"] = []any{status, res["quantity"], res["ownerRef"], len(allocs), allocs[0].(map[string]any)["binId"]}
-	status, body = cs.step(t, http.MethodPost, "/containers/"+cLPN+":break", map[string]any{"looseBin": cEachBin})
+	status, body = cs.step(t, http.MethodPost, "/containers/"+cLPN+"/case-breaks", map[string]any{"looseBin": cEachBin})
 	facts["breakReserved"] = []any{status, body["type"]}
 
 	want := map[string]any{

@@ -4,7 +4,7 @@
 // and Postgres, with exactly the semantics of the other creating POSTs
 // (ADR 0018): the header is required, the same key + body replays the stored
 // response without moving stock again, and the same key with a different
-// body is 422 idempotency-key-reused.
+// body is 409 idempotency-key-reused.
 package http_test
 
 import (
@@ -109,7 +109,7 @@ func TestIdempotency_Relocate_ReplayMovesStockOnce(t *testing.T) {
 	}
 }
 
-func TestIdempotency_Relocate_SameKeyDifferentBodyIs422(t *testing.T) {
+func TestIdempotency_Relocate_SameKeyDifferentBodyIs409(t *testing.T) {
 	pool := idempotencyDB(t)
 	fx := newIdempotencyFixture(t, pool)
 	seedRelocationBins(t, pool)
@@ -118,8 +118,8 @@ func TestIdempotency_Relocate_SameKeyDifferentBodyIs422(t *testing.T) {
 		t.Fatalf("first status = %d (body: %s)", first.Code, first.Body.String())
 	}
 	second := doRelocate(fx.router, "rel-key-2", relocationBody(3))
-	if second.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422 (body: %s)", second.Code, second.Body.String())
+	if second.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body: %s)", second.Code, second.Body.String())
 	}
 	if slug := problemSlug(t, second.Body.Bytes()); slug != "idempotency-key-reused" {
 		t.Fatalf("problem slug = %q, want idempotency-key-reused", slug)

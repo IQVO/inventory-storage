@@ -1,7 +1,7 @@
 # Derived from:
 #   - docs/docs/adr/0037-stock-receipts-from-inbound-receiving.md —
 #     inbound-receiving's ReceiptLineReceived books the Good units of a line
-#     as staged stock through the same use case as POST /stock/receive;
+#     as staged stock through the same use case as POST /stock-receipts;
 #     Damaged units are acknowledged but not booked; a redelivered event is
 #     applied once.
 #   - The event arrives from Kafka, so it is seeded through
