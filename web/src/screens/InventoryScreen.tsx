@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { INVENTORY_API_BASE } from "../config";
-import type { Reservation, UsableInventory } from "../types";
+import type { UsableInventory } from "../types";
+import { useReservations } from "../useReservations";
 import { Card, StatusPill, DataTable, useFetch } from "@warehouse/ui-kit";
 
 /**
@@ -9,9 +10,10 @@ import { Card, StatusPill, DataTable, useFetch } from "@warehouse/ui-kit";
  *
  *  1. SKU -> usable inventory (GET /inventory/{sku}/usable) -- the
  *     usable-not-total read model that constrains release.
- *  2. demandRef -> reservations (GET /reservations?demandRef=) -- every
- *     Reservation raised against that demand, however many allocations
- *     each ended up split across.
+ *  2. demandRef -> reservations (GET /reservations?demandRef=, keyset-paged
+ *     {items, nextCursor}; every page is read) -- every Reservation raised
+ *     against that demand, however many allocations each ended up split
+ *     across.
  *
  * Mirrors OrdersScreen.tsx's search-by-exact-key pattern: there is no
  * list-all/browse endpoint for either resource, so both sections are
@@ -30,14 +32,13 @@ export function InventoryScreen() {
   const { data: usable, loading: usableLoading, error: usableError } =
     useFetch<UsableInventory>(usableUrl);
 
-  const reservationsUrl = demandRef
-    ? `${INVENTORY_API_BASE}/reservations?demandRef=${encodeURIComponent(demandRef)}`
-    : null;
+  // GET /reservations answers {items, nextCursor}; useReservations reads
+  // every page so a demandRef with many reservations is never truncated.
   const {
     data: reservations,
     loading: reservationsLoading,
     error: reservationsError,
-  } = useFetch<Reservation[]>(reservationsUrl);
+  } = useReservations(demandRef);
 
   function onSkuSubmit(e: FormEvent) {
     e.preventDefault();
