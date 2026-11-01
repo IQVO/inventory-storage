@@ -106,15 +106,15 @@ delta feed breaks on the first lost or duplicated message. The contract therefor
 
 | use case | trigger | `reason` | bins touched |
 | --- | --- | --- | --- |
-| `StowStock` | `POST /stock/stow` | `STOW` | the target bin |
-| `StowTransferStock` | `POST /transfers/{transferLineId}/stow` | `STOW` | every leg's bin |
+| `StowStock` | `POST /stowages` | `STOW` | the target bin |
+| `StowTransferStock` | `POST /transfers/{transferLineId}/stowages` | `STOW` | every leg's bin |
 | `ReserveStock` | `POST /reservations` (new reservation only) | `RESERVE` | every bin the allocation draws from |
 | `AllocateTransferStock` | `TransferAllocationRequested` (ALLOCATED only) | `RESERVE` | every bin drawn from |
 | `RevokeReservation` | `DELETE /reservations/{id}`, MCP revoke | `REVOKE` | every allocation's bin |
 | lazy reservation expiry | any read that resolves a timed-out reservation (`ReserveStock`'s replay lookup, `GetReservationsByDemandRef`, `ConfirmPick`, `RevokeReservation`, `ConfirmPicksForOrder`) | `REVOKE` | every allocation's bin |
-| `ConfirmPick` / `ConfirmPicksForOrder` | `POST /reservations/{id}/confirm-pick`, `TaskCompleted` PICK | `PICK` | every allocation's bin |
+| `ConfirmPick` / `ConfirmPicksForOrder` | `POST /reservations/{id}/pick-confirmations`, `TaskCompleted` PICK | `PICK` | every allocation's bin |
 | `RelocateStock` / `ApplyRelocationTask` / `ApplyReplenishTask` | `POST /relocations`, `TaskCompleted` RELOCATE, `TaskCompleted` REPLENISH | `RELOCATE` (`REPLENISHMENT` for a REPLENISH task) | source bin, then destination bin |
-| `RunCycleCount` | `POST /bins/{binId}/cycle-count`, shortfall only | `COUNT` | the counted bin, one event per SKU whose units were marked unlocated |
+| `RunCycleCount` | `POST /bins/{binId}/cycle-counts`, shortfall only | `COUNT` | the counted bin, one event per SKU whose units were marked unlocated |
 | `ReceiveStock`, `BookInboundReceiptLine` | receive | none | staged stock has no bin |
 | `StageTransferReceipt` | destination scan | none | no ledger change (the stow raises it) |
 | `RegisterBin` | `PUT /bins/{id}` | none | no stock moves |

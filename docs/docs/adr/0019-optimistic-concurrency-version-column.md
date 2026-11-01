@@ -209,9 +209,9 @@ Per ADR 0005's RFC 7807 convention, both `statusFor` and `problemFor` in
 ```
 
 Documented in `apis/openapi.yaml` as an additional `409` example on
-every write endpoint that can hit this path (`POST /stock/stow`,
+every write endpoint that can hit this path (`POST /stowages`,
 `POST /reservations`, `DELETE /reservations/{id}`,
-`POST /reservations/{id}/confirm-pick`), verified with
+`POST /reservations/{id}/pick-confirmations`), verified with
 `spectral lint openapi.yaml --ruleset .spectral.yaml --fail-severity=warn`.
 
 **API contract for callers:** on a `409` with this `type`, re-fetch the

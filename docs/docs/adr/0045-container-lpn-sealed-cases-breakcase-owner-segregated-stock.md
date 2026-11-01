@@ -183,7 +183,7 @@ facility-layout. Following ADR 0013 it keeps a local read model fed from
 recorded `handlingUnit`** (every bin registered today, before facility-layout
 ships the attribute) is treated as accepting `EACH` only for loose stock and is
 **not** case-compatible: `StowContainer` into it fails closed with
-`ErrBinHandlingUnitMismatch`. Existing `POST /stock/stow` of loose eaches is
+`ErrBinHandlingUnitMismatch`. Existing `POST /stowages` of loose eaches is
 unaffected by the attribute.
 
 ### 5. Owner segregation: reservations never span owners
@@ -266,8 +266,8 @@ written, not here. Existing `stock.StockReceived` keeps eaches and is unchanged.
 
 ### 8. REST
 
-- `POST /containers/{lpn}:stow` — body `bin`; `StowContainer`.
-- `POST /containers/{lpn}:break` — body `looseBin`; `BreakCase`.
+- `POST /containers/{lpn}/stowages` — body `bin`; `StowContainer`.
+- `POST /containers/{lpn}/case-breaks` — body `looseBin`; `BreakCase`.
 - `GET /containers/{lpn}` — the container and its state.
 - `GET /bins/{bin}/containers` — containers stowed in a bin.
 

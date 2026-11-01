@@ -195,7 +195,7 @@ revoke, confirm or expire an already-resolved reservation returns
 | **Slot attributes** | This context's view of a facility-layout slot's zone: hazmat flag, temperature class, and whether it is known at all. | `product.SlotAttributes`, `ports.LocationClassificationLookup` |
 | **Same-bin segregation** | Two SKUs whose DOT hazard classes are incompatible may not share a bin. | `StowStock.checkSegregation`, `product.Incompatible` |
 | **Discrepancy** | A cycle count whose counted quantity differs from the system quantity. | `shared.DiscrepancyDetected`, `CycleCountResult.Discrepancy` |
-| **Idempotency key** | Caller-supplied header that makes `POST /stock/receive` and `POST /reservations` safe to retry. | `RequireIdempotencyKey` in `internal/adapters/inbound/http`, table `idempotency_keys` |
+| **Idempotency key** | Caller-supplied header that makes `POST /stock-receipts` and `POST /reservations` safe to retry. | `RequireIdempotencyKey` in `internal/adapters/inbound/http`, table `idempotency_keys` |
 | **Flow & Accuracy report** | Hourly per-SKU/bin rollup of flow and accuracy counters — the analytical data product. | `internal/analytics/report`, table `flow_accuracy_rollup` |
 
 ### Where the code name differs from the spoken term

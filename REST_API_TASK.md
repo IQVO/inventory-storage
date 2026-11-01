@@ -22,7 +22,7 @@ violations found. Specifically check for:
    analogous to how `/tasks/{id}/complete` is an action on a single task).
    Keep verb-suffixed action endpoints for genuine domain commands (e.g.
    `/tasks/{id}/complete`, `/associates/{id}/start-shift`,
-   `/reservations/{id}/confirm-pick`) — this is correct DDD/REST practice for
+   `/reservations/{id}/pick-confirmations`) — this is correct DDD/REST practice for
    non-CRUD commands (see Stripe/GitHub APIs), do NOT force these into
    PUT/PATCH.
 2. **Correct HTTP methods**: GET must be side-effect-free (check every `Get`

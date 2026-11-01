@@ -75,7 +75,7 @@ Typos, broken links and formatting are of course fair game.
 | [0015](./0015-remove-rest-identity-layer.md) | Remove the fleet REST identity layer (static bearer keys, read/read-write scopes) | Accepted |
 | [0016](./0016-standard-metrics-convention.md) | Standard metrics convention across the fleet | Accepted |
 | [0017](./0017-transactional-outbox.md) | Transactional outbox + relay for Kafka publishing | Accepted — per-key ordering amended by [0038](./0038-outbox-relay-attempt-cap.md) |
-| [0018](./0018-idempotency-key-middleware.md) | Transactional Idempotency-Key middleware for POST /stock/receive and POST /reservations | Accepted |
+| [0018](./0018-idempotency-key-middleware.md) | Transactional Idempotency-Key middleware for POST /stock-receipts and POST /reservations | Accepted |
 | [0019](./0019-optimistic-concurrency-version-column.md) | Optimistic concurrency (version column) for StockUnit, Bin, Reservation | Accepted |
 | [0020](./0020-resilience-circuit-breaker-retry-dlq-shutdown.md) | Circuit breaker, read-only retry, Kafka DLQ, and graceful shutdown hardening | Accepted |
 | [0021](./0021-kafka-producer-partition-key.md) | Key every integration/analytics Kafka message by its aggregate id, and route by Hash not LeastBytes | Accepted |

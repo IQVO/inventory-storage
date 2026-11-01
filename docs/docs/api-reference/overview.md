@@ -33,25 +33,30 @@ Schemathesis contract run, which boots only the OLTP binary.
 | --- | --- | --- | --- | --- | --- |
 | `GET` | `/healthz` | `getHealthz` | Health | `200` | — |
 | `GET` | `/readyz` | `getReadyz` | Health | `200` | `503` |
-| `POST` | `/stock/receive` | `receiveStock` | Stock | `202` | `400` `422` `500` |
-| `POST` | `/stock/stow` | `stowStock` | Stock | `201` | `400` `404` `409` `422` `500` |
+| `POST` | `/stock-receipts` | `receiveStock` | Stock | `202` | `400` `409` `422` `500` |
+| `POST` | `/stowages` | `stowStock` | Stock | `201` | `400` `404` `409` `422` `500` |
 | `POST` | `/reservations` | `reserveStock` | Reservations | `201` | `400` `409` `422` `500` |
-| `GET` | `/reservations?demandRef=` | `getReservationsByDemandRef` | Reservations | `200` | `400` `500` |
+| `GET` | `/reservations?demandRef=` | `getReservationsByDemandRef` | Reservations | `200` (`{items,nextCursor}`) | `400` `500` |
 | `DELETE` | `/reservations/{id}` | `revokeReservation` | Reservations | `204` | `404` `409` `500` |
-| `POST` | `/reservations/{id}/confirm-pick` | `confirmPick` | Reservations | `204` | `404` `409` `500` |
+| `POST` | `/reservations/{id}/pick-confirmations` | `confirmPick` | Reservations | `204` | `400` `404` `409` `500` |
 | `GET` | `/inventory/{sku}/usable` | `getUsableInventory` | Inventory | `200` | `400` `500` |
 | `PUT` | `/bins/{binId}` | `registerBin` | Bins | `200` / `201` | `400` `409` `422` `500` |
 | `GET` | `/bins/{binId}` | `getBin` | Bins | `200` | `404` `500` |
-| `POST` | `/bins/{binId}/cycle-count` | `runCycleCount` | Bins | `200` | `400` `404` `422` `500` |
+| `POST` | `/bins/{binId}/cycle-counts` | `runCycleCount` | Bins | `200` | `400` `404` `409` `422` `500` |
 | `PUT` | `/products/{sku}/classification` | `classifyProduct` (retired, ADR 0034) | Products | — | `410` `500` |
 | `GET` | `/products/{sku}/classification` | `getProductClassification` (deprecated, local copy) | Products | `200` | `404` `500` |
 | `GET` | `/reports/flow-accuracy` | `getFlowAccuracyReport` | Reports | `200` | `400` `500` |
 | `GET` | `/reports/flow-accuracy/freshness` | `getFlowAccuracyFreshness` | Reports | `200` | `500` |
 
-`POST /stock/receive` and `POST /reservations` additionally take the
-`Idempotency-Key` header ([ADR 0018](/docs/adr/0018-idempotency-key-middleware)):
-absent → `400 idempotency-key-required`; same key with a different body →
-`422 idempotency-key-reused`.
+Every `POST` also takes the `Idempotency-Key` header
+([ADR 0018](/docs/adr/0018-idempotency-key-middleware),
+[ADR 0049](/docs/adr/0049-adopt-the-fleet-rest-api-guideline)): absent →
+`400 idempotency-key-required`; same key with a different method, path or body
+→ `409 idempotency-key-reused`; a replay of the same request answers the stored
+response with `Idempotency-Replayed: true`. Every collection `GET`
+(`/reservations`, `/bins/{binId}/containers`) is keyset-paged: `limit` (1-500,
+default 100) and `cursor` in, `{items, nextCursor}` out (`400 invalid-limit` /
+`invalid-cursor` on bad input).
 
 ## Status-code conventions
 
@@ -60,9 +65,9 @@ during the REST hardening pass:
 
 | Code | Used for | Example |
 | --- | --- | --- |
-| `200 OK` | A read, or a command whose result *is* the response body | `GET /inventory/{sku}/usable`; `POST /bins/{binId}/cycle-count` returns the reconciliation result |
-| `201 Created` | A new addressable resource, with a `Location` header | `POST /stock/stow` → `Location: /stock/{id}`; `POST /reservations` → `Location: /reservations/{id}` |
-| `202 Accepted` | Accepted, but no addressable resource exists yet | `POST /stock/receive` — a staged receipt has no id and no `GET` route; the `StockUnit` is created later, at stow |
+| `200 OK` | A read, or a command whose result *is* the response body | `GET /inventory/{sku}/usable`; `POST /bins/{binId}/cycle-counts` returns the reconciliation result |
+| `201 Created` | A new addressable resource, with a `Location` header | `POST /stowages` → `Location: /stock/{id}`; `POST /reservations` → `Location: /reservations/{id}` |
+| `202 Accepted` | Accepted, but no addressable resource exists yet | `POST /stock-receipts` — a staged receipt has no id and no `GET` route; the `StockUnit` is created later, at stow |
 | `204 No Content` | A state transition with nothing useful to return | revoke, confirm-pick |
 | `400 Bad Request` | Malformed or missing input | empty SKU, empty bin id, unparseable JSON |
 | `404 Not Found` | The addressed resource does not exist | unknown reservation, unknown bin |
@@ -133,9 +138,12 @@ Mapping is one-for-one with the typed domain and application errors, in
 | `location-classification-unavailable` | 409 | `usecases.ErrLocationClassificationUnavailable` |
 | `hazmat-class-incompatible` | 409 | `usecases.ErrHazmatClassIncompatible` |
 | `concurrent-modification` | 409 | `usecases.ErrConcurrentModification` — a version-guarded `Save` lost an optimistic-concurrency race (ADR 0019); re-fetch and retry |
-| `counted-quantity-required` | 400 | written directly by the `POST /bins/{binId}/cycle-count` handler when `countedQuantity` is omitted |
+| `counted-quantity-required` | 400 | written directly by the `POST /bins/{binId}/cycle-counts` handler when `countedQuantity` is omitted |
 | `idempotency-key-required` | 400 | written by the `RequireIdempotencyKey` middleware (ADR 0018) |
-| `idempotency-key-reused` | 422 | written by the `RequireIdempotencyKey` middleware (ADR 0018) |
+| `idempotency-key-invalid` | 400 | written by the `RequireIdempotencyKey` middleware: not 1-128 printable ASCII characters (ADR 0049) |
+| `idempotency-key-reused` | 409 | written by the `RequireIdempotencyKey` middleware (ADR 0018, ADR 0049; was 422) |
+| `invalid-limit` | 400 | written by the paginated collection handlers: `limit` is not an integer in 1..500 (ADR 0049) |
+| `invalid-cursor` | 400 | written by the paginated collection handlers: `cursor` does not decode (ADR 0049) |
 | `invalid-report-query` | 400 | written by the reports handlers (`GET /reports/flow-accuracy`) |
 | `report-store-error` | 500 | written by the reports handlers when the read model fails |
 | `missing-demand-ref` | 400 | written directly by the `GET /reservations` and `POST /reservations` handlers (empty `demandRef`) |

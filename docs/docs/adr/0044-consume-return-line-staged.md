@@ -48,7 +48,7 @@ of the existing `ReceiveStock` use case.
 2. **A staged return line runs the SAME staged-receipt use case.** A new
    application use case, `BookReturnLine`, sits in front of `ReceiveStock`
    with `(sku, quantity)` and nothing else — the same use case an inbound
-   receipt line and `POST /stock/receive` drive. The effect is identical:
+   receipt line and `POST /stock-receipts` drive. The effect is identical:
    `StockReceived` is raised through the outbox to the analytics topic, the
    quantity is **staged and not yet usable**, and stow stays the RF action
    (item scan plus location scan). returns-processing prescribes no location

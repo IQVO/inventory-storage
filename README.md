@@ -196,32 +196,38 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 
 | Method | Path | Use case |
 |--------|------|----------|
-| POST   | `/stock/receive` | ReceiveStock — **deprecated** in `apis/openapi.yaml` (K24): inbound-receiving's `ReceiptLineReceived` is the production path (ADR-0037); still serves ad-hoc receipts. Requires `Idempotency-Key` (ADR-0018) |
-| POST   | `/stock/stow` | StowStock |
+| POST   | `/stock-receipts` | ReceiveStock — **deprecated** in `apis/openapi.yaml` (K24): inbound-receiving's `ReceiptLineReceived` is the production path (ADR-0037); still serves ad-hoc receipts. Requires `Idempotency-Key` (ADR-0018) |
+| POST   | `/stowages` | StowStock — requires `Idempotency-Key` |
 | POST   | `/reservations` | ReserveStock — requires `Idempotency-Key` (ADR-0018) |
-| GET    | `/reservations?demandRef=` | GetReservationsByDemandRef |
+| GET    | `/reservations?demandRef=` | GetReservationsByDemandRef — keyset-paged `{items,nextCursor}` (`limit` 1-500, default 100; `cursor`) |
 | DELETE | `/reservations/{id}` | RevokeReservation |
-| POST   | `/reservations/{id}/confirm-pick` | ConfirmPick — **deprecated** in `apis/openapi.yaml` (K37): fulfillment-execution's `TaskCompleted` consumer confirms picks (ADR-0035, ADR-0036); removal planned with the next breaking window |
+| POST   | `/reservations/{id}/pick-confirmations` | ConfirmPick — requires `Idempotency-Key`; **deprecated** in `apis/openapi.yaml` (K37): fulfillment-execution's `TaskCompleted` consumer confirms picks (ADR-0035, ADR-0036); removal planned with the next breaking window |
 | GET    | `/inventory/{sku}/usable` | GetUsable |
 | PUT    | `/bins/{binId}` | RegisterBin — idempotent: 201 created / 200 unchanged or resized / 409 below occupancy (ADR-0025) |
 | GET    | `/bins/{binId}` | GetBin — capacity, occupied, available |
-| POST   | `/bins/{binId}/cycle-count` | RunCycleCount |
+| POST   | `/bins/{binId}/cycle-counts` | RunCycleCount — requires `Idempotency-Key` |
+| GET    | `/bins/{binId}/containers` | ListBinContainers — keyset-paged `{items,nextCursor}` in LPN order (`limit`, `cursor`) |
 | POST   | `/transfers/{transferLineId}/receipt` | StageTransferReceipt — requires `Idempotency-Key`; 201 staged / 200 replay / 422 quarantined / 409 conflicting scan (ADR-0033) |
-| POST   | `/transfers/{transferLineId}/stow` | StowTransferStock — requires `Idempotency-Key`; 200 stowed with allocations / 409 not staged, wrong-site bin, or quantity mismatch (ADR-0033) |
+| POST   | `/transfers/{transferLineId}/stowages` | StowTransferStock — requires `Idempotency-Key`; 200 stowed with allocations / 409 not staged, wrong-site bin, or quantity mismatch (ADR-0033) |
 | GET    | `/healthz` | liveness |
 | GET    | `/readyz` | readiness — 503 `dependency-unavailable` while Postgres or the Kafka broker is down, and 503 `{"status":"not_ready"}` once graceful shutdown has begun (ADR-0020, ADR-0042) |
 
-`POST /stock/receive` and `POST /reservations` are the two true
-resource-creation endpoints (server-generated id, no caller-supplied
-identity), so they are route-scoped behind a transactional
-`Idempotency-Key` HTTP middleware (see
-[ADR-0018](docs/docs/adr/0018-idempotency-key-middleware.md)): a missing
-header is a 400, a reused key with a different request body is a 422, and
-a retried identical request returns the exact same cached response
-without re-executing the handler — a client-side retry after a dropped
-response can never double-create a resource. The middleware is backed by
-Postgres (`idempotency_keys`) in every deployment: there is no mode in which
-these two routes are unprotected.
+Every `POST` is route-scoped behind a transactional `Idempotency-Key` HTTP
+middleware (see [ADR-0018](docs/docs/adr/0018-idempotency-key-middleware.md)
+and [ADR-0049](docs/docs/adr/0049-adopt-the-fleet-rest-api-guideline.md)): a
+missing header is a 400 `idempotency-key-required`, a key reused with a
+different method, path or body is a 409 `idempotency-key-reused`, and a
+retried identical request returns the exact same stored response plus
+`Idempotency-Replayed: true` without re-executing the handler — a client-side
+retry after a dropped response can never apply a write twice. The middleware
+is backed by Postgres (`idempotency_keys`) in every deployment: there is no
+mode in which a `POST` is unprotected.
+
+Every collection `GET` (`/reservations`, `/bins/{binId}/containers`) is
+keyset-paginated: `limit` (1-500, default 100) and the opaque `cursor`, answer
+`{"items": [...], "nextCursor": "..."}` with `nextCursor` absent on the last
+page; a bad `limit` is 400 `invalid-limit`, a bad `cursor` 400
+`invalid-cursor`. Clients loop on `nextCursor` until it is absent.
 
 None of these routes is authenticated: the static-bearer-key layer added by
 ADR-0014 was removed again by
@@ -243,12 +249,13 @@ curl -s -i -X PUT localhost:8080/bins/A-1-1 -d '{"capacity":20}'
 curl -s localhost:8080/bins/A-1-1
 # => {"binId":"A-1-1","capacity":20,"occupied":0,"available":20}
 
-curl -s -X POST localhost:8080/stock/receive \
+curl -s -X POST localhost:8080/stock-receipts \
   -H 'Idempotency-Key: 8b1a...' \
   -d '{"sku":"SKU-1","quantity":10}'
 # => 202 Accepted (a staged receipt has no addressable resource yet)
 
-curl -s -i -X POST localhost:8080/stock/stow \
+curl -s -i -X POST localhost:8080/stowages \
+  -H 'Idempotency-Key: 5c2e...' \
   -d '{"sku":"SKU-1","quantity":10,"binId":"A-1-1"}'
 # => 201 Created, Location: /stock/<stock-unit-id>
 
@@ -260,16 +267,23 @@ curl -s -i -X POST localhost:8080/reservations \
 #    Every allocation names its pick location (binId) — ADR-0025. lineNo is
 #    optional (1..2147483647; omitted from the response when unknown) — ADR-0036.
 # A retry with the SAME Idempotency-Key + body returns this exact response
-# again without creating a second reservation (ADR-0018); omitting the
-# header entirely on these two routes is a 400.
+# again (plus `Idempotency-Replayed: true`) without creating a second
+# reservation (ADR-0018); omitting the header entirely on any POST is a 400,
+# and reusing the key for a different request is a 409 idempotency-key-reused.
+
+curl -s 'localhost:8080/reservations?demandRef=order-42&limit=100'
+# => {"items":[{"id":"res-...", ...}], "nextCursor":"..."}  (nextCursor absent
+#    on the last page; pass it back as &cursor=... with the same demandRef)
 
 curl -s localhost:8080/inventory/SKU-1/usable
 
-curl -s -X POST localhost:8080/reservations/<id>/confirm-pick
+curl -s -X POST localhost:8080/reservations/<id>/pick-confirmations \
+  -H 'Idempotency-Key: 9d4f...'
 
 curl -s -X DELETE localhost:8080/reservations/<id>
 
-curl -s -X POST localhost:8080/bins/A-1-1/cycle-count \
+curl -s -X POST localhost:8080/bins/A-1-1/cycle-counts \
+  -H 'Idempotency-Key: 1e7a...' \
   -d '{"countedQuantity":9}'
 ```
 
@@ -463,14 +477,14 @@ inbound-receiving owns ASNs, dock appointments and receipts. When it counts a
 line it publishes `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived`
 on `warehouse.inbound-receiving.events`. A line with `condition=Good` is booked
 through the existing `ReceiveStock` use case, so the effect is the same as
-`POST /stock/receive`: `StockReceived` on the analytics topic, the quantity
+`POST /stock-receipts`: `StockReceived` on the analytics topic, the quantity
 **staged and not yet usable**, stow still the RF action (item scan plus location
 scan). The CloudEvents `id` is claimed in `processed_events` in the same
 transaction, so a redelivery books nothing twice. A `Damaged` line is **not
 booked** in v1 (INFO log and
 `inventory.inbound_receipt_units{outcome=damaged_not_booked}`); an invalid line
 (empty `sku`, `quantity` <= 0, unknown `condition`, not a CloudEvent) is logged
-and skipped. Other inbound-receiving event types are ignored. `POST /stock/receive`
+and skipped. Other inbound-receiving event types are ignored. `POST /stock-receipts`
 is unchanged and keeps serving ad-hoc receipts.
 
 | Env var | Required | Meaning |
@@ -486,7 +500,7 @@ RESTOCK disposition's handover, `data` = inbound-receiving's
 `ReceiptLineReceived` shape plus `rma_id`, `disposition_id`, `site_id`) on
 `warehouse.returns-processing.events`. The line is booked through the SAME
 `ReceiveStock` use case a receipt line uses, so the effect is identical to
-`POST /stock/receive` and to the dock path: `StockReceived` on the analytics
+`POST /stock-receipts` and to the dock path: `StockReceived` on the analytics
 topic, the quantity **staged and not yet usable**, stow still the RF action.
 The CloudEvents `id` is claimed in `processed_events` (consumer
 `return-line-staged`, the flow's provenance record) in the same transaction,
@@ -504,7 +518,7 @@ The one-shot `republish-product-classifications` backfill (product-master ADR
 
 ### Consumed: fulfillment-execution's TaskCompleted → confirm exactly the picked line (ADR-0036; counting fallback ADR-0035)
 
-Nothing calls `POST /reservations/{id}/confirm-pick` in production, so picks are
+Nothing calls `POST /reservations/{id}/pick-confirmations` in production, so picks are
 confirmed from an event instead (no synchronous call into this context). On
 `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` from
 `warehouse.fulfillment.events`, for a `task_type` of `PICK` with a non-empty
@@ -552,7 +566,7 @@ dead-lettered at once. `StockPicked` leaves through the outbox.
 When the truck arrives, custody at the destination is taken by a SCAN,
 not by an event: `POST /transfers/{transferLineId}/receipt` records what
 was physically counted against the transfer line the operator claims,
-and `POST /transfers/{transferLineId}/stow` places it into
+and `POST /transfers/{transferLineId}/stowages` places it into
 destination-site bins. Both require an `Idempotency-Key`.
 
 - **Stage** looks the line up in the `transfer_allocations` ledger. A
@@ -856,9 +870,9 @@ aggregate/bounded concept, using the ubiquitous language from `CLAUDE.md`
 
 | Feature file | Covers |
 |--------------|--------|
-| `features/stow.feature` | `POST /stock/receive`, `POST /stock/stow` — chaotic stow, bin-capacity rejection |
-| `features/reservation.feature` | `POST /reservations`, `DELETE /reservations/{id}`, `POST /reservations/{id}/confirm-pick` — reserve against usable, revoke, confirm pick |
-| `features/cycle_count.feature` | `POST /bins/{binId}/cycle-count` — clean count vs. discrepancy/Unlocated |
+| `features/stow.feature` | `POST /stock-receipts`, `POST /stowages` — chaotic stow, bin-capacity rejection |
+| `features/reservation.feature` | `POST /reservations`, `DELETE /reservations/{id}`, `POST /reservations/{id}/pick-confirmations` — reserve against usable, revoke, confirm pick |
+| `features/cycle_count.feature` | `POST /bins/{binId}/cycle-counts` — clean count vs. discrepancy/Unlocated |
 | `features/bin_registration.feature` | `PUT /bins/{binId}`, `GET /bins/{binId}` — create / no-op / resize / below-occupancy rejection, and pick location (`binId`) on reservation allocations |
 | `features/usable_inventory.feature` | `GET /inventory/{sku}/usable` — on-hand minus active reservations |
 

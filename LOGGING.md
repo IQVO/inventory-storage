@@ -31,7 +31,7 @@ Example:
 
 ```json
 {"time":"2026-08-23T12:00:00Z","level":"INFO","msg":"http server listening","addr":":8080"}
-{"time":"2026-08-23T12:00:01Z","level":"INFO","msg":"http request","method":"POST","path":"/stock/receive","status":202,"duration_ms":3,"bytes":128,"request_id":"abcd1234"}
+{"time":"2026-08-23T12:00:01Z","level":"INFO","msg":"http request","method":"POST","path":"/stock-receipts","status":202,"duration_ms":3,"bytes":128,"request_id":"abcd1234"}
 {"time":"2026-08-23T12:00:01Z","level":"INFO","msg":"domain event published","event_name":"StockReceived","payload":{"sku":"SKU-1","quantity":10}}
 ```
 

@@ -101,9 +101,9 @@ sequenceDiagram
     IC->>INV: cmd: RegisterBin PUT /bins/{binId}
     PM-)INV: evt: com.warehouse.wms.product-master.product.ProductClassified on warehouse.product-master.events
     Note over INV: local classification copy, version-guarded (ADR 0034), PUT /products/{sku}/classification answers 410
-    IC->>INV: cmd: ReceiveStock POST /stock/receive
+    IC->>INV: cmd: ReceiveStock POST /stock-receipts
     INV-)PJ: evt: com.warehouse.wms.inventory-storage.stock.StockReceived on warehouse.inventory.analytics
-    IC->>INV: cmd: StowStock POST /stock/stow
+    IC->>INV: cmd: StowStock POST /stowages
     Note over INV: placement check from cache, same-bin DOT segregation, capacity
     INV-)PJ: evt: com.warehouse.wms.inventory-storage.stock.ItemStowed on warehouse.inventory.analytics
 ```
@@ -133,7 +133,7 @@ sequenceDiagram
     NF->>INV: qry: GET /inventory/{sku}/usable
     OA->>INV: qry: MCP check_availability
     OA->>INV: qry: MCP get_bin_occupancy
-    IC->>INV: cmd: RunCycleCount POST /bins/{binId}/cycle-count
+    IC->>INV: cmd: RunCycleCount POST /bins/{binId}/cycle-counts
     Note over INV: shortfall marks units UNLOCATED, usable drops at once
     INV-)PJ: evt: com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected on warehouse.inventory.analytics
     INV-)PJ: evt: com.warehouse.wms.inventory-storage.stock.ItemUnlocated on warehouse.inventory.analytics

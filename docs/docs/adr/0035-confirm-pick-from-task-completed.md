@@ -27,7 +27,7 @@ expiry stays (no background expirer). Builds on [ADR 0017](./0017-transactional-
 
 ## Context
 
-`POST /reservations/{id}/confirm-pick` (`ConfirmPick`) is what turns a reservation
+`POST /reservations/{id}/pick-confirmations` (`ConfirmPick`) is what turns a reservation
 into a physical decrement. The 2026-10-05 audit found that no sibling calls it, so
 reserved stock is never confirmed as picked: reservations expire lazily (ADR 0003)
 and the decrement never reaches this ledger. ADR 0032 decided the direction and
