@@ -34,7 +34,7 @@ jobs:
           cache: false          # golangci-lint-action manages its own cache
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: v2.13.1
+          version: v2.14.0
           args: --timeout=5m
 
   # Agent-guide sensor (harness-template v3): skills load, references resolve, context budget.
@@ -70,7 +70,7 @@ jobs:
           cache: false          # golangci-lint-action manages its own cache
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: v2.13.1
+          version: v2.14.0
           args: --timeout=5m --enable-only gocyclo,gocognit,cyclop,funlen,nestif
       - name: gocyclo report (functions over 10 — informational, gate is 15)
         if: always()
@@ -79,6 +79,39 @@ jobs:
           go install github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0
           echo "### gocyclo — functions over 10 (informational; the gate is 15)" >> "$GITHUB_STEP_SUMMARY"
           go list ./... | grep -v '/web/' | xargs -r gocyclo -over 10 | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+  # File-length budget: at most 300 lines of code per production Go file
+  # (revive file-length-limit; comments and blank lines are not counted;
+  # settings in .golangci.yml). Pull requests into develop: BLOCKING for every
+  # Go file the PR adds or touches, so an oversized legacy file is split the
+  # next time it changes. Release PRs (develop -> main), push and schedule: an
+  # informational report of the whole backlog, so releases are never blocked.
+  # ============================================================
+  # CLASSIFICATION: LINTERS & STATIC ANALYSIS (file length)
+  # ============================================================
+  file-length:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false          # golangci-lint-action manages its own cache
+      - name: file length of the Go files this PR adds or touches (blocking)
+        if: github.event_name == 'pull_request' && github.base_ref == 'develop'
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.14.0
+          args: --timeout=5m --enable-only revive --new-from-merge-base=origin/develop --whole-files
+      - name: file length backlog (informational)
+        if: github.event_name != 'pull_request' || github.base_ref != 'develop'
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.14.0
+          args: --timeout=5m --enable-only revive --issues-exit-code=0
 
   # ============================================================
   # CLASSIFICATION: UNIT TESTING
@@ -164,11 +197,11 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.13"
       - name: Install Schemathesis (pinned)
-        run: python3 -m pip install "schemathesis==4.28.0"
+        run: python3 -m pip install --require-hashes -r .github/requirements/schemathesis.txt
       - name: Contract tests (Schemathesis over apis/openapi.yaml)
         env:
           DATABASE_URL: "postgres://inventory:inventory@localhost:5432/inventory?sslmode=disable"
@@ -357,7 +390,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - name: govulncheck
         run: govulncheck ./...
 
@@ -409,7 +442,7 @@ jobs:
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
           version: v3.16.4
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
           check-latest: true
@@ -436,7 +469,7 @@ jobs:
         run: bash charts/inventory-storage/tests/render_test.sh
       # test_service_selectors.py exits 0 with "SKIP" when PyYAML is missing,
       # so install it explicitly: the check must never pass vacuously.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.13"
       - name: Install PyYAML
@@ -526,7 +559,7 @@ jobs:
           severity: 'CRITICAL,HIGH,MEDIUM'
           ignore-unfixed: true
       - name: Upload Trivy SARIF to Security tab
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
@@ -558,7 +591,7 @@ jobs:
         run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -637,7 +670,7 @@ jobs:
         run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

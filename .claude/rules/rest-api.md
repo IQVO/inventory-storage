@@ -7,18 +7,18 @@ paths:
 
 # REST API (inbound adapter)
 
-- `POST /stock/receive`                        -> ReceiveStock
-- `POST /stock/stow`                           -> StowStock
+- `POST /stock-receipts`                        -> ReceiveStock
+- `POST /stowages`                           -> StowStock
 - `POST /reservations`                         -> ReserveStock
 - `GET  /reservations?demandRef=`              -> GetReservationsByDemandRef
 - `DELETE /reservations/{id}`                  -> RevokeReservation
-- `POST /reservations/{id}/confirm-pick`       -> ConfirmPick
+- `POST /reservations/{id}/pick-confirmations`       -> ConfirmPick
 - `GET  /inventory/{sku}/usable`               -> GetUsable
 - `PUT  /bins/{binId}`                         -> RegisterBin (idempotent; 201 created,
                                                   200 unchanged/resized, 409
                                                   capacity-below-occupancy — ADR-0025)
 - `GET  /bins/{binId}`                         -> GetBin ({binId, capacity, occupied, available})
-- `POST /bins/{binId}/cycle-count`             -> RunCycleCount
+- `POST /bins/{binId}/cycle-counts`             -> RunCycleCount
 - `GET  /healthz`
 - `GET  /readyz`                               -> 200 ready / 503 not_ready during
                                                   graceful shutdown (ADR-0020)

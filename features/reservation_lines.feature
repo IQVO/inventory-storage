@@ -4,7 +4,7 @@
 #     (demandRef, sku, quantity, lineNo), so a retry of one line returns the
 #     existing reservation while another line of the same order is a new one.
 #   - apis/openapi.yaml — POST /reservations (400 invalid-line-no), DELETE
-#     /reservations/{id} and POST /reservations/{id}/confirm-pick (404
+#     /reservations/{id} and POST /reservations/{id}/pick-confirmations (404
 #     reservation-not-found); a reservation draws across StockUnits, and a
 #     confirmed pick releases every bin it drew from.
 

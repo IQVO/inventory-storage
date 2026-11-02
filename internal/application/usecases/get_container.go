@@ -38,3 +38,18 @@ func (uc *ListBinContainers) Execute(ctx context.Context, binID shared.BinId) ([
 	}
 	return uc.Containers.FindByBin(ctx, binID)
 }
+
+// Page is the keyset-paged read behind GET /bins/{binId}/containers: up to
+// fetch containers whose LPN sorts strictly after afterLPN (empty = from the
+// start), or ErrBinNotFound for an unregistered bin. The caller passes
+// page.FetchSize(limit) so it can tell whether a next page exists.
+func (uc *ListBinContainers) Page(ctx context.Context, binID shared.BinId, afterLPN string, fetch int) ([]*container.Container, error) {
+	bin, err := uc.Locations.FindByID(ctx, binID)
+	if err != nil {
+		return nil, err
+	}
+	if bin == nil {
+		return nil, ErrBinNotFound
+	}
+	return uc.Containers.FindByBinAfter(ctx, binID, afterLPN, fetch)
+}

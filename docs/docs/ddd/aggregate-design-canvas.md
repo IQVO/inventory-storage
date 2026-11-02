@@ -111,11 +111,11 @@ cycle count that finds stock missing must always be able to say so.
 
 | Command | Method | Use case / entry point |
 | --- | --- | --- |
-| Stow | `NewStockUnit` | `StowStock` — `POST /stock/stow` |
+| Stow | `NewStockUnit` | `StowStock` — `POST /stowages` |
 | Reserve | `Reserve` | `ReserveStock` — `POST /reservations` |
 | Release reservation | `ReleaseReservation` | `RevokeReservation` (`DELETE /reservations/{id}`, MCP `revoke_reservation`), lazy expiry |
-| Pick | `Pick` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted`: the picked line's reservation when the event carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick otherwise ([ADR 0035](/docs/adr/0035)) |
-| Mark unlocated | `MarkUnlocated` | `RunCycleCount` — `POST /bins/{binId}/cycle-count` |
+| Pick | `Pick` | `ConfirmPick` — `POST /reservations/{id}/pick-confirmations`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted`: the picked line's reservation when the event carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick otherwise ([ADR 0035](/docs/adr/0035)) |
+| Mark unlocated | `MarkUnlocated` | `RunCycleCount` — `POST /bins/{binId}/cycle-counts` |
 
 ### 7. Created Events
 
@@ -213,8 +213,8 @@ a bin is never deleted.
 | Command | Method | Use case / entry point |
 | --- | --- | --- |
 | Register / resize | `NewBin`, `Resize` | `RegisterBin` — `PUT /bins/{binId}` |
-| Occupy | `Occupy` | `StowStock` — `POST /stock/stow` |
-| Release | `Release` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted`: the picked line's reservation when the event carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick otherwise ([ADR 0035](/docs/adr/0035)) |
+| Occupy | `Occupy` | `StowStock` — `POST /stowages` |
+| Release | `Release` | `ConfirmPick` — `POST /reservations/{id}/pick-confirmations`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted`: the picked line's reservation when the event carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick otherwise ([ADR 0035](/docs/adr/0035)) |
 
 ### 7. Created Events
 
@@ -315,7 +315,7 @@ returns `ErrAlreadyResolved`.
 | --- | --- | --- |
 | Reserve | `New`, `NewForLine` | `ReserveStock` — `POST /reservations` (Idempotency-Key, optional `lineNo`, ADR 0036) |
 | Revoke | `Revoke` | `RevokeReservation` — `DELETE /reservations/{id}`, MCP `revoke_reservation` |
-| Confirm pick | `Confirm` | `ConfirmPick` — `POST /reservations/{id}/confirm-pick`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted`: the picked line's reservation when the event carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick otherwise ([ADR 0035](/docs/adr/0035)) |
+| Confirm pick | `Confirm` | `ConfirmPick` — `POST /reservations/{id}/pick-confirmations`, and per ACTIVE reservation from `ConfirmPicksForOrder` on `TaskCompleted`: the picked line's reservation when the event carries `line_no` ([ADR 0036](/docs/adr/0036)), the order's on its last pick otherwise ([ADR 0035](/docs/adr/0035)) |
 | Expire | `Expire` | lazy, inside the four read paths above |
 
 ### 7. Created Events
@@ -532,8 +532,8 @@ transitions (they return errors and leave state unchanged).
 | Command | Method | Use case / entry point |
 | --- | --- | --- |
 | Register | `Register` | `ContainerLinker.Settle` — pending links from inbound-receiving's `ReceiptCartonReceived` (Kafka), settled once the receipt line is booked |
-| Stow | `Stow` | `StowContainer` — `POST /containers/{lpn}:stow` |
-| Break case | `Break`, `Decant` | `BreakCase` — `POST /containers/{lpn}:break` |
+| Stow | `Stow` | `StowContainer` — `POST /containers/{lpn}/stowages` |
+| Break case | `Break`, `Decant` | `BreakCase` — `POST /containers/{lpn}/case-breaks` |
 | Empty whole | `EmptyWhole` | `container_unit_exit` — a confirmed whole-case pick or a cycle-count shortfall, inside the caller's `UnitOfWork` |
 | Read | — | `GetContainer` — `GET /containers/{lpn}`, MCP `get_container`; `ListBinContainers` — `GET /bins/{binId}/containers` |
 

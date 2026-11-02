@@ -164,6 +164,9 @@ func (r *tracingReservationRepo) FindByID(ctx context.Context, id string) (*rese
 func (r *tracingReservationRepo) FindByDemandRef(ctx context.Context, ref string) ([]*reservation.Reservation, error) {
 	return r.delegate.FindByDemandRef(ctx, ref)
 }
+func (r *tracingReservationRepo) FindByDemandRefAfter(ctx context.Context, ref string, after *reservation.PageAfter, limit int) ([]*reservation.Reservation, error) {
+	return r.delegate.FindByDemandRefAfter(ctx, ref, after, limit)
+}
 func (r *tracingReservationRepo) NextID(ctx context.Context) (string, error) {
 	return r.delegate.NextID(ctx)
 }

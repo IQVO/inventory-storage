@@ -193,12 +193,12 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | `facility-layout` | LocationSlotRegistered | Event | Kafka `warehouse.facility.events`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | Conformist |
 | `facility-layout` | LocationSlotDecommissioned | Event | Kafka `warehouse.facility.events`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | Conformist |
 | Inventory control (operator, `e2e-tests` simulator) | RegisterBin | Command | REST `PUT /bins/{binId}` | OHS |
-| Inbound dock (operator, simulator) | ReceiveStock | Command | REST `POST /stock/receive` (header `Idempotency-Key`) | OHS |
+| Inbound dock (operator, simulator) | ReceiveStock | Command | REST `POST /stock-receipts` (header `Idempotency-Key`) | OHS |
 | inbound-receiving | ReceiptLineReceived (`Good` lines, ADR 0037) | Event | Kafka `warehouse.inbound-receiving.events` → `BookInboundReceiptLine` → `ReceiveStock` (`INBOUND_RECEIPT_CONSUMER_GROUP`, mandatory, always on); `Damaged` lines are not booked | Conformist (inbound-receiving's Published Language); the REST route above is unchanged |
-| Inbound dock (operator, simulator) | StowStock | Command | REST `POST /stock/stow` | OHS |
-| Inventory control (operator, simulator) | RunCycleCount | Command | REST `POST /bins/{binId}/cycle-count` | OHS |
+| Inbound dock (operator, simulator) | StowStock | Command | REST `POST /stowages` | OHS |
+| Inventory control (operator, simulator) | RunCycleCount | Command | REST `POST /bins/{binId}/cycle-counts` | OHS |
 | product-master | ProductClassified (local copy, ADR 0034) | Event | Kafka `warehouse.product-master.events` → `ApplyProductClassification` | Conformist (product-master's Published Language) |
-| Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/confirm-pick` | OHS — no sibling context calls it; **decided 2026-10-06: event-driven** — production confirmation comes from fulfillment-execution's `TaskCompleted` (next row), consumed here ([ADR 0035](/docs/adr/0035)) |
+| Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/pick-confirmations` | OHS — no sibling context calls it; **decided 2026-10-06: event-driven** — production confirmation comes from fulfillment-execution's `TaskCompleted` (next row), consumed here ([ADR 0035](/docs/adr/0035)) |
 | fulfillment-execution | TaskCompleted (PICK, `order_ref`, `line_no`) | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` → `ConfirmPicksForOrder` → with `line_no`, `ConfirmPick` for exactly that line's ACTIVE reservation; without it, counts the order's picks and confirms on the order's last pick (`TASK_COMPLETED_CONSUMER_GROUP`, mandatory, always on) | Conformist (fulfillment-execution's Published Language); per-line confirm, counting fallback, short picks not modelled ([ADR 0036](/docs/adr/0036), [ADR 0035](/docs/adr/0035)) |
 | fulfillment-execution | TaskCompleted (RELOCATE, REPLENISH) | Event | Same topic and consumer group: `ApplyRelocationTask` (`relocation_ref`, [ADR 0039](/docs/adr/0039)) and `ApplyReplenishTask` (`request_ref`, [ADR 0041](/docs/adr/0041)) move stock between bins through `RelocateStock`; a deterministic rejection is dead-lettered | Conformist (fulfillment-execution's Published Language) |
 | Operator, `inventory-mfe` | GetBin, GetUsable | Query | REST `GET /bins/{binId}`, `GET /inventory/{sku}/usable` | OHS |
@@ -297,7 +297,7 @@ The terms that carry the model:
   legacy type and its backfill were removed at stage E (2026-10-17).
 - Should `StowStock` validate a bin against facility-layout's slot catalogue,
   not only against its own `LocationRepo`?
-- ~~Who should call `POST /reservations/{id}/confirm-pick` in production?~~
+- ~~Who should call `POST /reservations/{id}/pick-confirmations` in production?~~
   **Decided 2026-10-06: nobody** — this context consumes fulfillment-execution's
   `TaskCompleted` (PICK, additive `order_ref`) and confirms the reservations
   itself, idempotently and atomically; no sync REST/MCP call from siblings

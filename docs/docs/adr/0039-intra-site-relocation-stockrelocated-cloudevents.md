@@ -72,7 +72,7 @@ Two facts of the existing model shape the design:
    optional `reason` defaulting to `MANUAL`, optional `sourceRef`) answers `201` with the
    relocation and `Location: /relocations/{id}`. It is behind `RequireIdempotencyKey`
    exactly like the other creating POSTs (ADR 0018): header required, same key + same body
-   replays the stored response, same key + different body is `422 idempotency-key-reused`.
+   replays the stored response, same key + different body is `409 idempotency-key-reused` (422 until ADR 0049).
    Errors: `400` malformed/empty fields, `404 bin-not-found`, `409 bin-not-at-site`,
    `409 insufficient-usable`, `409 bin-full`, `409 concurrent-modification`,
    `422 same-bin` / `invalid-relocation-reason` / `zero-quantity` / `source-ref-too-long`.

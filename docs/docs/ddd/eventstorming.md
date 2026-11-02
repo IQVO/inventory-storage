@@ -211,7 +211,7 @@ Omitted: the clean-count branch (only `CycleCountCompleted` with
 
 | Sticky | Kind | Code evidence |
 | --- | --- | --- |
-| Inventory control, Picker or simulator, MCP host / agent | Actor | REST callers of `PUT /bins/{binId}`, `POST /stock/*`, `POST /bins/{binId}/cycle-count`, `POST /reservations/{id}/confirm-pick`; MCP `revoke_reservation` |
+| Inventory control, Picker or simulator, MCP host / agent | Actor | REST callers of `PUT /bins/{binId}`, `POST /stock/*`, `POST /bins/{binId}/cycle-counts`, `POST /reservations/{id}/pick-confirmations`; MCP `revoke_reservation` |
 | RegisterBin, ApplyProductClassification (Kafka, ADR 0034), ReceiveStock, StowStock, ReserveStock, RevokeReservation, ConfirmPick, ConfirmPicksForOrder (Kafka, ADR 0035), RunCycleCount | Command | `internal/application/usecases/*.go`, routed in `internal/adapters/inbound/http/server.go` |
 | StockUnit, Bin, Reservation, ProductClassification | Aggregate | `internal/domain/stock`, `location`, `reservation`, `product` |
 | StockReceived, ItemStowed, LocationRecorded, StockReserved, ReservationRevoked, ReservationExpired, StockPicked, ItemUnlocated, CycleCountCompleted, DiscrepancyDetected | Domain Event | `internal/domain/shared/events.go` |

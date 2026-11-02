@@ -79,14 +79,32 @@ func (r *ContainerRepo) FindByStockUnitID(_ context.Context, stockUnitID string)
 func (r *ContainerRepo) FindByBin(_ context.Context, binID shared.BinId) ([]*container.Container, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.inBinAfter(binID, ""), nil
+}
+
+// FindByBinAfter is the keyset-paged FindByBin: at most limit containers whose
+// LPN sorts strictly after afterLPN (empty = from the start), in LPN order.
+func (r *ContainerRepo) FindByBinAfter(_ context.Context, binID shared.BinId, afterLPN string, limit int) ([]*container.Container, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := r.inBinAfter(binID, afterLPN)
+	if limit >= 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// inBinAfter lists the containers in binID with an LPN after afterLPN, sorted
+// by LPN. The caller holds r.mu.
+func (r *ContainerRepo) inBinAfter(binID shared.BinId, afterLPN string) []*container.Container {
 	var out []*container.Container
 	for _, s := range r.byLPN {
-		if s.BinID == binID && binID != "" {
+		if s.BinID == binID && binID != "" && s.LPN > afterLPN {
 			out = append(out, container.Rehydrate(s))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LPN() < out[j].LPN() })
-	return out, nil
+	return out
 }
 
 func (r *ContainerRepo) FindStowedBySKU(_ context.Context, sku shared.SKU, owner shared.OwnerRef) ([]*container.Container, error) {

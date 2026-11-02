@@ -78,7 +78,7 @@ func (s *Server) handleStageTransferReceipt(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, status, toTransferReceiptResponse(res.Receipt, res.Replay))
 }
 
-// handleStowTransferStock backs POST /transfers/{transferLineId}/stow
+// handleStowTransferStock backs POST /transfers/{transferLineId}/stowages
 // (ADR 0031): place a STAGED receipt's goods into destination bins.
 // Answers 200 with the STOWED receipt and the created allocations —
 // this is the only path that raises the destination site's usable

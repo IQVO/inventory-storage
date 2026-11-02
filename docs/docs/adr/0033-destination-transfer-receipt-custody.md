@@ -84,7 +84,7 @@ that is a planning-state concern, not a stock concern.)
    one — so stock always matches the physical count and the difference
    is always accountable somewhere.
 
-3. **`StowTransferStock`** (`POST /transfers/{transferLineId}/stow`,
+3. **`StowTransferStock`** (`POST /transfers/{transferLineId}/stowages`,
    `Idempotency-Key` required) places a STAGED receipt's goods:
    `{bins: [{bin_id, quantity}]}`. Every bin must be registered and
    belong to the receipt's `destination_site_id` — the site-custody fact

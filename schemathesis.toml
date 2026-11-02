@@ -1,0 +1,19 @@
+# Schemathesis configuration for scripts/contract-test.sh and the CI `contract` job
+# (auto-loaded from the repo root).
+#
+# Per-operation overrides only: every check stays enabled for every operation, and an
+# override may only widen the statuses ONE check accepts for ONE operation.
+
+# Paged collections (REST guideline 3): `cursor` is an opaque token only this API can
+# mint, so OpenAPI can only say "string". A schema-valid string that this API did not
+# issue is correctly 400 `invalid-cursor`. The 400 is documented on both operations and
+# pinned by TestCollections_RejectBadLimitAndCursor
+# (internal/adapters/inbound/http/rest_guideline_test.go). Default
+# positive_data_acceptance statuses plus 400; every other check runs unchanged.
+[[operations]]
+include-operation-id = "getReservationsByDemandRef"
+checks.positive_data_acceptance.expected-statuses = ["2xx", "400", "401", "403", "404", "409", "429", "5xx"]
+
+[[operations]]
+include-operation-id = "listBinContainers"
+checks.positive_data_acceptance.expected-statuses = ["2xx", "400", "401", "403", "404", "409", "429", "5xx"]

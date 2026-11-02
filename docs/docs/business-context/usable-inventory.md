@@ -116,12 +116,12 @@ Starting from an empty bin `A-1-1` with capacity 20:
 
 | Step | Action | On-hand | Reserved | Usable |
 | --- | --- | --- | --- | --- |
-| 1 | `POST /stock/receive` `SKU-1` ×10 | 0 | 0 | 0 |
-| 2 | `POST /stock/stow` `SKU-1` ×10 → `A-1-1` | 10 | 0 | **10** |
+| 1 | `POST /stock-receipts` `SKU-1` ×10 | 0 | 0 | 0 |
+| 2 | `POST /stowages` `SKU-1` ×10 → `A-1-1` | 10 | 0 | **10** |
 | 3 | `POST /reservations` `SKU-1` ×6 for `order-42` | 10 | 6 | **4** |
 | 4a | `DELETE /reservations/{id}` (pick failed) | 10 | 0 | **10** |
-| 4b | *or* `POST /reservations/{id}/confirm-pick` | 4 | 0 | **4** |
-| 5 | `POST /bins/A-1-1/cycle-count` counted 3 (system 4) | 4 | 0 | **0** — unit marked `UNLOCATED` |
+| 4b | *or* `POST /reservations/{id}/pick-confirmations` | 4 | 0 | **4** |
+| 5 | `POST /bins/A-1-1/cycle-counts` counted 3 (system 4) | 4 | 0 | **0** — unit marked `UNLOCATED` |
 
 Step 1 changes nothing measurable: a receipt stages goods but creates no
 `StockUnit`, because nothing has been located yet. That is why the endpoint

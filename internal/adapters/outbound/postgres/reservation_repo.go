@@ -120,17 +120,45 @@ func (r *ReservationRepo) NextID(_ context.Context) (string, error) {
 }
 
 // FindByDemandRef returns every reservation ever created against the given
-// demandRef, ordered by created_at ascending so the caller sees them in the
-// order they occurred (revoked-then-retried demand histories read
+// demandRef, ordered by (created_at, id) ascending so the caller sees them in
+// the order they occurred (revoked-then-retried demand histories read
 // naturally). Mirrors FindByID's scan/hydration pattern, just applied
 // row-by-row instead of to a single Scan.
 func (r *ReservationRepo) FindByDemandRef(ctx context.Context, demandRef string) ([]*reservation.Reservation, error) {
-	q := querierFrom(ctx, r.pool)
-	rows, err := q.Query(ctx, `
+	return r.queryByDemandRef(ctx, demandRef, `
 		SELECT id, sku, quantity, status, created_at, expires_at, version, line_no, COALESCE(owner_ref, '')
 		FROM reservations WHERE demand_ref = $1
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id COLLATE "C" ASC
 	`, demandRef)
+}
+
+// FindByDemandRefAfter is the keyset-paged FindByDemandRef: at most limit
+// reservations strictly after the (created_at, id) position, in the same
+// (created_at, id) order. id is compared with the "C" collation so the order is
+// byte-wise and identical to the in-memory repository's.
+func (r *ReservationRepo) FindByDemandRefAfter(ctx context.Context, demandRef string, after *reservation.PageAfter, limit int) ([]*reservation.Reservation, error) {
+	if after == nil {
+		return r.queryByDemandRef(ctx, demandRef, `
+			SELECT id, sku, quantity, status, created_at, expires_at, version, line_no, COALESCE(owner_ref, '')
+			FROM reservations WHERE demand_ref = $1
+			ORDER BY created_at ASC, id COLLATE "C" ASC
+			LIMIT $2
+		`, demandRef, limit)
+	}
+	return r.queryByDemandRef(ctx, demandRef, `
+		SELECT id, sku, quantity, status, created_at, expires_at, version, line_no, COALESCE(owner_ref, '')
+		FROM reservations
+		WHERE demand_ref = $1 AND (created_at, id COLLATE "C") > ($2, $3)
+		ORDER BY created_at ASC, id COLLATE "C" ASC
+		LIMIT $4
+	`, demandRef, after.CreatedAt, after.ID, limit)
+}
+
+// queryByDemandRef runs a reservation SELECT (the column list of FindByID) and
+// hydrates every row with its allocations.
+func (r *ReservationRepo) queryByDemandRef(ctx context.Context, demandRef, query string, args ...any) ([]*reservation.Reservation, error) {
+	q := querierFrom(ctx, r.pool)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

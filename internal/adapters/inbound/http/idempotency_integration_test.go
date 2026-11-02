@@ -8,9 +8,12 @@
 // and each test gets a private database cloned from a migrated template
 // (testdb_integration_test.go); never reads DATABASE_URL or hardcodes
 // localhost, so CI cannot silently skip this contract. Ported from order-management PR #105 (ADR
-// 0023) and extended to cover BOTH of this service's protected routes:
-// POST /stock/receive (handleReceiveStock) and POST /reservations
-// (handleReserveStock).
+// 0023) and extended to cover this service's protected routes: POST
+// /stock-receipts (handleReceiveStock) and POST /reservations
+// (handleReserveStock) here, the rest of the POST routes in
+// idempotency_routes_integration_test.go. The REST API guideline contract
+// (ADR 0049): a replay is byte-identical and carries Idempotency-Replayed:
+// true, the first execution never does, key reuse is 409.
 package http_test
 
 import (
@@ -39,7 +42,7 @@ import (
 
 // countingPublisher wraps a real ports.EventPublisher and counts how many
 // times Publish is actually invoked, keyed by event name — used by the
-// POST /stock/receive concurrency scenario as the "was the real handler
+// POST /stock-receipts concurrency scenario as the "was the real handler
 // only actually executed once" proxy, since a StagedReceipt has no
 // persisted table row of its own to count (see ReceiveStock's doc
 // comment: it is an acknowledgment, not a durable aggregate).
@@ -67,7 +70,7 @@ type fixedIdempotencyClock time.Time
 func (c fixedIdempotencyClock) Now() time.Time { return time.Time(c) }
 
 // idempotencyFixture wires the REAL chi router (inboundhttp.NewRouter)
-// with Postgres-backed repos + UnitOfWork, so POST /stock/receive and
+// with Postgres-backed repos + UnitOfWork, so POST /stock-receipts and
 // POST /reservations' full request cycles — idempotency bookkeeping, the
 // use case's own work, the outbox-free log-publisher call — run through
 // the exact same transaction-join mechanism production uses
@@ -186,13 +189,13 @@ func problemSlug(t *testing.T, body []byte) string {
 }
 
 // ---------------------------------------------------------------------
-// POST /stock/receive
+// POST /stock-receipts
 // ---------------------------------------------------------------------
 
 const receiveBody = `{"sku":"SKU-RECEIVE-1","quantity":10}`
 
 func doReceive(router http.Handler, key, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/stock/receive", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/stock-receipts", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	if key != "" {
 		req.Header.Set(inboundhttp.IdempotencyKeyHeader, key)
@@ -241,13 +244,19 @@ func TestIdempotency_Receive_Replay_ReturnsIdenticalResponseNoDoublePublish(t *t
 	if second.Body.String() != first.Body.String() {
 		t.Fatalf("replay body differs:\nfirst:  %s\nsecond: %s", first.Body.String(), second.Body.String())
 	}
+	if got := first.Header().Get(inboundhttp.IdempotencyReplayedHeader); got != "" {
+		t.Fatalf("the first execution must not carry %s, got %q", inboundhttp.IdempotencyReplayedHeader, got)
+	}
+	if got := second.Header().Get(inboundhttp.IdempotencyReplayedHeader); got != "true" {
+		t.Fatalf("a replay must carry %s: true, got %q", inboundhttp.IdempotencyReplayedHeader, got)
+	}
 	if got := fx.publisher.Count(); got != 1 {
 		t.Fatalf("publish count after replay = %d, want exactly 1 (no re-execution)", got)
 	}
 }
 
-// (c) same key + different body -> 422.
-func TestIdempotency_Receive_SameKeyDifferentBody_Returns422(t *testing.T) {
+// (c) same key + different body -> 409 idempotency-key-reused.
+func TestIdempotency_Receive_SameKeyDifferentBody_Returns409(t *testing.T) {
 	pool := idempotencyDB(t)
 	fx := newIdempotencyFixture(t, pool)
 
@@ -257,8 +266,11 @@ func TestIdempotency_Receive_SameKeyDifferentBody_Returns422(t *testing.T) {
 	}
 
 	second := doReceive(fx.router, "recv-mismatch-1", `{"sku":"SKU-RECEIVE-2","quantity":5}`)
-	if second.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422 (body: %s)", second.Code, second.Body.String())
+	if second.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body: %s)", second.Code, second.Body.String())
+	}
+	if got := second.Header().Get(inboundhttp.IdempotencyReplayedHeader); got != "" {
+		t.Fatalf("a key-reuse refusal is not a replay, got %s: %q", inboundhttp.IdempotencyReplayedHeader, got)
 	}
 	if slug := problemSlug(t, second.Body.Bytes()); slug != "idempotency-key-reused" {
 		t.Fatalf("problem.type slug = %q, want idempotency-key-reused", slug)
@@ -342,6 +354,9 @@ func TestIdempotency_Receive_BusinessErrorResponse_IsCachedAndReplayed(t *testin
 	if second.Body.String() != first.Body.String() {
 		t.Fatalf("replay body differs from the cached error response")
 	}
+	if second.Header().Get(inboundhttp.IdempotencyReplayedHeader) != "true" {
+		t.Fatalf("a replayed 4xx must carry %s: true", inboundhttp.IdempotencyReplayedHeader)
+	}
 	if got := fx.publisher.Count(); got != 0 {
 		t.Fatalf("publish count = %d, want 0 (invalid receive must never publish, either time)", got)
 	}
@@ -411,13 +426,20 @@ func TestIdempotency_Reserve_Replay_ReturnsIdenticalResponseNoDuplicate(t *testi
 	if second.Header().Get("Location") != first.Header().Get("Location") {
 		t.Fatalf("replay Location = %q, want %q", second.Header().Get("Location"), first.Header().Get("Location"))
 	}
+	if second.Header().Get("Content-Type") != first.Header().Get("Content-Type") {
+		t.Fatalf("replay Content-Type = %q, want %q", second.Header().Get("Content-Type"), first.Header().Get("Content-Type"))
+	}
+	if first.Header().Get(inboundhttp.IdempotencyReplayedHeader) != "" || second.Header().Get(inboundhttp.IdempotencyReplayedHeader) != "true" {
+		t.Fatalf("%s: first %q (want none), replay %q (want true)", inboundhttp.IdempotencyReplayedHeader,
+			first.Header().Get(inboundhttp.IdempotencyReplayedHeader), second.Header().Get(inboundhttp.IdempotencyReplayedHeader))
+	}
 	if got := countReservationRows(t, pool); got != 1 {
 		t.Fatalf("reservations rows after replay = %d, want exactly 1 (no duplicate reservation)", got)
 	}
 }
 
-// (c) same key + different body -> 422.
-func TestIdempotency_Reserve_SameKeyDifferentBody_Returns422(t *testing.T) {
+// (c) same key + different body -> 409 idempotency-key-reused.
+func TestIdempotency_Reserve_SameKeyDifferentBody_Returns409(t *testing.T) {
 	pool := idempotencyDB(t)
 	fx := newIdempotencyFixture(t, pool)
 	seedStock(t, pool, "SKU-RESERVE-C", 100)
@@ -428,8 +450,8 @@ func TestIdempotency_Reserve_SameKeyDifferentBody_Returns422(t *testing.T) {
 	}
 
 	second := doReserve(fx.router, "res-mismatch-1", sprintfReserve("SKU-RESERVE-C", "order-c2"))
-	if second.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422 (body: %s)", second.Code, second.Body.String())
+	if second.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body: %s)", second.Code, second.Body.String())
 	}
 	if slug := problemSlug(t, second.Body.Bytes()); slug != "idempotency-key-reused" {
 		t.Fatalf("problem.type slug = %q, want idempotency-key-reused", slug)

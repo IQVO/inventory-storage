@@ -69,11 +69,12 @@ deployed ones, so a local process never steals their partitions).
 :::
 
 :::note[Idempotency-Key]
-`POST /stock/receive`, `POST /reservations`, `POST /transfers/{transferLineId}/receipt`,
-`.../stow` and `POST /relocations` sit behind the transactional
-`Idempotency-Key` middleware (ADR 0018) in every deployment: add
-`-H 'Idempotency-Key: <any-unique-string>'` to those calls in the walk below,
-or they answer `400 idempotency-key-required`.
+Every `POST` sits behind the transactional `Idempotency-Key` middleware
+(ADR 0018, ADR 0049) in every deployment: the walk below sends a fresh
+`-H "Idempotency-Key: $(uuidgen)"` on each one, or the call answers
+`400 idempotency-key-required`. Re-sending the same key with the same request
+replays the stored answer with `Idempotency-Replayed: true`; the same key with
+a different request is `409 idempotency-key-reused`.
 :::
 
 ### The other three binaries
@@ -136,16 +137,18 @@ curl -s -i -X PUT localhost:8080/bins/A-1-1 \
 # Location: /bins/A-1-1
 # {"binId":"A-1-1","capacity":20,"occupied":0,"available":20}
 
-# 1. Receive: goods are in the building, not yet located. (POST /stock/receive is
+# 1. Receive: goods are in the building, not yet located. (POST /stock-receipts is
 #    deprecated in the spec: in production inbound-receiving's ReceiptLineReceived books this.)
-curl -s -i -X POST localhost:8080/stock/receive \
+curl -s -i -X POST localhost:8080/stock-receipts \
   -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $(uuidgen)" \
   -d '{"sku":"SKU-1","quantity":10}'
 # HTTP/1.1 202 Accepted   (a staged receipt has no addressable resource yet)
 
 # 2. Stow: item-scan + location-scan. This is what creates a StockUnit.
-curl -s -i -X POST localhost:8080/stock/stow \
+curl -s -i -X POST localhost:8080/stowages \
   -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $(uuidgen)" \
   -d '{"sku":"SKU-1","quantity":10,"binId":"A-1-1"}'
 # HTTP/1.1 201 Created
 # Location: /stock/<stock-unit-id>
@@ -157,6 +160,7 @@ curl -s localhost:8080/inventory/SKU-1/usable
 # 4. Reserve against usable (not against on-hand).
 curl -s -i -X POST localhost:8080/reservations \
   -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $(uuidgen)" \
   -d '{"sku":"SKU-1","quantity":6,"demandRef":"order-42"}'
 # HTTP/1.1 201 Created
 # Location: /reservations/<id>
@@ -170,7 +174,8 @@ curl -s localhost:8080/inventory/SKU-1/usable
 
 # 5a. The pick succeeded — consume the reservation. (confirm-pick is deprecated in the
 #     spec: in production fulfillment-execution's TaskCompleted does this.)
-curl -s -X POST localhost:8080/reservations/<id>/confirm-pick
+curl -s -X POST localhost:8080/reservations/<id>/pick-confirmations \
+  -H "Idempotency-Key: $(uuidgen)"
 
 # 5b. …or the pick failed. Revoke; quantity returns to usable.
 curl -s -X DELETE localhost:8080/reservations/<id>
@@ -178,8 +183,9 @@ curl -s localhost:8080/inventory/SKU-1/usable
 # {"sku":"SKU-1","usable":10}
 
 # 6. Cycle count a bin.
-curl -s -X POST localhost:8080/bins/A-1-1/cycle-count \
+curl -s -X POST localhost:8080/bins/A-1-1/cycle-counts \
   -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $(uuidgen)" \
   -d '{"countedQuantity":9}'
 # {"binId":"A-1-1","countedQuantity":9,"systemQuantity":10,"discrepancy":true}
 ```

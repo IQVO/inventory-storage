@@ -112,6 +112,7 @@ type failingReservationRepo struct {
 		Save(ctx context.Context, r *reservation.Reservation) error
 		FindByID(ctx context.Context, id string) (*reservation.Reservation, error)
 		FindByDemandRef(ctx context.Context, demandRef string) ([]*reservation.Reservation, error)
+		FindByDemandRefAfter(ctx context.Context, demandRef string, after *reservation.PageAfter, limit int) ([]*reservation.Reservation, error)
 		NextID(ctx context.Context) (string, error)
 	}
 	failFindByID        bool
@@ -139,6 +140,13 @@ func (f *failingReservationRepo) FindByDemandRef(ctx context.Context, demandRef 
 		return nil, errFake
 	}
 	return f.delegate.FindByDemandRef(ctx, demandRef)
+}
+
+func (f *failingReservationRepo) FindByDemandRefAfter(ctx context.Context, demandRef string, after *reservation.PageAfter, limit int) ([]*reservation.Reservation, error) {
+	if f.failFindByDemandRef {
+		return nil, errFake
+	}
+	return f.delegate.FindByDemandRefAfter(ctx, demandRef, after, limit)
 }
 
 func (f *failingReservationRepo) NextID(ctx context.Context) (string, error) {

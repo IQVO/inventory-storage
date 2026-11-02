@@ -31,7 +31,7 @@ const typeReceiptCartonReceived = "com.warehouse.wms.inbound-receiving.receipt.R
 
 // receiptLineReceivedData is inbound-receiving's ReceiptLineReceived v1
 // payload. received_at is not needed: StockReceived is stamped by this
-// service's clock, exactly like POST /stock/receive.
+// service's clock, exactly like POST /stock-receipts.
 type receiptLineReceivedData struct {
 	ReceiptID string `json:"receipt_id"`
 	ASNNumber string `json:"asn_number"`

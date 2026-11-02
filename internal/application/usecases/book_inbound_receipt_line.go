@@ -68,7 +68,7 @@ type stockReceiver interface {
 }
 
 // BookInboundReceiptLine books the Good units of a received inbound line as
-// staged stock (ADR 0037): the same effect as POST /stock/receive, because it
+// staged stock (ADR 0037): the same effect as POST /stock-receipts, because it
 // runs the very same ReceiveStock use case. Damaged units are acknowledged but
 // not booked.
 //

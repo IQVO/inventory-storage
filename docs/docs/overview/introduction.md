@@ -142,3 +142,7 @@ transfer commands, ADR 0030) and the synchronous callers.
   contract.
 - **[Use cases](../ddd/use-cases.md)** and
   **[Subdomain classification](../ddd/subdomain-classification.md)**.
+
+:::note[Disclaimer]
+This project is a domain-driven design study. It is not associated with, endorsed by or affiliated with any company, and it uses no company's code, data, logos or trademarks. All names, figures and examples are illustrative or synthetic.
+:::

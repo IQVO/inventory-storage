@@ -3,8 +3,8 @@
 // POST /reservations with lineNo (decision 18, ADR 0036) through the real
 // Idempotency-Key middleware and Postgres: the line is persisted, a replay
 // with the identical body returns the cached response, and adding lineNo to a
-// key that was first used without it is a DIFFERENT body, so 422
-// idempotency-key-reused (expected; ADR 0036 records it).
+// key that was first used without it is a DIFFERENT body, so 409
+// idempotency-key-reused (expected; ADR 0036 records it, ADR 0049 moved it from 422).
 package http_test
 
 import (
@@ -45,7 +45,7 @@ func TestIdempotency_Reserve_LineNo_IsPersistedAndReplayedIdentically(t *testing
 	}
 }
 
-func TestIdempotency_Reserve_AddingLineNoToAUsedKey_Returns422(t *testing.T) {
+func TestIdempotency_Reserve_AddingLineNoToAUsedKey_Returns409(t *testing.T) {
 	pool := idempotencyDB(t)
 	fx := newIdempotencyFixture(t, pool)
 	seedStock(t, pool, "SKU-RESERVE-L2", 100)
@@ -55,8 +55,8 @@ func TestIdempotency_Reserve_AddingLineNoToAUsedKey_Returns422(t *testing.T) {
 		t.Fatalf("first status = %d, want 201 (body: %s)", first.Code, first.Body.String())
 	}
 	second := doReserve(fx.router, "res-line-2", reserveLineBody("SKU-RESERVE-L2", "order-l2", 1))
-	if second.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422 (body: %s)", second.Code, second.Body.String())
+	if second.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body: %s)", second.Code, second.Body.String())
 	}
 	if slug := problemSlug(t, second.Body.Bytes()); slug != "idempotency-key-reused" {
 		t.Fatalf("problem.type slug = %q, want idempotency-key-reused", slug)

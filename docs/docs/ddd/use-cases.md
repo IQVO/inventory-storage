@@ -14,13 +14,13 @@ Dependencies are plain struct fields, wired once per binary in
 
 | # | Use case | HTTP | MCP tool | Emits |
 | --- | --- | --- | --- | --- |
-| 1 | `ReceiveStock` | `POST /stock/receive` (deprecated in the spec; the production trigger is `ReceiptLineReceived`, #13) | — | `StockReceived` |
-| 2 | `StowStock` | `POST /stock/stow` | — | `ItemStowed`, `LocationRecorded` |
+| 1 | `ReceiveStock` | `POST /stock-receipts` (deprecated in the spec; the production trigger is `ReceiptLineReceived`, #13) | — | `StockReceived` |
+| 2 | `StowStock` | `POST /stowages` | — | `ItemStowed`, `LocationRecorded` |
 | 3 | `ReserveStock` | `POST /reservations` | — | `StockReserved` (+ `ReservationExpired` via lazy expiry) |
 | 4 | `RevokeReservation` | `DELETE /reservations/{id}` | `revoke_reservation` | `ReservationRevoked` (+ `ReservationExpired` via lazy expiry) |
-| 5 | `ConfirmPick` | `POST /reservations/{id}/confirm-pick` (deprecated in the spec; the production trigger is `TaskCompleted`, #12) | — | `StockPicked` (+ `ReservationExpired` via lazy expiry) |
+| 5 | `ConfirmPick` | `POST /reservations/{id}/pick-confirmations` (deprecated in the spec; the production trigger is `TaskCompleted`, #12) | — | `StockPicked` (+ `ReservationExpired` via lazy expiry) |
 | 6 | `GetUsable` | `GET /inventory/{sku}/usable` | `check_availability`, resource `inventory://{sku}/usable` | — (read model) |
-| 7 | `RunCycleCount` | `POST /bins/{binId}/cycle-count` | — | `CycleCountCompleted`, `DiscrepancyDetected`, `ItemUnlocated` |
+| 7 | `RunCycleCount` | `POST /bins/{binId}/cycle-counts` | — | `CycleCountCompleted`, `DiscrepancyDetected`, `ItemUnlocated` |
 | 8 | `ApplyProductClassification` | — (Kafka: `warehouse.product-master.events`, ADR 0034) | — | — (local copy) |
 | 9 | `GetReservationsByDemandRef` | `GET /reservations?demandRef=` | — | `ReservationExpired` via lazy expiry only |
 | 10 | `RegisterBin` | `PUT /bins/{binId}` | — | — (local topology master data, ADR 0025) |
@@ -29,7 +29,7 @@ Dependencies are plain struct fields, wired once per binary in
 | 13 | `BookInboundReceiptLine` | — (Kafka: `warehouse.inbound-receiving.events` `ReceiptLineReceived`, ADR 0037) | — | `StockReceived` through `ReceiveStock` for a `Good` line (analytics topic); a `Damaged` line raises nothing |
 | 14 | `AllocateTransferStock` | — (Kafka: `warehouse.network-inventory-planning.events` `TransferAllocationRequested`, ADR 0030) | — | `TransferStockAllocated` or `TransferStockAllocationRejected` (integration topic, through the outbox) |
 | 15 | `StageTransferReceipt` | `POST /transfers/{transferLineId}/receipt` | — | `TransferReceiptStaged` for a recognized `ALLOCATED` line (ADR 0033); a quarantine publishes nothing |
-| 16 | `StowTransferStock` | `POST /transfers/{transferLineId}/stow` | — | `TransferStockStowed` — the only event that raises destination usable (ADR 0033) |
+| 16 | `StowTransferStock` | `POST /transfers/{transferLineId}/stowages` | — | `TransferStockStowed` — the only event that raises destination usable (ADR 0033) |
 | 17 | `RelocateStock` | `POST /relocations` (Idempotency-Key) | — | `StockRelocated` (integration topic, through the outbox, ADR 0039) |
 | 18 | `ApplyRelocationTask` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted` with `task_type=RELOCATE`, ADR 0039) | — | `StockRelocated` through `RelocateStock` |
 | 19 | `GetRelocation` | `GET /relocations/{id}` | `get_relocation` | — (read) |
@@ -78,7 +78,7 @@ sequenceDiagram
     participant S as StockRepo
     participant E as EventPublisher
 
-    C->>H: POST /stock/stow {sku, quantity, binId}
+    C->>H: POST /stowages {sku, quantity, binId}
     H->>U: Execute(sku, qty, binId)
     U->>L: FindByID(binId)
     alt bin unknown
@@ -241,7 +241,7 @@ for a future stow. It then saves the reservation and publishes `StockPicked`.
 (409 `ErrExpired`), a referenced stock unit or bin is missing (404).
 
 **Trigger.** Operators and the `e2e-tests` simulator call
-`POST /reservations/{id}/confirm-pick`. In production the trigger is
+`POST /reservations/{id}/pick-confirmations`. In production the trigger is
 fulfillment-execution's `TaskCompleted`, consumed by `ConfirmPicksForOrder`
 (#12 below), which calls this use case once per reservation it confirms (the
 picked line's when the event carries `line_no`, the order's when its last pick
@@ -460,7 +460,7 @@ Turns a counted receipt line from inbound-receiving into staged stock. A
 `condition=Good` line runs the **existing `ReceiveStock`** (rules are not
 duplicated): `StockReceived` on the analytics topic, the quantity staged and
 not yet usable, stow still the RF action — the same effect as
-`POST /stock/receive`. A `Damaged` line is claimed but **not booked** in v1
+`POST /stock-receipts`. A `Damaged` line is claimed but **not booked** in v1
 (outcome `DAMAGED_NOT_BOOKED`, INFO log, counted in
 `inventory.inbound_receipt_units{outcome=damaged_not_booked}`); units are
 counted only after the transaction commits, so a rolled-back attempt never
@@ -598,7 +598,7 @@ concurrent writer on either bin or a touched unit fails the whole move with
 `ErrConcurrentModification` (409) and nothing moved.
 
 **Idempotency:** `POST /relocations` is behind the Idempotency-Key middleware
-(ADR 0018); the RELOCATE-task path dedupes on the CloudEvents id (#18).
+(ADR 0018, ADR 0049: every POST is); the RELOCATE-task path dedupes on the CloudEvents id (#18).
 
 ## 18. ApplyRelocationTask(eventId, taskId, taskType, sku, fromBin, toBin, qty, relocationRef) (ADR 0039)
 

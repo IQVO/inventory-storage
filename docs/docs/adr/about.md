@@ -75,7 +75,7 @@ Typos, broken links and formatting are of course fair game.
 | [0015](./0015-remove-rest-identity-layer.md) | Remove the fleet REST identity layer (static bearer keys, read/read-write scopes) | Accepted |
 | [0016](./0016-standard-metrics-convention.md) | Standard metrics convention across the fleet | Accepted |
 | [0017](./0017-transactional-outbox.md) | Transactional outbox + relay for Kafka publishing | Accepted — per-key ordering amended by [0038](./0038-outbox-relay-attempt-cap.md) |
-| [0018](./0018-idempotency-key-middleware.md) | Transactional Idempotency-Key middleware for POST /stock/receive and POST /reservations | Accepted |
+| [0018](./0018-idempotency-key-middleware.md) | Transactional Idempotency-Key middleware for POST /stock-receipts and POST /reservations | Accepted |
 | [0019](./0019-optimistic-concurrency-version-column.md) | Optimistic concurrency (version column) for StockUnit, Bin, Reservation | Accepted |
 | [0020](./0020-resilience-circuit-breaker-retry-dlq-shutdown.md) | Circuit breaker, read-only retry, Kafka DLQ, and graceful shutdown hardening | Accepted |
 | [0021](./0021-kafka-producer-partition-key.md) | Key every integration/analytics Kafka message by its aggregate id, and route by Hash not LeastBytes | Accepted |
@@ -106,6 +106,7 @@ Typos, broken links and formatting are of course fair game.
 | [0046](./0046-containers-no-site-on-carton-local-packaging-view.md) | Containers as built: the container site comes from the bin (no `site_id` on the carton), a local PackagingView of product-master pack levels, snake_case wire shapes, per-owner `BinStockLevelChanged` versions (amends 0045) | Accepted |
 | [0047](./0047-bin-handling-unit-declared-event.md) | The bin handling unit arrives on `LocationSlotRegistered` (optional `handlingUnit`) and the new `LocationSlotHandlingUnitDeclared`; the facility cache reads both; amends 0045 section 4 (fail-closed unchanged) | Accepted |
 | [0048](./0048-a2a-inbound-adapter.md) | A2A inbound adapter: a third driving adapter over the same use cases as REST and MCP; two curated skills derived from the MCP tools, `check_availability` (read) and `revoke_reservation` (write), in a message-only agent served by `cmd/a2a` on 8093; in-band RFC 7807 problems with REST's classification; A2A carries delegation only, facts still leave through the outbox | Accepted |
+| [0049](./0049-adopt-the-fleet-rest-api-guideline.md) | Adopt the fleet REST API guideline: noun routes (`/stock-receipts`, `/stowages`, `/pick-confirmations`, `/cycle-counts`, `/case-breaks`), an `Idempotency-Key` on every POST with `409 idempotency-key-reused` and `Idempotency-Replayed` on replay, keyset-paged `{items, nextCursor}` collections; amends 0018 | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

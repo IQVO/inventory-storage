@@ -58,6 +58,12 @@ type ReservationRepo interface {
 	// single result. An unknown demandRef returns an empty slice, not an
 	// error. Order is not guaranteed by this interface.
 	FindByDemandRef(ctx context.Context, demandRef string) ([]*reservation.Reservation, error)
+	// FindByDemandRefAfter is the keyset-paged form of FindByDemandRef: at
+	// most limit reservations of demandRef in ascending (created_at, id)
+	// order, strictly after the position (nil = from the start). The caller
+	// asks for one more row than it will show to learn whether a next page
+	// exists.
+	FindByDemandRefAfter(ctx context.Context, demandRef string, after *reservation.PageAfter, limit int) ([]*reservation.Reservation, error)
 	NextID(ctx context.Context) (string, error)
 }
 
@@ -269,6 +275,11 @@ type ContainerRepo interface {
 	// FindByBin returns the containers stowed in binID (SEALED or OPEN),
 	// ordered by LPN.
 	FindByBin(ctx context.Context, binID shared.BinId) ([]*container.Container, error)
+	// FindByBinAfter is the keyset-paged form of FindByBin: at most limit
+	// containers in ascending LPN order whose LPN sorts strictly after
+	// afterLPN (empty = from the start). The LPN is unique, so it is the
+	// whole keyset.
+	FindByBinAfter(ctx context.Context, binID shared.BinId, afterLPN string, limit int) ([]*container.Container, error)
 	// FindStowedBySKU returns the SEALED containers of sku and owner that
 	// are in a bin, oldest first, then by LPN.
 	FindStowedBySKU(ctx context.Context, sku shared.SKU, owner shared.OwnerRef) ([]*container.Container, error)

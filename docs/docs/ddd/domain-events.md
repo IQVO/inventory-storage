@@ -132,7 +132,7 @@ applies the move via `ApplyRelocationTask` → `RelocateStock`
 `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` on
 `warehouse.inbound-receiving.events` books a received `Good` line as staged
 stock via `BookInboundReceiptLine` → `ReceiveStock` (the same `StockReceived`
-as `POST /stock/receive`; `Damaged` is not booked in v1,
+as `POST /stock-receipts`; `Damaged` is not booked in v1,
 [ADR 0037](/docs/adr/0037)).
 
 `dataschema` is `urn:warehouse:inventory-storage:events:<EventName>:v1` on

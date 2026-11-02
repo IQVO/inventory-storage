@@ -50,7 +50,7 @@ Cucumber implementation for Go), and gate them in CI as a `bdd` job.**
 
    | File | Covers |
    | --- | --- |
-   | `features/stow.feature` | `POST /stock/receive`, `POST /stock/stow` — chaotic stow, bin-capacity rejection |
+   | `features/stow.feature` | `POST /stock-receipts`, `POST /stowages` — chaotic stow, bin-capacity rejection |
    | `features/reservation.feature` | reserve against usable, revoke, confirm-pick |
    | `features/cycle_count.feature` | clean count vs. discrepancy/`Unlocated` |
    | `features/usable_inventory.feature` | on-hand minus active reservations |

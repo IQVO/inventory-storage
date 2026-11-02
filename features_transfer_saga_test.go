@@ -156,7 +156,7 @@ func (w *world) theReceiptIsStowedInto(ctx context.Context, lineID, spec string)
 		}
 		bins = append(bins, map[string]any{"binId": kv[0], "quantity": q})
 	}
-	return w.record(ctx, http.MethodPost, "/transfers/"+lineID+"/stow", map[string]any{"bins": bins})
+	return w.record(ctx, http.MethodPost, "/transfers/"+lineID+"/stowages", map[string]any{"bins": bins})
 }
 
 func (w *world) theStowAllocationsAre(spec string) error {

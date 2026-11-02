@@ -12,18 +12,18 @@ domain, use case, or application-layer behavior changed.
 | Method | Path |
 |--------|------|
 | GET    | `/healthz` |
-| POST   | `/stock/receive` |
-| POST   | `/stock/stow` |
+| POST   | `/stock-receipts` |
+| POST   | `/stowages` |
 | POST   | `/reservations` |
 | DELETE | `/reservations/{id}` |
-| POST   | `/reservations/{id}/confirm-pick` |
+| POST   | `/reservations/{id}/pick-confirmations` |
 | GET    | `/inventory/{sku}/usable` |
-| POST   | `/bins/{binId}/cycle-count` |
+| POST   | `/bins/{binId}/cycle-counts` |
 
-`/stock/receive` and `/stock/stow` are collection-level actions on the
+`/stock-receipts` and `/stowages` are collection-level actions on the
 `stock` resource (not bare RPC endpoints — they're scoped under a resource
-noun, analogous to `/tasks/expire-leases`), and `/reservations/{id}/confirm-pick`,
-`/bins/{binId}/cycle-count` are per-resource domain commands — correct
+noun, analogous to `/tasks/expire-leases`), and `/reservations/{id}/pick-confirmations`,
+`/bins/{binId}/cycle-counts` are per-resource domain commands — correct
 DDD/REST practice for non-CRUD verbs (Stripe/GitHub-style), left as POST, not
 forced into PUT/PATCH.
 
@@ -41,8 +41,8 @@ No fix needed here.
 - `handleGetUsable` — reads the usable-inventory projection only, no writes.
 
 Both are side-effect-free. POST is used consistently for creation
-(`/stock/receive`, `/stock/stow`, `/reservations`) and commands
-(`/reservations/{id}/confirm-pick`, `/bins/{binId}/cycle-count`). DELETE is
+(`/stock-receipts`, `/stowages`, `/reservations`) and commands
+(`/reservations/{id}/pick-confirmations`, `/bins/{binId}/cycle-counts`). DELETE is
 already used correctly for reservation revocation — kept as-is.
 
 ## 3. Correct status codes
@@ -50,7 +50,7 @@ already used correctly for reservation revocation — kept as-is.
 Audited every handler against the required table. Found and fixed **4 real
 mismatches**:
 
-1. **`POST /stock/receive` returned 201 Created with no addressable
+1. **`POST /stock-receipts` returned 201 Created with no addressable
    resource.** `ReceiveStock` produces a `StagedReceipt` — an
    acknowledgment, not a persisted aggregate with an ID or a GET route (the
    durable resource, a `StockUnit`, is only created later at `StowStock`,
@@ -60,7 +60,7 @@ mismatches**:
    `202 Accepted` (correct semantics for "request accepted, no resource
    identity to hand back"), with a code comment explaining why. Updated
    `TestReceiveStock_Endpoint` accordingly.
-2. **Missing `Location` header on `POST /stock/stow`'s 201.** `StowStock`
+2. **Missing `Location` header on `POST /stowages`'s 201.** `StowStock`
    creates a real `StockUnit` aggregate with an ID. **Fixed:** added
    `Location: /stock/{id}`. (Note: there is no `GET /stock/{id}` route in
    this service's API surface per CLAUDE.md — the header still correctly
@@ -104,13 +104,13 @@ found — no additional 400 handling needed.
 
 | Endpoint | Idempotent? | Notes |
 |---|---|---|
-| `POST /stock/receive` | No | Each call stages a new receipt; by design, a warehouse receives the same SKU repeatedly. |
-| `POST /stock/stow` | No | Each call creates a new `StockUnit`; two calls with identical input represent two distinct physical stow actions (double-scan), not a duplicate of one call. |
+| `POST /stock-receipts` | No | Each call stages a new receipt; by design, a warehouse receives the same SKU repeatedly. |
+| `POST /stowages` | No | Each call creates a new `StockUnit`; two calls with identical input represent two distinct physical stow actions (double-scan), not a duplicate of one call. |
 | `POST /reservations` | Yes (best-effort) | **Fixed:** `ReserveStock.Execute` (application layer) now looks up existing reservations for `demandRef` before allocating. If an ACTIVE one already exists, it is returned as-is instead of creating a duplicate — a client-side retry after a dropped response no longer double-reserves stock. This is a best-effort guard, not a hard uniqueness constraint: two concurrent first-attempts for the same `demandRef` could still both pass the check before either saves (closing that window would need a DB-level constraint). A `demandRef` with only a revoked/confirmed/expired reservation is still treated as a genuine new attempt. |
 | `DELETE /reservations/{id}` | Yes | Standard DELETE semantics — revoking an already-revoked/resolved reservation is safely repeatable (404/409 on subsequent calls, no additional side effect). |
-| `POST /reservations/{id}/confirm-pick` | Not classically idempotent, but safely repeatable | First call: 204. Any repeat call: 409 `ErrAlreadyResolved` — guarded against double-consumption even though the response differs between calls. |
+| `POST /reservations/{id}/pick-confirmations` | Not classically idempotent, but safely repeatable | First call: 204. Any repeat call: 409 `ErrAlreadyResolved` — guarded against double-consumption even though the response differs between calls. |
 | `GET /inventory/{sku}/usable` | Yes | Read-only, safe. |
-| `POST /bins/{binId}/cycle-count` | No, by design | Each call represents a new physical count event; re-counting a bin is a normal, repeatable operational action, not a duplicate to suppress. |
+| `POST /bins/{binId}/cycle-counts` | No, by design | Each call represents a new physical count event; re-counting a bin is a normal, repeatable operational action, not a duplicate to suppress. |
 
 ## 5. Consistent JSON casing
 
@@ -218,24 +218,24 @@ Content-Length: 208
 
 409 — stow exceeding bin capacity:
 ```
-$ curl -s -i -X POST localhost:8080/stock/stow -d '{"sku":"SKU-1","quantity":6,"binId":"A-1-1"}'
+$ curl -s -i -X POST localhost:8080/stowages -d '{"sku":"SKU-1","quantity":6,"binId":"A-1-1"}'
 HTTP/1.1 409 Conflict
 Content-Type: application/problem+json
 Content-Length: 196
 
-{"type":"https://errors.inventory-storage.warehouse-systems.dev/bin-full","title":"Bin is full: capacity exceeded","status":409,"detail":"bin is full: capacity exceeded","instance":"/stock/stow"}
+{"type":"https://errors.inventory-storage.warehouse-systems.dev/bin-full","title":"Bin is full: capacity exceeded","status":409,"detail":"bin is full: capacity exceeded","instance":"/stowages"}
 ```
 
 Bonus — 422 (zero quantity) and 201 w/ `Location` (stow), captured in the
 same session:
 ```
-$ curl -s -i -X POST localhost:8080/stock/receive -d '{"sku":"SKU-1","quantity":0}'
+$ curl -s -i -X POST localhost:8080/stock-receipts -d '{"sku":"SKU-1","quantity":0}'
 HTTP/1.1 422 Unprocessable Entity
 Content-Type: application/problem+json
 
-{"type":"https://errors.inventory-storage.warehouse-systems.dev/zero-quantity","title":"Quantity must be greater than zero","status":422,"detail":"quantity must be greater than zero","instance":"/stock/receive"}
+{"type":"https://errors.inventory-storage.warehouse-systems.dev/zero-quantity","title":"Quantity must be greater than zero","status":422,"detail":"quantity must be greater than zero","instance":"/stock-receipts"}
 
-$ curl -s -i -X POST localhost:8080/stock/stow -d '{"sku":"SKU-2","quantity":3,"binId":"A-1-1"}'
+$ curl -s -i -X POST localhost:8080/stowages -d '{"sku":"SKU-2","quantity":3,"binId":"A-1-1"}'
 HTTP/1.1 201 Created
 Content-Type: application/json
 Location: /stock/su-164710cb-5e14-400b-849c-ed94d8256c6b
@@ -255,13 +255,13 @@ Wrote `openapi.yaml` at the repo root, OpenAPI 3.0.3, covering every route.
 | Router route | `openapi.yaml` path/operation |
 |---|---|
 | `GET /healthz` | `/healthz` → `getHealthz` |
-| `POST /stock/receive` | `/stock/receive` → `receiveStock` |
-| `POST /stock/stow` | `/stock/stow` → `stowStock` |
+| `POST /stock-receipts` | `/stock-receipts` → `receiveStock` |
+| `POST /stowages` | `/stowages` → `stowStock` |
 | `POST /reservations` | `/reservations` → `reserveStock` |
 | `DELETE /reservations/{id}` | `/reservations/{id}` → `revokeReservation` |
-| `POST /reservations/{id}/confirm-pick` | `/reservations/{id}/confirm-pick` → `confirmPick` |
+| `POST /reservations/{id}/pick-confirmations` | `/reservations/{id}/pick-confirmations` → `confirmPick` |
 | `GET /inventory/{sku}/usable` | `/inventory/{sku}/usable` → `getUsableInventory` |
-| `POST /bins/{binId}/cycle-count` | `/bins/{binId}/cycle-count` → `runCycleCount` |
+| `POST /bins/{binId}/cycle-counts` | `/bins/{binId}/cycle-counts` → `runCycleCount` |
 
 **8/8 routes documented.** Every operation has an `operationId`, `summary`
 + multi-sentence domain-grounded `description`, a `tags` entry, full

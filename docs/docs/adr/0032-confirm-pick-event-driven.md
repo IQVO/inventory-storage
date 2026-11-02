@@ -19,7 +19,7 @@ expiry is **kept** ("Decided 2026-10-06: kept").
 
 ## Context
 
-`POST /reservations/{id}/confirm-pick` (`ConfirmPick`) is what turns a
+`POST /reservations/{id}/pick-confirmations` (`ConfirmPick`) is what turns a
 reservation into a physical decrement: it consumes the reservation, removes the
 quantity from its stock unit(s), releases bin capacity and raises `StockPicked`.
 The 2026-10-05 audit found that **no sibling context calls it** — only the

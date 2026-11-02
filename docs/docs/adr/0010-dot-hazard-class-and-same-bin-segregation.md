@@ -171,7 +171,7 @@ derived from 49 CFR §177.848 under four explicit simplification rules.**
 8. **REST surface is unchanged in shape**: the existing `PUT
    /products/{sku}/classification` request/response gains an optional
    `dotHazardClass` field (integer 1-9, nullable/omittable). No new
-   endpoints. `/stock/stow`'s existing `409` response documents the new
+   endpoints. `/stowages`'s existing `409` response documents the new
    `hazmat-class-incompatible` case alongside the existing ADR 0009
    cases.
 

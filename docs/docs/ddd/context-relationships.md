@@ -140,7 +140,7 @@ the ADR 0035 fallback counts the order's completed PICK tasks and, when the **la
 one completes, confirms every `ACTIVE` reservation of the order; earlier picks only
 record progress, because confirming early would mark unpicked lines as picked.
 Neither `fulfillment-execution` nor
-`wes-work-planning` ever calls `POST /reservations/{id}/confirm-pick`.
+`wes-work-planning` ever calls `POST /reservations/{id}/pick-confirmations`.
 `order_ref` and `line_no` are additive optional fields of `TaskCompleted` v1 that
 fulfillment-execution publishes (its `internal/adapters/outbound/kafka/publisher.go`); a message without `order_ref` is a no-op, and the
 consumer is

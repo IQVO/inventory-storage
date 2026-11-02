@@ -1,7 +1,7 @@
 # Stowing a staged transfer receipt into destination bins.
 #
 # Derived from:
-#   - apis/openapi.yaml POST /transfers/{transferLineId}/stow (ADR 0031): the
+#   - apis/openapi.yaml POST /transfers/{transferLineId}/stowages (ADR 0031): the
 #     ONLY path that raises the destination site's usable stock, exactly once
 #     per transfer line; one StockUnit per bin leg is created AT the
 #     destination site, the receipt moves STAGED -> STOWED and
@@ -120,7 +120,7 @@ Feature: Stowing received transfer goods
   @bdd
   Scenario Outline: A malformed stow request is rejected as a bad request
     Given the destination Site "SITE-DEST" scans 5 units of SKU "SKU-S1" for transfer "tr-1" line "tl-1"
-    When a POST is sent to "/transfers/tl-1/stow" with the body <body>
+    When a POST is sent to "/transfers/tl-1/stowages" with the body <body>
     Then the response status is 400
     And exactly 0 "TransferStockStowed" domain events are published
 
@@ -134,13 +134,13 @@ Feature: Stowing received transfer goods
 
   @bdd
   Scenario: An empty bins list names the missing placement
-    When a POST is sent to "/transfers/tl-1/stow" with the body {"bins":[]}
+    When a POST is sent to "/transfers/tl-1/stowages" with the body {"bins":[]}
     Then the problem detail type is "bins-required"
 
   @bdd
   Scenario Outline: A non-positive bin quantity is a bad request
     Given the destination Site "SITE-DEST" scans 5 units of SKU "SKU-S1" for transfer "tr-1" line "tl-1"
-    When a POST is sent to "/transfers/tl-1/stow" with the body {"bins":[{"binId":"BIN-D1","quantity":<qty>}]}
+    When a POST is sent to "/transfers/tl-1/stowages" with the body {"bins":[{"binId":"BIN-D1","quantity":<qty>}]}
     Then the response status is 400
     And exactly 0 "TransferStockStowed" domain events are published
 
@@ -152,6 +152,6 @@ Feature: Stowing received transfer goods
   @bdd
   Scenario: A non-positive bin quantity names the quantity
     Given the destination Site "SITE-DEST" scans 5 units of SKU "SKU-S1" for transfer "tr-1" line "tl-1"
-    When a POST is sent to "/transfers/tl-1/stow" with the body {"bins":[{"binId":"BIN-D1","quantity":0}]}
+    When a POST is sent to "/transfers/tl-1/stowages" with the body {"bins":[{"binId":"BIN-D1","quantity":0}]}
     Then the response status is 400
     And the problem detail type is "quantity-not-positive"

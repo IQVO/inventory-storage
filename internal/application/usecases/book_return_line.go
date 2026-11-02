@@ -65,7 +65,7 @@ const (
 
 // BookReturnLine books a staged return line as staged stock (ADR 0044):
 // the same ReceiveStock use case an inbound receipt line and
-// POST /stock/receive drive, so the effect is identical and stow stays
+// POST /stock-receipts drive, so the effect is identical and stow stays
 // the RF action. It is the returns-processing counterpart of
 // BookInboundReceiptLine (ADR 0037).
 //

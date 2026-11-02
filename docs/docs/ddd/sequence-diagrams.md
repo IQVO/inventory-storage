@@ -21,7 +21,7 @@ consumer), the **use case**, the **aggregate**, the **repository** port,
 **Outbox** (`postgres.OutboxPublisher`, running the Kafka encoders) and the
 downstream system.
 
-## 1. ReceiveStock — `POST /stock/receive`
+## 1. ReceiveStock — `POST /stock-receipts`
 
 ```mermaid
 sequenceDiagram
@@ -32,17 +32,17 @@ sequenceDiagram
     participant UC as ReceiveStock
     participant OB as Outbox
     participant DB as Postgres
-    C->>MW: POST /stock/receive with Idempotency-Key
+    C->>MW: POST /stock-receipts with Idempotency-Key
     alt header missing
         MW-->>C: 400 idempotency-key-required
     else header present
         MW->>DB: BEGIN, INSERT idempotency_keys ON CONFLICT DO NOTHING
         alt key already committed
             MW->>DB: ROLLBACK, SELECT stored response
-            alt same body hash
-                MW-->>C: replay stored status, headers and body
-            else different body
-                MW-->>C: 422 idempotency-key-reused
+            alt same method, path and body hash
+                MW-->>C: replay stored status, headers and body, plus Idempotency-Replayed true
+            else different method, path or body
+                MW-->>C: 409 idempotency-key-reused
             end
         else new key
             MW->>H: serve into a recorder, tx on the context
@@ -64,7 +64,7 @@ Source: `internal/adapters/inbound/http/idempotency.go`, `server.go`
 Omitted: the 500 branches of the middleware; no aggregate is persisted —
 a staged receipt is not an aggregate.
 
-## 2. StowStock — `POST /stock/stow`
+## 2. StowStock — `POST /stowages`
 
 ```mermaid
 sequenceDiagram
@@ -78,7 +78,7 @@ sequenceDiagram
     participant SR as StockRepo
     participant AG as Bin and StockUnit
     participant OB as Outbox
-    C->>H: POST /stock/stow sku, quantity, binId
+    C->>H: POST /stowages sku, quantity, binId
     H->>UC: Execute(sku, qty, binId)
     UC->>LR: FindByID(binId)
     alt bin unknown
@@ -228,7 +228,7 @@ Source: `internal/application/usecases/revoke_reservation.go`,
 (`Encode` enrichment). Omitted: `ErrStockUnitNotFound` and version
 conflicts inside the loop (404 and 409, transaction rolled back).
 
-## 5. ConfirmPick — `POST /reservations/{id}/confirm-pick`
+## 5. ConfirmPick — `POST /reservations/{id}/pick-confirmations`
 
 ```mermaid
 sequenceDiagram
@@ -242,7 +242,7 @@ sequenceDiagram
     participant LR as LocationRepo
     participant OB as Outbox
     Note over C,H: Decided 2026-10-06 (ADR 0035): in production the trigger is fulfillment-execution's<br/>TaskCompleted, consumed here (diagram 13). This REST route stays for operators<br/>and the simulator. No sync call from sibling contexts.
-    C->>H: POST /reservations/id/confirm-pick
+    C->>H: POST /reservations/id/pick-confirmations
     H->>UC: Execute(reservationId)
     UC->>RR: FindByID(id)
     alt not found
@@ -272,7 +272,7 @@ Source: `internal/application/usecases/confirm_pick.go`.
 Omitted: `ErrStockUnitNotFound` / `ErrBinNotFound` (404) and version
 conflicts (409) inside the transaction.
 
-## 6. RunCycleCount — `POST /bins/{binId}/cycle-count`
+## 6. RunCycleCount — `POST /bins/{binId}/cycle-counts`
 
 ```mermaid
 sequenceDiagram
@@ -283,7 +283,7 @@ sequenceDiagram
     participant SR as StockRepo
     participant SU as StockUnit
     participant OB as Outbox
-    C->>H: POST /bins/binId/cycle-count countedQuantity
+    C->>H: POST /bins/binId/cycle-counts countedQuantity
     alt countedQuantity missing
         H-->>C: 400 counted-quantity-required
     else present

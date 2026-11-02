@@ -69,9 +69,8 @@ func buildServer(
 		RelocateStock:   newRelocateStock(a, clock),
 		GetRelocation:   &usecases.GetRelocation{Relocations: a.relocations},
 		Classifications: classificationRepo,
-		// IdempotencyPool wires RequireIdempotencyKey onto POST
-		// /stock/receive and POST /reservations (see
-		// inboundhttp.NewRouter). nil (in-memory/no-DATABASE_URL
+		// IdempotencyPool wires RequireIdempotencyKey onto every POST
+		// route (see inboundhttp.NewRouter). nil (in-memory/no-DATABASE_URL
 		// configuration) leaves those routes unprotected, mirroring
 		// every other optional Postgres-backed capability here.
 		IdempotencyPool: a.pool,

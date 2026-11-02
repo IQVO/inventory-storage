@@ -185,7 +185,7 @@ func (w *world) iRevokeReservationWithID(ctx context.Context, id string) error {
 }
 
 func (w *world) iConfirmPickForReservationWithID(ctx context.Context, id string) error {
-	return w.record(ctx, http.MethodPost, "/reservations/"+url.PathEscape(id)+"/confirm-pick", nil)
+	return w.record(ctx, http.MethodPost, "/reservations/"+url.PathEscape(id)+"/pick-confirmations", nil)
 }
 
 func (w *world) theReservationResponseHasAllocations(expected int) error {
@@ -222,11 +222,13 @@ type reservationView struct {
 }
 
 func (w *world) reservationsFor(ctx context.Context, demandRef string) ([]reservationView, error) {
-	var list []reservationView
-	if err := w.getJSON(ctx, "/reservations?demandRef="+url.QueryEscape(demandRef), &list); err != nil {
+	var page struct {
+		Items []reservationView `json:"items"`
+	}
+	if err := w.getJSON(ctx, "/reservations?demandRef="+url.QueryEscape(demandRef), &page); err != nil {
 		return nil, err
 	}
-	return list, nil
+	return page.Items, nil
 }
 
 func (w *world) theReservationOnLineHasStatus(ctx context.Context, demandRef string, lineNo int, status string) error {
@@ -264,11 +266,11 @@ func (w *world) everyReservationForDemandHasStatus(ctx context.Context, demandRe
 // ------------------------------------------------------------- cycle count --
 
 func (w *world) iRunACycleCountWithNegativeQuantity(ctx context.Context, binID string, counted int) error {
-	return w.record(ctx, http.MethodPost, "/bins/"+url.PathEscape(binID)+"/cycle-count", map[string]any{"countedQuantity": -counted})
+	return w.record(ctx, http.MethodPost, "/bins/"+url.PathEscape(binID)+"/cycle-counts", map[string]any{"countedQuantity": -counted})
 }
 
 func (w *world) iRunACycleCountWithoutQuantity(ctx context.Context, binID string) error {
-	return w.record(ctx, http.MethodPost, "/bins/"+url.PathEscape(binID)+"/cycle-count", map[string]any{})
+	return w.record(ctx, http.MethodPost, "/bins/"+url.PathEscape(binID)+"/cycle-counts", map[string]any{})
 }
 
 func (w *world) iRegisterBinWithoutCapacity(ctx context.Context, binID string) error {
@@ -383,7 +385,7 @@ func (w *world) iStowTransferLine(ctx context.Context, lineID string, table *god
 		}
 		bins = append(bins, map[string]any{"binId": row.Cells[0].Value, "quantity": qty})
 	}
-	return w.record(ctx, http.MethodPost, "/transfers/"+url.PathEscape(lineID)+"/stow", map[string]any{"bins": bins})
+	return w.record(ctx, http.MethodPost, "/transfers/"+url.PathEscape(lineID)+"/stowages", map[string]any{"bins": bins})
 }
 
 // transferReceiptView is the TransferReceipt / StowedTransfer wire shape.

@@ -20,7 +20,7 @@ Accepted. Closes the "grows unboundedly" follow-up recorded in
 Two tables only ever grow:
 
 - `idempotency_keys` (ADR 0018) gets one row per `Idempotency-Key` seen on
-  `POST /stock/receive` and `POST /reservations`, including the stored
+  `POST /stock-receipts` and `POST /reservations`, including the stored
   response body. Nothing deleted them; the `created_at` index was created
   specifically for a future cleanup job.
 - `outbox_events` (ADR 0017) keeps every row after the relay marks it

@@ -6,7 +6,7 @@
 #     facility-layout lookup is unavailable, every other SKU is unaffected.
 #   - docs/docs/adr/0010-dot-hazard-class-and-same-bin-segregation.md —
 #     incompatible DOT hazard classes may not share a bin.
-#   - apis/openapi.yaml — POST /stock/stow 409 (hazmat-zone-required,
+#   - apis/openapi.yaml — POST /stowages 409 (hazmat-zone-required,
 #     temperature-class-mismatch, location-classification-unavailable,
 #     hazmat-class-incompatible).
 
