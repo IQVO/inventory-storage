@@ -42,6 +42,14 @@ info:
     different method, path or body is 409 `idempotency-key-reused`; a missing
     key is 400 `idempotency-key-required`), and every collection `GET` is
     keyset-paginated as `{items, nextCursor}` with `limit` and `cursor`.
+
+
+    Cross-cutting behaviour that applies to every operation: a NUL
+    character (U+0000) in the query string or a JSON body is 400
+    `malformed-request-body`, and in the path it is 404 `not-found`; a
+    request that matches no route (for example a container `lpn` outside
+    `[A-Za-z0-9._-]`) is 404 `route-not-found`, as
+    `application/problem+json`.
   contact:
     name: Inventory & Storage (Core Bounded Context)
 servers:
@@ -156,7 +164,13 @@ paths:
                 example:
                   status: ready
         "503":
-          description: Service is shutting down and must not receive new traffic.
+          description: >
+            Not ready: either graceful shutdown has begun (a plain
+            `{"status":"not_ready"}` JSON body), or a runtime dependency
+            (Postgres, Kafka) is unreachable (an RFC 7807
+            `application/problem+json` body of type `dependency-unavailable`
+            whose `detail` names the failing dependencies; the verdict is
+            cached for a few seconds).
           content:
             application/json:
               schema:
@@ -167,6 +181,15 @@ paths:
                     example: not_ready
                 example:
                   status: not_ready
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/dependency-unavailable
+                title: A runtime dependency is unavailable
+                status: 503
+                detail: "not ready: postgres"
+                instance: /readyz
 
   /stock-receipts:
     post:
@@ -506,7 +529,9 @@ paths:
             The demandRef query parameter is missing or empty
             (missing-demand-ref), `limit` is not an integer between 1 and
             500 (invalid-limit), or `cursor` is not a page token this API
-            issued (invalid-cursor).
+            issued (invalid-cursor), or a query parameter other than
+            `demandRef`, `limit` and `cursor` was sent
+            (unknown-query-parameter).
           content:
             application/problem+json:
               schema:
@@ -535,6 +560,14 @@ paths:
                     title: "cursor is not a valid page token"
                     status: 400
                     detail: "cursor is not a valid page token"
+                    instance: /reservations
+                unknownQueryParameter:
+                  summary: a query parameter the collection does not declare
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/unknown-query-parameter
+                    title: the collection does not declare this query parameter
+                    status: 400
+                    detail: "unknown query parameter: after"
                     instance: /reservations
         "500":
           $ref: "#/components/responses/InternalError"
@@ -610,8 +643,11 @@ paths:
                 expiresAt: "2026-08-22T14:50:00Z"
         "400":
           description: >
-            Malformed JSON body, SKU missing/empty, demandRef missing/empty,
-            lineNo present but outside 1..2147483647, or the Idempotency-Key header is
+            Malformed JSON body (including `cases` sent as null or a
+            non-integer), SKU missing/empty, demandRef missing/empty,
+            ownerRef malformed (invalid-owner-ref), both `quantity` and
+            `cases` sent (quantity-and-cases-exclusive), lineNo present but
+            outside 1..2147483647, or the Idempotency-Key header is
             absent (ADR 0018).
           content:
             application/problem+json:
@@ -625,6 +661,22 @@ paths:
                     title: SKU must not be empty
                     status: 400
                     detail: sku must not be empty
+                    instance: /reservations
+                quantityAndCasesExclusive:
+                  summary: Both quantity and cases were sent
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/quantity-and-cases-exclusive
+                    title: quantity and cases are mutually exclusive
+                    status: 400
+                    detail: send either quantity (eaches) or cases (whole sealed cases), not both
+                    instance: /reservations
+                invalidOwnerRef:
+                  summary: ownerRef is not at most 64 characters of [A-Za-z0-9._-]
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/invalid-owner-ref
+                    title: ownerRef must be at most 64 characters of [A-Za-z0-9._-]
+                    status: 400
+                    detail: ownerRef must be at most 64 characters of [A-Za-z0-9._-]
                     instance: /reservations
                 missingDemandRef:
                   summary: demandRef missing or empty
@@ -688,14 +740,15 @@ paths:
                     instance: /reservations
         "422":
           description: >
-            Quantity present but not a positive number.
+            Neither `quantity` nor `cases` was sent, or the one sent is not
+            a positive number.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
               examples:
                 zeroQuantity:
-                  summary: Quantity not positive
+                  summary: Quantity (or cases) not positive
                   value:
                     type: https://errors.inventory-storage.warehouse-systems.dev/zero-quantity
                     title: Quantity must be greater than zero
@@ -939,17 +992,30 @@ paths:
                 looseUsable: 7
                 reservableCases: 0
         "400":
-          description: SKU path segment missing/empty.
+          description: >-
+            SKU path segment missing/empty (empty-sku), or `ownerRef`
+            malformed (invalid-owner-ref).
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.inventory-storage.warehouse-systems.dev/empty-sku
-                title: SKU must not be empty
-                status: 400
-                detail: sku must not be empty
-                instance: /inventory//usable
+              examples:
+                emptySku:
+                  summary: SKU missing or empty
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/empty-sku
+                    title: SKU must not be empty
+                    status: 400
+                    detail: sku must not be empty
+                    instance: /inventory//usable
+                invalidOwnerRef:
+                  summary: ownerRef is not at most 64 characters of [A-Za-z0-9._-]
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/invalid-owner-ref
+                    title: ownerRef must be at most 64 characters of [A-Za-z0-9._-]
+                    status: 400
+                    detail: ownerRef must be at most 64 characters of [A-Za-z0-9._-]
+                    instance: /inventory/SKU-1/usable
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2154,7 +2220,9 @@ paths:
         "400":
           description: >-
             `limit` is not an integer between 1 and 500 (invalid-limit), or
-            `cursor` is not a page token this API issued (invalid-cursor).
+            `cursor` is not a page token this API issued (invalid-cursor), or
+            any query parameter other than `limit` and `cursor` was sent
+            (unknown-query-parameter).
           content:
             application/problem+json:
               schema:
@@ -2175,6 +2243,14 @@ paths:
                     title: "cursor is not a valid page token"
                     status: 400
                     detail: "cursor is not a valid page token"
+                    instance: /bins/WH1-STOR-AMB-A01-01-01-A/containers
+                unknownQueryParameter:
+                  summary: a query parameter the collection does not declare
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/unknown-query-parameter
+                    title: the collection does not declare this query parameter
+                    status: 400
+                    detail: "unknown query parameter: after"
                     instance: /bins/WH1-STOR-AMB-A01-01-01-A/containers
         "404":
           description: The bin is not registered.
