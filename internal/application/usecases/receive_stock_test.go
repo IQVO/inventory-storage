@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
@@ -52,7 +53,7 @@ func TestReceiveStock_EventPublishFails_PropagatesError(t *testing.T) {
 	e := newEnv()
 	uc := &usecases.ReceiveStock{Events: failingEvents{}, Clock: e.Clock}
 
-	if _, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 10)); err != errFake {
+	if _, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 10)); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }

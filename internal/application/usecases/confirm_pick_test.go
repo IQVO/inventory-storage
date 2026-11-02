@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -52,7 +53,7 @@ func TestConfirmPick_UnknownReservation_Rejected(t *testing.T) {
 	e := newEnv()
 	uc := &usecases.ConfirmPick{Stock: e.Stock, Locations: e.Locations, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
 
-	if err := uc.Execute(context.Background(), "unknown-id"); err != usecases.ErrReservationNotFound {
+	if err := uc.Execute(context.Background(), "unknown-id"); !errors.Is(err, usecases.ErrReservationNotFound) {
 		t.Fatalf("expected ErrReservationNotFound, got %v", err)
 	}
 }
@@ -70,7 +71,7 @@ func TestConfirmPick_StockUnitNotFound_Rejected(t *testing.T) {
 	}
 
 	uc := &usecases.ConfirmPick{Stock: e.Stock, Locations: e.Locations, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != usecases.ErrStockUnitNotFound {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, usecases.ErrStockUnitNotFound) {
 		t.Fatalf("expected ErrStockUnitNotFound, got %v", err)
 	}
 }
@@ -90,7 +91,7 @@ func TestConfirmPick_BinNotFound_Rejected(t *testing.T) {
 	// original one.
 	emptyLocations := memory.NewLocationRepo()
 	uc := &usecases.ConfirmPick{Stock: e.Stock, Locations: emptyLocations, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != usecases.ErrBinNotFound {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, usecases.ErrBinNotFound) {
 		t.Fatalf("expected ErrBinNotFound, got %v", err)
 	}
 }
@@ -100,7 +101,7 @@ func TestConfirmPick_ReservationsFindByIDFails_PropagatesError(t *testing.T) {
 	resRepo := &failingReservationRepo{delegate: e.Reservations, failFindByID: true}
 	uc := &usecases.ConfirmPick{Stock: e.Stock, Locations: e.Locations, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
 
-	if err := uc.Execute(context.Background(), "any-id"); err != errFake {
+	if err := uc.Execute(context.Background(), "any-id"); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -113,7 +114,7 @@ func TestConfirmPick_StockFindByIDFails_PropagatesError(t *testing.T) {
 
 	stockRepo := &failingStockRepo{delegate: e.Stock, failFindByID: true}
 	uc := &usecases.ConfirmPick{Stock: stockRepo, Locations: e.Locations, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != errFake {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -126,7 +127,7 @@ func TestConfirmPick_StockSaveFails_PropagatesError(t *testing.T) {
 
 	stockRepo := &failingStockRepo{delegate: e.Stock, failSave: true}
 	uc := &usecases.ConfirmPick{Stock: stockRepo, Locations: e.Locations, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != errFake {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -139,7 +140,7 @@ func TestConfirmPick_LocationsFindByIDFails_PropagatesError(t *testing.T) {
 
 	locs := &failingLocationRepo{delegate: e.Locations, failFindByID: true}
 	uc := &usecases.ConfirmPick{Stock: e.Stock, Locations: locs, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != errFake {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -152,7 +153,7 @@ func TestConfirmPick_LocationsSaveFails_PropagatesError(t *testing.T) {
 
 	locs := &failingLocationRepo{delegate: e.Locations, failSave: true}
 	uc := &usecases.ConfirmPick{Stock: e.Stock, Locations: locs, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != errFake {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -165,7 +166,7 @@ func TestConfirmPick_ReservationsSaveFails_PropagatesError(t *testing.T) {
 
 	resRepo := &failingReservationRepo{delegate: e.Reservations, failSave: true}
 	uc := &usecases.ConfirmPick{Stock: e.Stock, Locations: e.Locations, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != errFake {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -177,7 +178,7 @@ func TestConfirmPick_EventPublishFails_PropagatesError(t *testing.T) {
 	res, _ := reserveUC.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
 
 	uc := &usecases.ConfirmPick{Stock: e.Stock, Locations: e.Locations, Reservations: e.Reservations, Events: failingEvents{}, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != errFake {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }

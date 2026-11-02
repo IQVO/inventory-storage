@@ -31,7 +31,7 @@ func buildProductMasterConsumer(
 	logger *slog.Logger,
 	cfg config,
 	set adapterSet,
-) (transferConsumerHandle, error) {
+) transferConsumerHandle {
 	apply := &usecases.ApplyProductClassification{
 		Classifications: postgres.NewProductClassificationRepo(set.pool),
 		ProcessedEvents: postgres.NewProcessedEventRepo(set.pool),
@@ -66,7 +66,7 @@ func buildProductMasterConsumer(
 				logger.Error("error closing product-master classification consumer", "error", err)
 			}
 		},
-	}, nil
+	}
 }
 
 // combineConsumerHandles merges several inbound consumer handles into one,

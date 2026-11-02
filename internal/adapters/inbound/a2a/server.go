@@ -61,6 +61,9 @@ type Deps struct {
 // declares no security schemes on purpose: this surface is unauthenticated by
 // the same fleet-wide decision as REST and MCP (ADR-0015); schemes are added
 // here, not in a redesign, if that decision is ever reversed.
+// contentTypeJSON is the content type every A2A skill input and output uses.
+const contentTypeJSON = "application/json"
+
 func Card(cfg Config) *a2a.AgentCard {
 	return &a2a.AgentCard{
 		Name:        "inventory-storage",
@@ -73,8 +76,8 @@ func Card(cfg Config) *a2a.AgentCard {
 		SupportedInterfaces: []*a2a.AgentInterface{
 			a2a.NewAgentInterface(cfg.AgentURL, a2a.TransportProtocolJSONRPC),
 		},
-		DefaultInputModes:  []string{"application/json", "text/plain"},
-		DefaultOutputModes: []string{"application/json", "text/plain"},
+		DefaultInputModes:  []string{contentTypeJSON, "text/plain"},
+		DefaultOutputModes: []string{contentTypeJSON, "text/plain"},
 		Capabilities:       a2a.AgentCapabilities{Streaming: false},
 		Skills: []a2a.AgentSkill{
 			{
@@ -82,7 +85,7 @@ func Card(cfg Config) *a2a.AgentCard {
 				Name:        "Usable availability of a SKU",
 				Description: "Read the usable quantity of one SKU: on-hand across all its bins minus active reservations and held or unlocated stock, counted for fleet-owned stock. Usable, not total on-hand, is what constrains a release. Changes nothing. Unknown SKUs answer 0.",
 				Tags:        []string{"inventory", "availability", "read"},
-				InputModes:  []string{"application/json"},
+				InputModes:  []string{contentTypeJSON},
 				Examples: []string{
 					`{"skill":"check_availability","arguments":{"sku":"SKU-1"}}`,
 				},
@@ -92,7 +95,7 @@ func Card(cfg Config) *a2a.AgentCard {
 				Name:        "Revoke a reservation",
 				Description: "Revokes an active reservation, returning its bound quantity to usable inventory so a failed physical delivery never strands an order, and publishes ReservationRevoked (plus the bin stock-level facts) through the transactional outbox. Rejected as a problem answer, with nothing written, when the reservation is unknown or already resolved (revoked, confirmed or expired). NOT idempotent: a second call on the same reservation is a 409, so a caller may treat that as already done.",
 				Tags:        []string{"inventory", "reservation", "write"},
-				InputModes:  []string{"application/json"},
+				InputModes:  []string{contentTypeJSON},
 				Examples: []string{
 					`{"skill":"revoke_reservation","arguments":{"reservationId":"res-123"}}`,
 				},

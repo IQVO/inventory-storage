@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -69,7 +70,7 @@ func (r *ContainerRepo) FindByStockUnitID(ctx context.Context, stockUnitID strin
 
 func (r *ContainerRepo) findOne(ctx context.Context, query string, arg any) (*container.Container, error) {
 	c, err := scanContainer(querierFrom(ctx, r.pool).QueryRow(ctx, query, arg))
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	return c, err

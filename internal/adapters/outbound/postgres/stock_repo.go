@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -62,7 +63,7 @@ func (r *StockRepo) Save(ctx context.Context, unit *stock.StockUnit) error {
 func (r *StockRepo) FindByID(ctx context.Context, id string) (*stock.StockUnit, error) {
 	row := querierFrom(ctx, r.pool).QueryRow(ctx, `SELECT `+stockUnitColumns+` FROM stock_units WHERE id = $1`, id)
 	unit, err := scanStockUnit(row)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	return unit, err

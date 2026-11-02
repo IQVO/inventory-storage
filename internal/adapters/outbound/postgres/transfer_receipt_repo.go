@@ -140,7 +140,7 @@ func (r *TransferReceiptRepo) FindByTransferLineID(ctx context.Context, transfer
 		FROM transfer_receipts
 		WHERE transfer_line_id = $1
 	`, transferLineID).Scan(&transferID, &destinationSite, &sku, &reservationID, &expected, &received, &variance, &state, &stowLegsRaw, &stagedAt, &stowedAtOrNull)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -200,7 +200,7 @@ func (r *InventoryExceptionRepo) FindByScan(ctx context.Context, transferLineID 
 		FROM inventory_exceptions
 		WHERE transfer_line_id = $1 AND destination_site_id = $2 AND sku = $3 AND received_quantity = $4
 	`, transferLineID, destinationSiteID.String(), sku.String(), receivedQty.Int()).Scan(&transferID, &destinationSite, &skuStr, &received, &kind, &detail, &createdAt)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

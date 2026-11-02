@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -34,13 +35,13 @@ func mustQty(t *testing.T, v int) shared.Quantity {
 var decidedAt = time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 
 func TestNewAllocated_RequiresReservation(t *testing.T) {
-	if _, err := NewAllocated("tr-1", "tl-1", mustSite(t, "SITE-A"), mustSKU(t), mustQty(t, 5), "", decidedAt); err != ErrNoReservationOnAllocated {
+	if _, err := NewAllocated("tr-1", "tl-1", mustSite(t, "SITE-A"), mustSKU(t), mustQty(t, 5), "", decidedAt); !errors.Is(err, ErrNoReservationOnAllocated) {
 		t.Fatalf("err = %v, want ErrNoReservationOnAllocated", err)
 	}
 }
 
 func TestNewRejected_RequiresReason(t *testing.T) {
-	if _, err := NewRejected("tr-1", "tl-1", mustSite(t, "SITE-A"), mustSKU(t), mustQty(t, 5), "", decidedAt); err != ErrMissingReasonOnRejected {
+	if _, err := NewRejected("tr-1", "tl-1", mustSite(t, "SITE-A"), mustSKU(t), mustQty(t, 5), "", decidedAt); !errors.Is(err, ErrMissingReasonOnRejected) {
 		t.Fatalf("err = %v, want ErrMissingReasonOnRejected", err)
 	}
 }

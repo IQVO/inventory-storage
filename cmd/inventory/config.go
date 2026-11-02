@@ -118,7 +118,7 @@ func loadConfig(get func(string) string) (config, error) {
 		return config{}, err
 	}
 	mode := strings.ToLower(strings.TrimSpace(get("LOCATION_LOOKUP_MODE")))
-	if mode != "kafka" && mode != "http" {
+	if mode != modeKafka && mode != "http" {
 		return config{}, fmt.Errorf("LOCATION_LOOKUP_MODE=%q is not supported: set kafka (facility-events cache) or http (facility-layout REST); permissive and unset were removed because they validate no location at all", get("LOCATION_LOOKUP_MODE"))
 	}
 	cfg.locationLookupMode = mode
@@ -152,11 +152,16 @@ func splitBrokers(raw string) []string {
 	return brokers
 }
 
+// modeKafka is the LOCATION_LOOKUP_MODE value that feeds the lookup from
+// the facility-events cache, and the only value the legacy consumer-mode
+// envs may carry (see onlyUnsetOrKafka).
+const modeKafka = "kafka"
+
 // onlyUnsetOrKafka keeps a legacy variable accepted (warehouse-infra still
 // sets it) but only with the value it can have now: unset or kafka.
 func onlyUnsetOrKafka(env, raw, why string) error {
 	v := strings.ToLower(strings.TrimSpace(raw))
-	if v == "" || v == "kafka" {
+	if v == "" || v == modeKafka {
 		return nil
 	}
 	return fmt.Errorf("%s=%s is not supported: %s (unset it or use kafka)", env, raw, why)

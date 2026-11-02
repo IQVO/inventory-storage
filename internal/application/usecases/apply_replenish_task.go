@@ -83,28 +83,15 @@ func (uc *ApplyReplenishTask) Execute(ctx context.Context, in ReplenishTaskCompl
 		return ReplenishTaskResult{}, err
 	}
 
-	var result ReplenishTaskResult
-	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
-		result = ReplenishTaskResult{}
-		claimed, err := uc.ProcessedEvents.Claim(ctx, ReplenishTaskConsumer, in.EventID)
-		if err != nil {
-			return err
-		}
-		if !claimed {
-			result.Outcome = ReplenishDuplicate
-			return nil
-		}
-		rel, err := uc.Relocate.Execute(ctx, cmd)
-		if err != nil {
-			return classifyRelocationError(err)
-		}
-		result = ReplenishTaskResult{Outcome: ReplenishApplied, Relocation: rel}
-		return nil
-	})
-	if err != nil {
-		return ReplenishTaskResult{}, err
-	}
-	return result, nil
+	return applyClaimed(ctx, uc.UnitOfWork, uc.ProcessedEvents, ReplenishTaskConsumer, in.EventID,
+		ReplenishTaskResult{Outcome: ReplenishDuplicate},
+		func(ctx context.Context) (ReplenishTaskResult, error) {
+			rel, err := uc.Relocate.Execute(ctx, cmd)
+			if err != nil {
+				return ReplenishTaskResult{}, err
+			}
+			return ReplenishTaskResult{Outcome: ReplenishApplied, Relocation: rel}, nil
+		})
 }
 
 // replenishCommand validates the wire fields and builds the command. The

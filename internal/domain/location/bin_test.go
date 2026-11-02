@@ -1,6 +1,7 @@
 package location
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -17,7 +18,7 @@ func mustQty(t *testing.T, v int) shared.Quantity {
 
 func TestNewBin_RejectsInvalidCapacity(t *testing.T) {
 	binID, _ := shared.NewBinId("A-1-1")
-	if _, err := NewBin(binID, mustQty(t, 0)); err != ErrInvalidCapacity {
+	if _, err := NewBin(binID, mustQty(t, 0)); !errors.Is(err, ErrInvalidCapacity) {
 		t.Fatalf("expected ErrInvalidCapacity, got %v", err)
 	}
 }
@@ -44,7 +45,7 @@ func TestBin_Occupy_ExceedsCapacity_Rejected(t *testing.T) {
 	}
 
 	err := bin.Occupy(mustQty(t, 1))
-	if err != ErrBinFull {
+	if !errors.Is(err, ErrBinFull) {
 		t.Fatalf("expected ErrBinFull when stowing into a full bin, got %v", err)
 	}
 	if bin.Occupied().Int() != 10 {
@@ -57,7 +58,7 @@ func TestBin_Occupy_PartialOverflow_Rejected(t *testing.T) {
 	bin, _ := NewBin(binID, mustQty(t, 10))
 	_ = bin.Occupy(mustQty(t, 8))
 
-	if err := bin.Occupy(mustQty(t, 3)); err != ErrBinFull {
+	if err := bin.Occupy(mustQty(t, 3)); !errors.Is(err, ErrBinFull) {
 		t.Fatalf("expected ErrBinFull, got %v", err)
 	}
 }
@@ -80,13 +81,13 @@ func TestBin_Release_ExceedsOccupancy_Rejected(t *testing.T) {
 	bin, _ := NewBin(binID, mustQty(t, 10))
 	_ = bin.Occupy(mustQty(t, 2))
 
-	if err := bin.Release(mustQty(t, 5)); err != ErrReleaseExceedsOccupancy {
+	if err := bin.Release(mustQty(t, 5)); !errors.Is(err, ErrReleaseExceedsOccupancy) {
 		t.Fatalf("expected ErrReleaseExceedsOccupancy, got %v", err)
 	}
 }
 
 func TestNewBin_RejectsEmptyID(t *testing.T) {
-	if _, err := NewBin("", mustQty(t, 10)); err != shared.ErrEmptyBinID {
+	if _, err := NewBin("", mustQty(t, 10)); !errors.Is(err, shared.ErrEmptyBinID) {
 		t.Fatalf("expected ErrEmptyBinID, got %v", err)
 	}
 }
@@ -95,7 +96,7 @@ func TestBin_Occupy_RejectsZeroQuantity(t *testing.T) {
 	binID, _ := shared.NewBinId("A-1-1")
 	bin, _ := NewBin(binID, mustQty(t, 10))
 
-	if err := bin.Occupy(mustQty(t, 0)); err != shared.ErrZeroQuantity {
+	if err := bin.Occupy(mustQty(t, 0)); !errors.Is(err, shared.ErrZeroQuantity) {
 		t.Fatalf("expected ErrZeroQuantity, got %v", err)
 	}
 }
@@ -104,7 +105,7 @@ func TestBin_Release_RejectsZeroQuantity(t *testing.T) {
 	binID, _ := shared.NewBinId("A-1-1")
 	bin, _ := NewBin(binID, mustQty(t, 10))
 
-	if err := bin.Release(mustQty(t, 0)); err != shared.ErrZeroQuantity {
+	if err := bin.Release(mustQty(t, 0)); !errors.Is(err, shared.ErrZeroQuantity) {
 		t.Fatalf("expected ErrZeroQuantity, got %v", err)
 	}
 }
@@ -176,7 +177,7 @@ func TestBin_Resize(t *testing.T) {
 			}
 
 			err = bin.Resize(mustQty(t, tc.newCapacity))
-			if err != tc.wantErr {
+			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("expected error %v, got %v", tc.wantErr, err)
 			}
 			if bin.Capacity().Int() != tc.wantCapacity {

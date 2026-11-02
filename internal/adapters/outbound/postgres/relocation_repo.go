@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -65,7 +66,7 @@ func (r *RelocationRepo) FindByID(ctx context.Context, id string) (*relocation.R
 		SELECT site_code, sku, from_bin, to_bin, quantity, reason, source_ref, legs, destination_stock_unit_id, occurred_at
 		FROM relocations WHERE id = $1
 	`, id).Scan(&site, &sku, &from, &to, &qty, &reason, &sourceRef, &legsRaw, &destID, &occurredAt)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestRevokeReservation_UnknownReservation_Rejected(t *testing.T) {
 	e := newEnv()
 	uc := &usecases.RevokeReservation{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
 
-	if err := uc.Execute(context.Background(), "unknown-id"); err != usecases.ErrReservationNotFound {
+	if err := uc.Execute(context.Background(), "unknown-id"); !errors.Is(err, usecases.ErrReservationNotFound) {
 		t.Fatalf("expected ErrReservationNotFound, got %v", err)
 	}
 }
@@ -88,7 +89,7 @@ func TestRevokeReservation_StockUnitNotFound_Rejected(t *testing.T) {
 	}
 
 	uc := &usecases.RevokeReservation{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != usecases.ErrStockUnitNotFound {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, usecases.ErrStockUnitNotFound) {
 		t.Fatalf("expected ErrStockUnitNotFound, got %v", err)
 	}
 }
@@ -98,7 +99,7 @@ func TestRevokeReservation_ReservationsFindByIDFails_PropagatesError(t *testing.
 	resRepo := &failingReservationRepo{delegate: e.Reservations, failFindByID: true}
 	uc := &usecases.RevokeReservation{Stock: e.Stock, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
 
-	if err := uc.Execute(context.Background(), "any-id"); err != errFake {
+	if err := uc.Execute(context.Background(), "any-id"); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -111,7 +112,7 @@ func TestRevokeReservation_StockFindByIDFails_PropagatesError(t *testing.T) {
 
 	stockRepo := &failingStockRepo{delegate: e.Stock, failFindByID: true}
 	uc := &usecases.RevokeReservation{Stock: stockRepo, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != errFake {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -124,7 +125,7 @@ func TestRevokeReservation_StockSaveFails_PropagatesError(t *testing.T) {
 
 	stockRepo := &failingStockRepo{delegate: e.Stock, failSave: true}
 	uc := &usecases.RevokeReservation{Stock: stockRepo, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != errFake {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -137,7 +138,7 @@ func TestRevokeReservation_ReservationsSaveFails_PropagatesError(t *testing.T) {
 
 	resRepo := &failingReservationRepo{delegate: e.Reservations, failSave: true}
 	uc := &usecases.RevokeReservation{Stock: e.Stock, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != errFake {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -149,7 +150,7 @@ func TestRevokeReservation_EventPublishFails_PropagatesError(t *testing.T) {
 	res, _ := reserveUC.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
 
 	uc := &usecases.RevokeReservation{Stock: e.Stock, Reservations: e.Reservations, Events: failingEvents{}, Clock: e.Clock}
-	if err := uc.Execute(context.Background(), res.ID()); err != errFake {
+	if err := uc.Execute(context.Background(), res.ID()); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }

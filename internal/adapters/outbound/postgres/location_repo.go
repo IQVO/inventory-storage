@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -49,7 +50,7 @@ func (r *LocationRepo) FindByID(ctx context.Context, id shared.BinId) (*location
 	var capacity, occupied, version int
 	var site *string
 	err := querierFrom(ctx, r.pool).QueryRow(ctx, `SELECT capacity, occupied, version, site_id FROM bins WHERE id = $1`, id.String()).Scan(&capacity, &occupied, &version, &site)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
