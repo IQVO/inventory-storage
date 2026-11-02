@@ -44,10 +44,6 @@ func buildEventDrivenConsumers(
 
 	// RETURN_LINE_CONSUMER_GROUP is mandatory (loadConfig), so the
 	// returns-processing consumer always runs too.
-	returnLine, err := buildReturnLineConsumer(ctx, logger, cfg, set)
-	if err != nil {
-		stopTransferConsumer(logger, combineConsumerHandles(started, confirmPicks, inboundReceipt))
-		return noopTransferConsumer(), err
-	}
+	returnLine := buildReturnLineConsumer(ctx, logger, cfg, set)
 	return combineConsumerHandles(started, confirmPicks, inboundReceipt, returnLine), nil
 }

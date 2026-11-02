@@ -92,7 +92,7 @@ func assertPersistedBin(t *testing.T, e env, binID shared.BinId, wantCapacity, w
 func TestRegisterBin_RejectsEmptyID(t *testing.T) {
 	e := newEnv()
 	uc := &usecases.RegisterBin{Locations: e.Locations}
-	if _, _, err := uc.Execute(context.Background(), "", mustQty(t, 5)); err != shared.ErrEmptyBinID {
+	if _, _, err := uc.Execute(context.Background(), "", mustQty(t, 5)); !errors.Is(err, shared.ErrEmptyBinID) {
 		t.Fatalf("expected ErrEmptyBinID, got %v", err)
 	}
 }
@@ -121,7 +121,7 @@ func TestRegisterBin_RepoFailures_Propagate(t *testing.T) {
 				seedBin(t, e, mustBinID(t, "R-1-1"), 5)
 			}
 			uc := &usecases.RegisterBin{Locations: tc.repo(e)}
-			if _, _, err := uc.Execute(context.Background(), mustBinID(t, "R-1-1"), mustQty(t, tc.capacity)); err != errFake {
+			if _, _, err := uc.Execute(context.Background(), mustBinID(t, "R-1-1"), mustQty(t, tc.capacity)); !errors.Is(err, errFake) {
 				t.Fatalf("expected errFake, got %v", err)
 			}
 		})
@@ -148,14 +148,14 @@ func TestGetBin(t *testing.T) {
 	if err != nil || bin.Capacity().Int() != 8 {
 		t.Fatalf("expected bin with capacity 8, got %v / %v", bin, err)
 	}
-	if _, err := uc.Execute(context.Background(), mustBinID(t, "NOPE")); err != usecases.ErrBinNotFound {
+	if _, err := uc.Execute(context.Background(), mustBinID(t, "NOPE")); !errors.Is(err, usecases.ErrBinNotFound) {
 		t.Fatalf("expected ErrBinNotFound, got %v", err)
 	}
-	if _, err := uc.Execute(context.Background(), ""); err != shared.ErrEmptyBinID {
+	if _, err := uc.Execute(context.Background(), ""); !errors.Is(err, shared.ErrEmptyBinID) {
 		t.Fatalf("expected ErrEmptyBinID, got %v", err)
 	}
 	failing := &usecases.GetBin{Locations: &failingLocationRepo{delegate: e.Locations, failFindByID: true}}
-	if _, err := failing.Execute(context.Background(), mustBinID(t, "G-1-1")); err != errFake {
+	if _, err := failing.Execute(context.Background(), mustBinID(t, "G-1-1")); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }

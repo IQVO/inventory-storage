@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/events"
@@ -564,7 +565,7 @@ func TestStowTransferStock_OutboxFailureSurfacesError(t *testing.T) {
 
 	uc := e.stowUseCase()
 	uc.Events = failingEvents{}
-	if _, err := uc.Execute(context.Background(), "tl-1", stowBins([2]any{"BIN-D1", mustQtyT(t, 5)})); err != errFake {
+	if _, err := uc.Execute(context.Background(), "tl-1", stowBins([2]any{"BIN-D1", mustQtyT(t, 5)})); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 
@@ -693,7 +694,7 @@ func TestStageTransferReceipt_ErrorBranches(t *testing.T) {
 	// A repo read failure surfaces unchanged.
 	uc3 := e.stageUseCase()
 	uc3.Receipts = &failingReceiptRepo{delegate: e.Receipts}
-	if _, err := uc3.Execute(context.Background(), receiptCmd("tr-9", "tl-9", "SITE-DEST", "SKU-T", 5)); err != errFake {
+	if _, err := uc3.Execute(context.Background(), receiptCmd("tr-9", "tl-9", "SITE-DEST", "SKU-T", 5)); !errors.Is(err, errFake) {
 		t.Fatalf("read failure = %v, want errFake", err)
 	}
 }
@@ -764,14 +765,14 @@ func TestStowTransferStock_ErrorBranches(t *testing.T) {
 	// Outer read failure surfaces unchanged.
 	uc2 := e.stowUseCase()
 	uc2.Receipts = &failingReceiptRepo{delegate: e.Receipts}
-	if _, err := uc2.Execute(context.Background(), "tl-1", stowBins([2]any{"BIN-D1", mustQtyT(t, 5)})); err != errFake {
+	if _, err := uc2.Execute(context.Background(), "tl-1", stowBins([2]any{"BIN-D1", mustQtyT(t, 5)})); !errors.Is(err, errFake) {
 		t.Fatalf("outer read failure = %v, want errFake", err)
 	}
 
 	// Publish failure propagates (rollback signal).
 	uc3 := e.stowUseCase()
 	uc3.Events = failingEvents{}
-	if _, err := uc3.Execute(context.Background(), "tl-1", stowBins([2]any{"BIN-D1", mustQtyT(t, 5)})); err != errFake {
+	if _, err := uc3.Execute(context.Background(), "tl-1", stowBins([2]any{"BIN-D1", mustQtyT(t, 5)})); !errors.Is(err, errFake) {
 		t.Fatalf("publish failure = %v, want errFake", err)
 	}
 }

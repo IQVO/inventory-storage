@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
@@ -40,7 +41,7 @@ func TestGetUsable_StockFindBySKUFails_PropagatesError(t *testing.T) {
 	stockRepo := &failingStockRepo{delegate: e.Stock, failFindBySKU: true}
 	uc := &usecases.GetUsable{Stock: stockRepo}
 
-	if _, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1")); err != errFake {
+	if _, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1")); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -44,7 +45,7 @@ func TestReserveStock_ExceedsUsable_Rejected(t *testing.T) {
 	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
-	if err != usecases.ErrInsufficientUsable {
+	if !errors.Is(err, usecases.ErrInsufficientUsable) {
 		t.Fatalf("expected ErrInsufficientUsable, got %v", err)
 	}
 
@@ -98,7 +99,7 @@ func TestReserveStock_NoStockForSKU_Rejected(t *testing.T) {
 	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), "order-1")
-	if err != usecases.ErrInsufficientUsable {
+	if !errors.Is(err, usecases.ErrInsufficientUsable) {
 		t.Fatalf("expected ErrInsufficientUsable, got %v", err)
 	}
 }
@@ -109,7 +110,7 @@ func TestReserveStock_StockFindBySKUFails_PropagatesError(t *testing.T) {
 	uc := &usecases.ReserveStock{Stock: stockRepo, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), "order-1")
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -121,7 +122,7 @@ func TestReserveStock_StockSaveFails_PropagatesError(t *testing.T) {
 	uc := &usecases.ReserveStock{Stock: stockRepo, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -133,7 +134,7 @@ func TestReserveStock_ReservationsNextIDFails_PropagatesError(t *testing.T) {
 	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -145,7 +146,7 @@ func TestReserveStock_ReservationsSaveFails_PropagatesError(t *testing.T) {
 	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -156,7 +157,7 @@ func TestReserveStock_EventPublishFails_PropagatesError(t *testing.T) {
 	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: failingEvents{}, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -247,7 +248,7 @@ func TestReserveStock_FindByDemandRefFails_PropagatesError(t *testing.T) {
 	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1")
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }

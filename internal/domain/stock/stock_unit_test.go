@@ -1,6 +1,7 @@
 package stock
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -30,21 +31,21 @@ func mustBin(t *testing.T) shared.BinId {
 // Named invariant: "stow-requires-item-and-location".
 func TestNewStockUnit_RequiresSKU(t *testing.T) {
 	_, err := NewStockUnit("su-1", "", mustBin(t), mustQty(t, 5))
-	if err != ErrStowRequiresItemAndLocation {
+	if !errors.Is(err, ErrStowRequiresItemAndLocation) {
 		t.Fatalf("expected ErrStowRequiresItemAndLocation, got %v", err)
 	}
 }
 
 func TestNewStockUnit_RequiresBin(t *testing.T) {
 	_, err := NewStockUnit("su-1", mustSKU(t), "", mustQty(t, 5))
-	if err != ErrStowRequiresItemAndLocation {
+	if !errors.Is(err, ErrStowRequiresItemAndLocation) {
 		t.Fatalf("expected ErrStowRequiresItemAndLocation, got %v", err)
 	}
 }
 
 func TestNewStockUnit_RequiresBothMissing_StillRejected(t *testing.T) {
 	_, err := NewStockUnit("su-1", "", "", mustQty(t, 5))
-	if err != ErrStowRequiresItemAndLocation {
+	if !errors.Is(err, ErrStowRequiresItemAndLocation) {
 		t.Fatalf("expected ErrStowRequiresItemAndLocation, got %v", err)
 	}
 }
@@ -63,7 +64,7 @@ func TestNewStockUnit_ValidItemAndLocation_Succeeds(t *testing.T) {
 }
 
 func TestNewStockUnit_RejectsZeroQuantity(t *testing.T) {
-	if _, err := NewStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 0)); err != shared.ErrZeroQuantity {
+	if _, err := NewStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 0)); !errors.Is(err, shared.ErrZeroQuantity) {
 		t.Fatalf("expected ErrZeroQuantity, got %v", err)
 	}
 }
@@ -73,7 +74,7 @@ func TestStockUnit_Reserve_ExceedsUsable_Rejected(t *testing.T) {
 	u, _ := NewStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5))
 
 	err := u.Reserve(mustQty(t, 6))
-	if err != ErrInsufficientUsable {
+	if !errors.Is(err, ErrInsufficientUsable) {
 		t.Fatalf("expected ErrInsufficientUsable, got %v", err)
 	}
 	if u.State() != StateAvailable {
@@ -106,7 +107,7 @@ func TestStockUnit_Reserve_NoDoubleConsume(t *testing.T) {
 	u, _ := NewStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5))
 	_ = u.Reserve(mustQty(t, 5))
 
-	if err := u.Reserve(mustQty(t, 1)); err != ErrInsufficientUsable {
+	if err := u.Reserve(mustQty(t, 1)); !errors.Is(err, ErrInsufficientUsable) {
 		t.Fatalf("expected ErrInsufficientUsable on double-consume, got %v", err)
 	}
 }
@@ -131,7 +132,7 @@ func TestStockUnit_ReleaseReservation_ExceedsReserved_Rejected(t *testing.T) {
 	u, _ := NewStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5))
 	_ = u.Reserve(mustQty(t, 2))
 
-	if err := u.ReleaseReservation(mustQty(t, 3)); err != ErrInsufficientReserved {
+	if err := u.ReleaseReservation(mustQty(t, 3)); !errors.Is(err, ErrInsufficientReserved) {
 		t.Fatalf("expected ErrInsufficientReserved, got %v", err)
 	}
 }
@@ -170,7 +171,7 @@ func TestStockUnit_Pick_ExceedsReserved_Rejected(t *testing.T) {
 	u, _ := NewStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5))
 	_ = u.Reserve(mustQty(t, 2))
 
-	if err := u.Pick(mustQty(t, 3)); err != ErrInsufficientReserved {
+	if err := u.Pick(mustQty(t, 3)); !errors.Is(err, ErrInsufficientReserved) {
 		t.Fatalf("expected ErrInsufficientReserved, got %v", err)
 	}
 }
@@ -191,7 +192,7 @@ func TestStockUnit_Reserve_UnlocatedUnit_Rejected(t *testing.T) {
 	u, _ := NewStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 5))
 	u.MarkUnlocated()
 
-	if err := u.Reserve(mustQty(t, 1)); err != ErrUnitUnlocated {
+	if err := u.Reserve(mustQty(t, 1)); !errors.Is(err, ErrUnitUnlocated) {
 		t.Fatalf("expected ErrUnitUnlocated, got %v", err)
 	}
 }
@@ -254,7 +255,7 @@ func TestStockUnit_Usable_ReservedExceedsOnHand_IsZero(t *testing.T) {
 func TestStockUnit_Pick_ExceedsOnHandQuantity_Rejected(t *testing.T) {
 	u := RehydrateStockUnit("su-1", mustSKU(t), mustBin(t), mustQty(t, 3), mustQty(t, 5), StateReserved, 1)
 
-	if err := u.Pick(mustQty(t, 5)); err != ErrInsufficientReserved {
+	if err := u.Pick(mustQty(t, 5)); !errors.Is(err, ErrInsufficientReserved) {
 		t.Fatalf("expected ErrInsufficientReserved, got %v", err)
 	}
 }

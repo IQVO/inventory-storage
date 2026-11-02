@@ -39,7 +39,7 @@ func (w *world) anAllocationIsRequested(ctx context.Context, qty int, sku, site,
 
 func (w *world) theAllocationCommandIsRefusedAsMalformed() error {
 	if !errors.Is(w.wave2.allocateErr, usecases.ErrMalformedTransferCommand) {
-		return fmt.Errorf("expected a malformed-command refusal, got %v", w.wave2.allocateErr)
+		return fmt.Errorf("expected a malformed-command refusal, got %w", w.wave2.allocateErr)
 	}
 	return nil
 }

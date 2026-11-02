@@ -3,7 +3,6 @@ package kafka
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -132,44 +131,7 @@ func NewInboundReceiptConsumerForTopic(topic string, brokers []string, groupID s
 // clean stop and returns nil, even when it lands mid-handle: the in-flight
 // message stays uncommitted and is redelivered on the next start.
 func (c *InboundReceiptConsumer) Run(ctx context.Context) error {
-	backoff := c.Backoff
-	if backoff == nil {
-		backoff = retryBackoff
-	}
-	for {
-		msg, err := c.Reader.FetchMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return err
-		}
-
-		attempt := 0
-		for {
-			err := c.Handle(ctx, msg)
-			if err == nil {
-				break
-			}
-			attempt++
-			c.Logger.WarnContext(ctx, "inbound-receiving receipt handling failed; retrying same message",
-				"error", err, "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
-			select {
-			case <-ctx.Done():
-				// Shutdown landed mid-handle: a clean stop. The offset was not
-				// committed, so the message is redelivered and deduplicated.
-				return nil
-			case <-time.After(backoff(attempt)):
-			}
-		}
-
-		if err := c.Reader.CommitMessages(ctx, msg); err != nil {
-			if ctx.Err() != nil {
-				return nil // shutdown: the uncommitted message is redelivered and deduplicated
-			}
-			return fmt.Errorf("commit inbound-receiving message: %w", err)
-		}
-	}
+	return runConsumer(ctx, c.Reader, c.Handle, c.Logger, c.Backoff, "inbound-receiving", "inbound-receiving receipt")
 }
 
 // Handle decodes and applies one message. It returns an error ONLY for a

@@ -1,6 +1,7 @@
 package reservation
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func newActive(t *testing.T) *Reservation {
 
 func TestNew_RequiresAtLeastOneAllocation(t *testing.T) {
 	sku, _ := shared.NewSKU("SKU-1")
-	if _, err := New("r-1", sku, mustQty(t, 5), "order-1", nil, time.Unix(0, 0), time.Hour); err != ErrNoAllocations {
+	if _, err := New("r-1", sku, mustQty(t, 5), "order-1", nil, time.Unix(0, 0), time.Hour); !errors.Is(err, ErrNoAllocations) {
 		t.Fatalf("expected ErrNoAllocations, got %v", err)
 	}
 }
@@ -49,7 +50,7 @@ func TestReservation_Revoke_Twice_Rejected(t *testing.T) {
 	r := newActive(t)
 	_ = r.Revoke()
 
-	if err := r.Revoke(); err != ErrAlreadyResolved {
+	if err := r.Revoke(); !errors.Is(err, ErrAlreadyResolved) {
 		t.Fatalf("expected ErrAlreadyResolved, got %v", err)
 	}
 }
@@ -58,7 +59,7 @@ func TestReservation_Confirm_AfterRevoke_Rejected(t *testing.T) {
 	r := newActive(t)
 	_ = r.Revoke()
 
-	if err := r.Confirm(time.Unix(0, 0)); err != ErrAlreadyResolved {
+	if err := r.Confirm(time.Unix(0, 0)); !errors.Is(err, ErrAlreadyResolved) {
 		t.Fatalf("expected ErrAlreadyResolved, got %v", err)
 	}
 }
@@ -67,7 +68,7 @@ func TestReservation_Confirm_Twice_Rejected(t *testing.T) {
 	r := newActive(t)
 	_ = r.Confirm(time.Unix(0, 0))
 
-	if err := r.Confirm(time.Unix(0, 0)); err != ErrAlreadyResolved {
+	if err := r.Confirm(time.Unix(0, 0)); !errors.Is(err, ErrAlreadyResolved) {
 		t.Fatalf("expected ErrAlreadyResolved, got %v", err)
 	}
 }
@@ -76,7 +77,7 @@ func TestReservation_Confirm_AfterExpiry_Rejected(t *testing.T) {
 	r := newActive(t)
 	past := r.ExpiresAt().Add(time.Second)
 
-	if err := r.Confirm(past); err != ErrExpired {
+	if err := r.Confirm(past); !errors.Is(err, ErrExpired) {
 		t.Fatalf("expected ErrExpired, got %v", err)
 	}
 }
@@ -106,7 +107,7 @@ func TestReservation_Expire_Twice_Rejected(t *testing.T) {
 	r := newActive(t)
 	_ = r.Expire()
 
-	if err := r.Expire(); err != ErrAlreadyResolved {
+	if err := r.Expire(); !errors.Is(err, ErrAlreadyResolved) {
 		t.Fatalf("expected ErrAlreadyResolved, got %v", err)
 	}
 }
@@ -115,7 +116,7 @@ func TestReservation_Expire_AfterRevoke_Rejected(t *testing.T) {
 	r := newActive(t)
 	_ = r.Revoke()
 
-	if err := r.Expire(); err != ErrAlreadyResolved {
+	if err := r.Expire(); !errors.Is(err, ErrAlreadyResolved) {
 		t.Fatalf("expected ErrAlreadyResolved, got %v", err)
 	}
 }

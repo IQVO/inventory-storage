@@ -1,6 +1,9 @@
 package shared
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestNewSiteID(t *testing.T) {
 	site, err := NewSiteID("SITE-A")
@@ -15,7 +18,7 @@ func TestNewSiteID(t *testing.T) {
 func TestNewSiteID_RejectsEmpty(t *testing.T) {
 	if _, err := NewSiteID(""); err == nil {
 		t.Fatal("empty site id must be rejected")
-	} else if err != ErrEmptySiteID {
+	} else if !errors.Is(err, ErrEmptySiteID) {
 		t.Fatalf("error = %v, want ErrEmptySiteID", err)
 	}
 }

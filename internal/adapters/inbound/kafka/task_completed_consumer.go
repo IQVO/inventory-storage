@@ -234,7 +234,7 @@ func (c *TaskCompletedConsumer) Handle(ctx context.Context, msg kafkago.Message)
 
 	var data taskCompletedData
 	if err := e.DataAs(&data); err != nil {
-		return fmt.Errorf("%w: undecodable TaskCompleted payload (id %s): %v", errPoison, e.ID(), err)
+		return fmt.Errorf("%w: undecodable TaskCompleted payload (id %s): %w", errPoison, e.ID(), err)
 	}
 	if data.TaskType == usecases.RelocateTaskType && c.Relocate != nil {
 		return c.handleRelocation(ctx, e.ID(), data)
@@ -252,7 +252,7 @@ func (c *TaskCompletedConsumer) Handle(ctx context.Context, msg kafkago.Message)
 	})
 	if err != nil {
 		if errors.Is(err, usecases.ErrMalformedPickCompletion) {
-			return fmt.Errorf("%w: %v", errPoison, err)
+			return fmt.Errorf("%w: %w", errPoison, err)
 		}
 		return err
 	}
@@ -279,7 +279,7 @@ func (c *TaskCompletedConsumer) handleRelocation(ctx context.Context, id string,
 	})
 	if err != nil {
 		if errors.Is(err, usecases.ErrMalformedRelocationTask) {
-			return fmt.Errorf("%w: %v", errPoison, err)
+			return fmt.Errorf("%w: %w", errPoison, err)
 		}
 		return err
 	}
@@ -303,7 +303,7 @@ func (c *TaskCompletedConsumer) handleReplenish(ctx context.Context, id string, 
 	})
 	if err != nil {
 		if errors.Is(err, usecases.ErrMalformedRelocationTask) {
-			return fmt.Errorf("%w: %v", errPoison, err)
+			return fmt.Errorf("%w: %w", errPoison, err)
 		}
 		return err
 	}

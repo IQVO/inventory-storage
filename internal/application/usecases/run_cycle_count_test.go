@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
@@ -111,7 +112,7 @@ func TestRunCycleCount_StockFindByBinFails_PropagatesError(t *testing.T) {
 	stockRepo := &failingStockRepo{delegate: e.Stock, failFindByBin: true}
 	uc := &usecases.RunCycleCount{Stock: stockRepo, Events: e.Events, Clock: e.Clock}
 
-	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), 0); err != errFake {
+	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), 0); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -121,7 +122,7 @@ func TestRunCycleCount_EventPublishFails_PropagatesError_NoDiscrepancy(t *testin
 	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
 	uc := &usecases.RunCycleCount{Stock: e.Stock, Events: failingEvents{}, Clock: e.Clock}
 
-	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 10)); err != errFake {
+	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 10)); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -131,7 +132,7 @@ func TestRunCycleCount_EventPublishFails_Overage(t *testing.T) {
 	stowUnit(t, e, "SKU-1", "A-1-1", 20, 10)
 	uc := &usecases.RunCycleCount{Stock: e.Stock, Events: failingEvents{}, Clock: e.Clock}
 
-	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 15)); err != errFake {
+	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 15)); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -142,7 +143,7 @@ func TestRunCycleCount_StockSaveFails_Shortfall(t *testing.T) {
 	stockRepo := &failingStockRepo{delegate: e.Stock, failSave: true}
 	uc := &usecases.RunCycleCount{Stock: stockRepo, Events: e.Events, Clock: e.Clock}
 
-	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 4)); err != errFake {
+	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 4)); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -201,7 +202,7 @@ func TestRunCycleCount_EventPublishFails_ItemUnlocated(t *testing.T) {
 	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
 	uc := &usecases.RunCycleCount{Stock: e.Stock, Events: selectiveFailingEvents{delegate: e.Events, failName: "ItemUnlocated"}, Clock: e.Clock}
 
-	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 4)); err != errFake {
+	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 4)); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake from ItemUnlocated publish, got %v", err)
 	}
 }
@@ -215,7 +216,7 @@ func TestRunCycleCount_EventPublishFails_CycleCountCompleted_Overage(t *testing.
 	stowUnit(t, e, "SKU-1", "A-1-1", 20, 10)
 	uc := &usecases.RunCycleCount{Stock: e.Stock, Events: selectiveFailingEvents{delegate: e.Events, failName: "CycleCountCompleted"}, Clock: e.Clock}
 
-	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 15)); err != errFake {
+	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 15)); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake from closing CycleCountCompleted publish, got %v", err)
 	}
 }
@@ -239,7 +240,7 @@ func TestRunCycleCount_EventPublishFails_CycleCountCompleted_Shortfall(t *testin
 	stowUnit(t, e, "SKU-1", "A-1-1", 10, 10)
 	uc := &usecases.RunCycleCount{Stock: e.Stock, Events: selectiveFailingEvents{delegate: e.Events, failName: "CycleCountCompleted"}, Clock: e.Clock}
 
-	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 4)); err != errFake {
+	if _, err := uc.Execute(context.Background(), mustBinID(t, "A-1-1"), mustQty(t, 4)); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake from closing CycleCountCompleted publish, got %v", err)
 	}
 }

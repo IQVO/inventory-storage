@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -89,7 +90,7 @@ func TestReserveStock_UnitOfWork_PropagatesPublishFailure(t *testing.T) {
 	uow := &recordingUnitOfWork{}
 	uc := &usecases.ReserveStock{Stock: e.Stock, Reservations: e.Reservations, Events: failingEvents{}, Clock: e.Clock, UnitOfWork: uow}
 
-	if _, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1"); err != errFake {
+	if _, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), "order-1"); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 	if uow.calls == 0 {

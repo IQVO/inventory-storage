@@ -8,9 +8,18 @@ import (
 // timeFormat is the wire format of every timestamp in a response body.
 const timeFormat = "2006-01-02T15:04:05Z07:00"
 
+// slugMalformedRequestBody is the RFC 7807 type slug of every malformed-body
+// refusal (unreadable body, NUL byte, invalid JSON) across the middleware
+// and the handlers.
+const slugMalformedRequestBody = "malformed-request-body"
+
+// statusKey is the JSON key (and log attr key) of the health/readiness
+// status field.
+const statusKey = "status"
+
 func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
 	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"malformed-request-body", "The request body is not valid JSON"}, err.Error(), r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemInfo{slugMalformedRequestBody, "The request body is not valid JSON"}, err.Error(), r.URL.Path)
 		return false
 	}
 	return true

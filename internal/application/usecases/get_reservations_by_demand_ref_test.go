@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
@@ -98,7 +99,7 @@ func TestGetReservationsByDemandRef_RepoFails_PropagatesError(t *testing.T) {
 	resRepo := &failingReservationRepo{delegate: e.Reservations, failFindByDemandRef: true}
 	uc := &usecases.GetReservationsByDemandRef{Stock: e.Stock, Reservations: resRepo, Events: e.Events, Clock: e.Clock}
 
-	if _, err := uc.Execute(context.Background(), "order-1"); err != errFake {
+	if _, err := uc.Execute(context.Background(), "order-1"); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
