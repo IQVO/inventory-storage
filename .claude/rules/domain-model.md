@@ -97,11 +97,11 @@ the one-shot `republish-product-classifications` backfill re-emits it
    same demandRef is a new reservation, never a retry. The optional `lineNo`
    (>= 1; 0 or negative is 400 `invalid-line-no`) is stored on the reservation
    (nullable `line_no`, ADR-0036) and compared by the replay guard when the
-   request names one; adding it to a key first used without it is 422
+   request names one; adding it to a key first used without it is 409
    `idempotency-key-reused`
 4. `RevokeReservation(reservationId)` -> returns qty to usable
 5. `ConfirmPick(reservationId)` -> consumes reservation, StockPicked. Called
-   by `POST /reservations/{id}/confirm-pick` and, for a completed order, by
+   by `POST /reservations/{id}/pick-confirmations` and, for a completed order, by
    `ConfirmPicksForOrder` (use case 9)
 6. `GetUsable(sku)` -> usable-inventory read model
 7. `RunCycleCount(binId, countedQty)` -> reconcile, may raise

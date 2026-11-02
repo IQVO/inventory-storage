@@ -10,7 +10,7 @@ this order — domain first, adapter last — never the reverse; writing the
 HTTP handler before the domain invariant it enforces produces handlers
 that validate nothing and use cases that get bypassed.
 
-This walks the exact path `POST /bins/{binId}/cycle-count` took
+This walks the exact path `POST /bins/{binId}/cycle-counts` took
 (`internal/application/usecases/run_cycle_count.go` +
 `internal/adapters/inbound/http/server.go`'s `handleRunCycleCount`) as the
 concrete worked example — read those two files alongside this guide.
@@ -95,7 +95,7 @@ endpoint can produce).
 
 Add the path to `apis/openapi.yaml` (request/response schemas, the RFC
 7807 problem-detail response for each error case — see the existing
-`/bins/{binId}/cycle-count` entry for the shape).
+`/bins/{binId}/cycle-counts` entry for the shape).
 
 Regenerate the Docusaurus REST reference — this repo's `docs-api-drift`
 CI job fails the PR if you skip this:
