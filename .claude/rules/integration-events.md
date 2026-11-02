@@ -182,7 +182,7 @@ not the event stream.
   (consumer `inbound-receipt-line`) and runs the EXISTING `ReceiveStock` in ONE
   UnitOfWork: `Good` -> `StockReceived` through the outbox (analytics topic),
   staged and not yet usable, stow stays the RF action — the same effect as
-  `POST /stock/receive`, which is unchanged. `Damaged` is claimed and NOT booked
+  `POST /stock-receipts`, which is unchanged. `Damaged` is claimed and NOT booked
   in v1 (INFO log, `inventory.inbound_receipt_units{outcome=damaged_not_booked}`).
   Receipt context is not stored on the stock event.
 - At-least-once checklist: `FetchMessage`, commit after the handler settles,
@@ -211,7 +211,7 @@ not the event stream.
 - `BookReturnLine` claims the CloudEvents `id` in `processed_events` (consumer
   `return-line-staged`, the flow's provenance record — the mirror of
   `inbound-receipt-line`) and runs the EXISTING `ReceiveStock` — the SAME
-  staged-receipt use case an inbound receipt line and `POST /stock/receive`
+  staged-receipt use case an inbound receipt line and `POST /stock-receipts`
   drive — in ONE UnitOfWork: `StockReceived` through the outbox (analytics
   topic), staged and not yet usable, stow stays the RF action. Return context
   (`receipt_id`, `rma_id`, `disposition_id`, `site_id`, `received_at`) is NOT
