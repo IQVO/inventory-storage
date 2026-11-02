@@ -287,13 +287,24 @@ channels:
       legality), `LocationSlotRegistered` (slot existence, zone and optional
       handling unit), `LocationSlotDecommissioned` (evict the slot; the stow
       check then fails open for it) and `LocationSlotHandlingUnitDeclared`
-      (set/change a bin's handling unit, ADR 0040). Consumer group from env
-      `FACILITY_CONSUMER_GROUP`; last write wins per subject (same partition).
+      (set/change a bin's handling unit, ADR 0040). The consumer rebuilds an
+      in-memory cache from the topic's FULL history on every start (offset
+      reset to the first offset) under a dedicated PER-PROCESS consumer group
+      `inventory-storage-facility-location-cache-<host>-<pid>-<nanos>`
+      (deliberately not configurable and not shared: there is no
+      `FACILITY_CONSUMER_GROUP`); last write wins per subject (same
+      partition). A message that is not a valid CloudEvent, has an
+      undecodable payload or lacks a required field is written to
+      `warehouse.facility.events.dlq` and the consumer carries on.
     publish:
       operationId: applyFacilityCache
       summary: Apply facility-layout's published language to the facility cache.
       description: |
-        Upserts/evicts facility cache rows in one transaction with the CloudEvents `id` claim; last write wins per subject.
+        Upserts/evicts rows of the in-memory facility cache (no database and
+        no `processed_events` claim: the cache is rebuilt by replaying the
+        topic from the beginning on every start); last write wins per
+        subject. A malformed message is dead-lettered to
+        `warehouse.facility.events.dlq` and skipped.
       message:
         oneOf:
           - $ref: "#/components/messages/FacilityLayoutZoneRegistered"
