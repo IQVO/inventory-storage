@@ -5,6 +5,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/inbound/http/page"
 	"github.com/claudioed/inventory-storage/internal/domain/container"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
@@ -36,11 +37,6 @@ type containerResponse struct {
 	LineNo       int    `json:"lineNo"`
 }
 
-type binContainersResponse struct {
-	BinID      string              `json:"binId"`
-	Containers []containerResponse `json:"containers"`
-}
-
 func toContainerResponse(c *container.Container) containerResponse {
 	return containerResponse{
 		LPN: c.LPN(), SKU: c.SKU().String(), GTIN: c.GTIN(), UnitsPerPack: c.UnitsPerPack(), QtyEaches: c.Quantity().Int(),
@@ -49,7 +45,7 @@ func toContainerResponse(c *container.Container) containerResponse {
 	}
 }
 
-// handleStowContainer backs POST /containers/{lpn}:stow: scan the LPN, scan the
+// handleStowContainer backs POST /containers/{lpn}/stowages: scan the LPN, scan the
 // location. 200 with the container.
 func (s *Server) handleStowContainer(w http.ResponseWriter, r *http.Request) {
 	var req stowContainerRequest
@@ -69,7 +65,7 @@ func (s *Server) handleStowContainer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toContainerResponse(c))
 }
 
-// handleBreakCase backs POST /containers/{lpn}:break: open the sealed case and
+// handleBreakCase backs POST /containers/{lpn}/case-breaks: open the sealed case and
 // move its eaches to loose stock in looseBin. 200 with the (now EMPTY) container.
 func (s *Server) handleBreakCase(w http.ResponseWriter, r *http.Request) {
 	var req breakCaseRequest
@@ -99,21 +95,37 @@ func (s *Server) handleGetContainer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toContainerResponse(c))
 }
 
-// handleListBinContainers backs GET /bins/{binId}/containers.
+// handleListBinContainers backs GET /bins/{binId}/containers: one keyset page,
+// {items, nextCursor}, in LPN order. The LPN is unique, so the cursor carries
+// it as both the sort key and the id.
 func (s *Server) handleListBinContainers(w http.ResponseWriter, r *http.Request) {
 	bin, err := shared.NewBinId(chi.URLParam(r, "binId"))
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	containers, err := s.ListBinContainers.Execute(r.Context(), bin)
+	limit, pos, ok := pageParams(w, r)
+	if !ok {
+		return
+	}
+	if pos != nil && pos.Sort != pos.ID {
+		writeInvalidCursor(w, r)
+		return
+	}
+	afterLPN := ""
+	if pos != nil {
+		afterLPN = pos.ID
+	}
+	containers, err := s.ListBinContainers.Page(r.Context(), bin, afterLPN, page.FetchSize(limit))
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	out := make([]containerResponse, 0, len(containers))
-	for _, c := range containers {
-		out = append(out, toContainerResponse(c))
-	}
-	writeJSON(w, http.StatusOK, binContainersResponse{BinID: bin.String(), Containers: out})
+	writeJSON(w, http.StatusOK, pageOf(containers, limit, containerPosition, toContainerResponse))
+}
+
+// containerPosition is the keyset position of a container in
+// GET /bins/{binId}/containers: its LPN, which is unique.
+func containerPosition(c *container.Container) page.Position {
+	return page.Position{Sort: c.LPN(), ID: c.LPN()}
 }

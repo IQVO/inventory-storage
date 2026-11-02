@@ -48,6 +48,9 @@ func (fakeReservationRepo) NextID(context.Context) (string, error)              
 func (fakeReservationRepo) FindByDemandRef(context.Context, string) ([]*reservation.Reservation, error) {
 	return nil, nil
 }
+func (fakeReservationRepo) FindByDemandRefAfter(context.Context, string, *reservation.PageAfter, int) ([]*reservation.Reservation, error) {
+	return nil, nil
+}
 
 func newQty(t *testing.T, v int) shared.Quantity {
 	t.Helper()

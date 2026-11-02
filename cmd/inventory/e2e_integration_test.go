@@ -324,7 +324,7 @@ func TestRunOnRealPostgresAndKafka(t *testing.T) {
 
 func e2eReceiveFlow(t *testing.T, ctx context.Context, env e2eEnv, pool *pgxpool.Pool) {
 	t.Helper()
-	receive := env.url("/stock/receive")
+	receive := env.url("/stock-receipts")
 	body := fmt.Sprintf(`{"sku":%q,"quantity":3}`, e2eSKU)
 	key := map[string]string{"Idempotency-Key": "e2e-receive-1"}
 
@@ -358,8 +358,8 @@ func e2eReceiveFlow(t *testing.T, ctx context.Context, env e2eEnv, pool *pgxpool
 	if code, replay := e2eDo(t, ctx, http.MethodPost, receive, body, key); code != http.StatusAccepted || replay != first {
 		t.Fatalf("replay = %d %s, want 202 and the original body %s", code, replay, first)
 	}
-	if code, resp := e2eDo(t, ctx, http.MethodPost, receive, fmt.Sprintf(`{"sku":%q,"quantity":4}`, e2eSKU), key); code != http.StatusUnprocessableEntity || !strings.Contains(resp, "idempotency-key-reused") {
-		t.Fatalf("same key, other body = %d %s, want 422 idempotency-key-reused", code, resp)
+	if code, resp := e2eDo(t, ctx, http.MethodPost, receive, fmt.Sprintf(`{"sku":%q,"quantity":4}`, e2eSKU), key); code != http.StatusConflict || !strings.Contains(resp, "idempotency-key-reused") {
+		t.Fatalf("same key, other body = %d %s, want 409 idempotency-key-reused", code, resp)
 	}
 	if n := e2eCount(t, ctx, pool, `SELECT count(*) FROM outbox_events`); n != 1 {
 		t.Fatalf("outbox rows after a replay = %d, want still 1", n)
@@ -515,7 +515,7 @@ func e2eContainersFlow(t *testing.T, ctx context.Context, env e2eEnv, pool *pgxp
 	hdr := func(k string) map[string]string { return map[string]string{"Idempotency-Key": k} }
 	var stowBody string
 	e2eWaitFor(t, ctx, 60*time.Second, "stow into the case bin", func() bool {
-		code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000017:stow"), fmt.Sprintf(`{"bin":%q}`, e2eCaseBin), hdr("e2e-stow-1"))
+		code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000017/stowages"), fmt.Sprintf(`{"bin":%q}`, e2eCaseBin), hdr("e2e-stow-1"))
 		stowBody = resp
 		return code == http.StatusOK
 	})
@@ -523,12 +523,12 @@ func e2eContainersFlow(t *testing.T, ctx context.Context, env e2eEnv, pool *pgxp
 		t.Fatalf("stow response = %s", stowBody)
 	}
 	for _, lpn := range []string{"003400000000000024", "003400000000000031"} {
-		if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/"+lpn+":stow"), fmt.Sprintf(`{"bin":%q}`, e2eCaseBin), hdr("e2e-stow-"+lpn)); code != http.StatusOK {
+		if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/"+lpn+"/stowages"), fmt.Sprintf(`{"bin":%q}`, e2eCaseBin), hdr("e2e-stow-"+lpn)); code != http.StatusOK {
 			t.Fatalf("stow %s = %d %s", lpn, code, resp)
 		}
 	}
 	// an each bin refuses a case
-	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000017:stow"), fmt.Sprintf(`{"bin":%q}`, e2eLooseBin), hdr("e2e-stow-each")); code != http.StatusConflict || !strings.Contains(resp, "bin-handling-unit-mismatch") {
+	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000017/stowages"), fmt.Sprintf(`{"bin":%q}`, e2eLooseBin), hdr("e2e-stow-each")); code != http.StatusConflict || !strings.Contains(resp, "bin-handling-unit-mismatch") {
 		t.Fatalf("stow into an each bin = %d %s, want 409 bin-handling-unit-mismatch", code, resp)
 	}
 
@@ -536,24 +536,24 @@ func e2eContainersFlow(t *testing.T, ctx context.Context, env e2eEnv, pool *pgxp
 	// facility-layout declares one; the declaration (a real CloudEvent over
 	// real Kafka) is what makes the same stow succeed (200). The container is
 	// then moved back so the break below still starts from the case bin.
-	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031:stow"), fmt.Sprintf(`{"bin":%q}`, e2eLateBin), hdr("e2e-stow-late-0")); code != http.StatusConflict || !strings.Contains(resp, "bin-handling-unit-mismatch") {
+	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031/stowages"), fmt.Sprintf(`{"bin":%q}`, e2eLateBin), hdr("e2e-stow-late-0")); code != http.StatusConflict || !strings.Contains(resp, "bin-handling-unit-mismatch") {
 		t.Fatalf("stow into a bin with no handling unit = %d %s, want 409 bin-handling-unit-mismatch", code, resp)
 	}
 	e2ePublish(t, ctx, env, facilitycache.Topic, e2eLateBin, "declared-"+e2eLateBin, "com.warehouse.wms.facility-layout.locationslot.LocationSlotHandlingUnitDeclared", "/warehouse/facility-layout",
 		map[string]any{"locationCode": e2eLateBin, "handlingUnit": "CASE", "declaredAt": "2026-10-24T12:00:00Z", "future_field": "tolerated"})
 	e2eWaitFor(t, ctx, 60*time.Second, "stow into the bin once its handling unit is declared", func() bool {
-		code, _ := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031:stow"), fmt.Sprintf(`{"bin":%q}`, e2eLateBin), hdr("e2e-stow-late-1"))
+		code, _ := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031/stowages"), fmt.Sprintf(`{"bin":%q}`, e2eLateBin), hdr("e2e-stow-late-1"))
 		return code == http.StatusOK
 	})
-	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031:stow"), fmt.Sprintf(`{"bin":%q}`, e2eCaseBin), hdr("e2e-stow-back")); code != http.StatusOK {
+	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031/stowages"), fmt.Sprintf(`{"bin":%q}`, e2eCaseBin), hdr("e2e-stow-back")); code != http.StatusOK {
 		t.Fatalf("move back to the case bin = %d %s", code, resp)
 	}
 
-	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031:break"), fmt.Sprintf(`{"looseBin":%q}`, e2eLooseBin), hdr("e2e-break-1")); code != http.StatusOK || !strings.Contains(resp, `"state":"EMPTY"`) {
+	if code, resp := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031/case-breaks"), fmt.Sprintf(`{"looseBin":%q}`, e2eLooseBin), hdr("e2e-break-1")); code != http.StatusOK || !strings.Contains(resp, `"state":"EMPTY"`) {
 		t.Fatalf("break = %d %s", code, resp)
 	}
 	// a second break of the now-EMPTY container is refused
-	if code, _ := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031:break"), fmt.Sprintf(`{"looseBin":%q}`, e2eLooseBin), hdr("e2e-break-2")); code != http.StatusConflict {
+	if code, _ := e2eDo(t, ctx, http.MethodPost, env.url("/containers/003400000000000031/case-breaks"), fmt.Sprintf(`{"looseBin":%q}`, e2eLooseBin), hdr("e2e-break-2")); code != http.StatusConflict {
 		t.Fatalf("second break = %d, want 409", code)
 	}
 	if n := e2eCount(t, ctx, pool, `SELECT coalesce(sum(quantity),0) FROM stock_units WHERE bin_id = $1 AND owner_ref = 'seller-a' AND state <> 'REMOVED'`, e2eLooseBin); n != 12 {

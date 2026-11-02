@@ -164,11 +164,11 @@ func (w *world) iLookUpContainer(ctx context.Context, lpn string) error {
 }
 
 func (w *world) iStowContainer(ctx context.Context, lpn, bin string) error {
-	return w.record(ctx, http.MethodPost, "/containers/"+url.PathEscape(lpn)+":stow", map[string]any{"bin": bin})
+	return w.record(ctx, http.MethodPost, "/containers/"+url.PathEscape(lpn)+"/stowages", map[string]any{"bin": bin})
 }
 
 func (w *world) iBreakContainer(ctx context.Context, lpn, looseBin string) error {
-	return w.record(ctx, http.MethodPost, "/containers/"+url.PathEscape(lpn)+":break", map[string]any{"looseBin": looseBin})
+	return w.record(ctx, http.MethodPost, "/containers/"+url.PathEscape(lpn)+"/case-breaks", map[string]any{"looseBin": looseBin})
 }
 
 func (w *world) iReserveCases(ctx context.Context, cases int, sku, demand string) error {

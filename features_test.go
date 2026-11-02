@@ -210,7 +210,7 @@ func (w *world) aBinWithCapacity(ctx context.Context, id string, capacity int) e
 }
 
 func (w *world) unitsHaveBeenReceived(ctx context.Context, qty int, sku string) error {
-	status, body, _, err := w.call(ctx, http.MethodPost, "/stock/receive", map[string]any{"sku": sku, "quantity": qty})
+	status, body, _, err := w.call(ctx, http.MethodPost, "/stock-receipts", map[string]any{"sku": sku, "quantity": qty})
 	if err != nil {
 		return err
 	}
@@ -221,7 +221,7 @@ func (w *world) unitsHaveBeenReceived(ctx context.Context, qty int, sku string) 
 }
 
 func (w *world) unitsAreStowedIntoBin(ctx context.Context, qty int, sku, binID string) error {
-	status, body, _, err := w.call(ctx, http.MethodPost, "/stock/stow", map[string]any{"sku": sku, "quantity": qty, "binId": binID})
+	status, body, _, err := w.call(ctx, http.MethodPost, "/stowages", map[string]any{"sku": sku, "quantity": qty, "binId": binID})
 	if err != nil {
 		return err
 	}
@@ -260,7 +260,7 @@ func (w *world) timeAdvancesByMinutes(minutes int) error {
 // ----------------------------------------------------------------- When ----
 
 func (w *world) iStowUnitsIntoBin(ctx context.Context, qty int, sku, binID string) error {
-	return w.record(ctx, http.MethodPost, "/stock/stow", map[string]any{"sku": sku, "quantity": qty, "binId": binID})
+	return w.record(ctx, http.MethodPost, "/stowages", map[string]any{"sku": sku, "quantity": qty, "binId": binID})
 }
 
 func (w *world) iReserveUnitsForDemand(ctx context.Context, qty int, sku, demandRef string) error {
@@ -290,11 +290,11 @@ func (w *world) iConfirmThePickForTheReservation(ctx context.Context) error {
 	if w.reservationID == "" {
 		return fmt.Errorf("no Reservation has been created in this scenario")
 	}
-	return w.record(ctx, http.MethodPost, "/reservations/"+w.reservationID+"/confirm-pick", nil)
+	return w.record(ctx, http.MethodPost, "/reservations/"+w.reservationID+"/pick-confirmations", nil)
 }
 
 func (w *world) iRunACycleCountOnBin(ctx context.Context, binID string, counted int) error {
-	return w.record(ctx, http.MethodPost, "/bins/"+binID+"/cycle-count", map[string]any{"countedQuantity": counted})
+	return w.record(ctx, http.MethodPost, "/bins/"+binID+"/cycle-counts", map[string]any{"countedQuantity": counted})
 }
 
 func (w *world) iRequestTheUsableInventoryFor(ctx context.Context, sku string) error {
@@ -302,7 +302,7 @@ func (w *world) iRequestTheUsableInventoryFor(ctx context.Context, sku string) e
 }
 
 func (w *world) iReceiveUnitsOfSKU(ctx context.Context, qty int, sku string) error {
-	return w.record(ctx, http.MethodPost, "/stock/receive", map[string]any{"sku": sku, "quantity": qty})
+	return w.record(ctx, http.MethodPost, "/stock-receipts", map[string]any{"sku": sku, "quantity": qty})
 }
 
 func (w *world) iLookUpTheReservationsForDemand(ctx context.Context, demandRef string) error {
@@ -507,19 +507,22 @@ func (w *world) theReservationsListContainsAReservationWithStatus(status string)
 }
 
 // decodeReservationsList decodes the recorded GET /reservations?demandRef=
-// response: an array of Reservation DTOs.
+// response: the {items, nextCursor} page of Reservation DTOs (the scenarios
+// create far fewer reservations than one page holds).
 func (w *world) decodeReservationsList() ([]struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 }, error) {
-	var list []struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
+	var page struct {
+		Items []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"items"`
 	}
-	if err := w.decode(&list); err != nil {
+	if err := w.decode(&page); err != nil {
 		return nil, err
 	}
-	return list, nil
+	return page.Items, nil
 }
 
 func (w *world) theProductClassificationResponseReports(sku, tags string) error {
@@ -647,16 +650,18 @@ func (w *world) everyReservationAllocationIsPickedFromBin(binID string) error {
 }
 
 func (w *world) everyAllocationInTheReservationsListIsPickedFromBin(binID string) error {
-	var list []struct {
-		Allocations []allocationBody `json:"allocations"`
+	var page struct {
+		Items []struct {
+			Allocations []allocationBody `json:"allocations"`
+		} `json:"items"`
 	}
-	if err := w.decode(&list); err != nil {
+	if err := w.decode(&page); err != nil {
 		return err
 	}
-	if len(list) == 0 {
+	if len(page.Items) == 0 {
 		return fmt.Errorf("expected at least one Reservation in the list, got none")
 	}
-	for _, res := range list {
+	for _, res := range page.Items {
 		if err := allAllocationsFrom(res.Allocations, binID); err != nil {
 			return err
 		}

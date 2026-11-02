@@ -20,7 +20,7 @@ list and the cross-service contract block gain one row each).
 
 ## Context
 
-`POST /stock/receive` has been a bare quantity acknowledgement: someone calls it
+`POST /stock-receipts` has been a bare quantity acknowledgement: someone calls it
 with a SKU and a count, `ReceiveStock` raises `StockReceived` (analytics topic),
 and the quantity is staged, not yet usable, until an RF operator stows it with an
 item scan and a location scan. Nothing upstream says *what was supposed to
@@ -42,7 +42,7 @@ there is no acknowledgement event back.
 2. **Good lines are booked as staged receipts.** A `ReceiptLineReceived` with
    `condition=Good` runs the **existing `ReceiveStock` use case** with
    `(sku, quantity)` and nothing else. The effect is identical to
-   `POST /stock/receive`: `StockReceived` is raised through the outbox to the
+   `POST /stock-receipts`: `StockReceived` is raised through the outbox to the
    analytics topic (`warehouse.inventory.analytics`), the quantity is **staged and
    not yet usable**, and stow stays the RF action (item scan plus location scan).
    Inbound-receiving prescribes no location and this service does not choose one.
@@ -55,7 +55,7 @@ there is no acknowledgement event back.
    no stock. Quarantine is a later ADR; the damaged quantity stays recorded on the
    receipt in inbound-receiving, which is the source of truth for the dock.
 
-4. **`POST /stock/receive` is unchanged.** It keeps working, with its
+4. **`POST /stock-receipts` is unchanged.** It keeps working, with its
    `Idempotency-Key` middleware, for ad-hoc receipts (no ASN). Nothing in REST,
    MCP or the console changes.
 

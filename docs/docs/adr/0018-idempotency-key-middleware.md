@@ -4,18 +4,22 @@ slug: /adr/0018-idempotency-key-middleware
 title: 0018. Transactional Idempotency-Key middleware
 sidebar_label: 0018. Idempotency-Key middleware
 sidebar_position: 18
-description: POST /stock/receive and POST /reservations now require an Idempotency-Key header, enforced by a route-scoped, transactional HTTP middleware that shares the request's Postgres transaction with the wrapped use case, so a client-side retry after a dropped response can never double-create a resource.
+description: POST /stock-receipts and POST /reservations now require an Idempotency-Key header, enforced by a route-scoped, transactional HTTP middleware that shares the request's Postgres transaction with the wrapped use case, so a client-side retry after a dropped response can never double-create a resource.
 ---
 
 # 0018. Transactional Idempotency-Key middleware
 
 ## Status
 
-Accepted.
+Accepted. Amended by [ADR 0049](./0049-adopt-the-fleet-rest-api-guideline.md):
+every `POST` is now behind the middleware (not only the two creating routes),
+key reuse answers `409` (it was `422`), a replay carries
+`Idempotency-Replayed: true`, and the fingerprint is method + path + body hash.
+The text below is the original decision.
 
 ## Context
 
-`POST /stock/receive` (`ReceiveStock`) and `POST /reservations`
+`POST /stock-receipts` (`ReceiveStock`) and `POST /reservations`
 (`ReserveStock`) are this service's only two true resource-creation
 endpoints: the caller supplies no id of its own, and a server-generated
 identity is minted on success (a `StagedReceipt` acknowledgment for
@@ -41,7 +45,7 @@ to any use case.
 
 Add a route-scoped (chi's `r.With(...)`, never global) transactional
 `Idempotency-Key` HTTP middleware, `RequireIdempotencyKey`, applied only
-to `POST /stock/receive` and `POST /reservations`. A caller must supply
+to `POST /stock-receipts` and `POST /reservations`. A caller must supply
 an `Idempotency-Key` header on these two routes; the middleware persists
 the request's outcome — success OR a business-validation error — keyed by
 that header value plus a hash of the request body, in the SAME Postgres
@@ -114,7 +118,7 @@ naive two-phase idempotency-key designs need.
      guaranteed to have already resolved (commit or rollback) — this
      call's own empty transaction rolls back, then a plain,
      non-transactional read of the existing row follows: hash mismatch →
-     422 (`idempotency-key-reused`); hash match → replay the stored
+     422 (`idempotency-key-reused`; 409 since ADR 0049); hash match → replay the stored
      response verbatim, never calling the real handler.
    - A panic from the wrapped handler rolls back the transaction (no
      idempotency row, no domain write survives) and re-panics so the
@@ -125,7 +129,7 @@ naive two-phase idempotency-key designs need.
 ### `Server.IdempotencyPool`
 
 `inboundhttp.Server` gained an `IdempotencyPool *pgxpool.Pool` field.
-`NewRouter` wraps `POST /stock/receive` and `POST /reservations` with
+`NewRouter` wraps `POST /stock-receipts` and `POST /reservations` with
 `r.With(RequireIdempotencyKey(s.IdempotencyPool))` only when
 `IdempotencyPool != nil`; a nil pool (in-memory / no-`DATABASE_URL`
 configuration) leaves both routes unprotected, exactly this codebase's
@@ -138,11 +142,11 @@ recover the concrete pool) so the composition root can wire it onto
 
 ## Scope: which endpoints, and why not more
 
-Only `POST /stock/receive` and `POST /reservations` — this service's
+Only `POST /stock-receipts` and `POST /reservations` — this service's
 only two endpoints that mint a new server-generated resource identity on
 every call. Deliberately NOT applied to:
 
-- `POST /stock/stow` — also creates a `StockUnit`, but is driven by a
+- `POST /stowages` — also creates a `StockUnit`, but is driven by a
   physical item-scan + location-scan workflow where the caller does not
   retry blind the way an upstream HTTP client does; left out of v1 scope
   per the same judgment call order-management's ADR 0023 documents for
@@ -151,7 +155,7 @@ every call. Deliberately NOT applied to:
 - `PUT /products/{sku}/classification` — idempotent by HTTP semantics
   already (a PUT to the same URI with the same body is a no-op replay by
   definition).
-- `DELETE /reservations/{id}`, `POST /reservations/{id}/confirm-pick` —
+- `DELETE /reservations/{id}`, `POST /reservations/{id}/pick-confirmations` —
   act on a caller-supplied, already-existing id; a retry re-targets the
   same resource rather than risking a duplicate create.
 
@@ -172,7 +176,7 @@ it instead of opening a second one.
 
 - Both protected endpoints now require callers to generate and send an
   `Idempotency-Key` header — a breaking contract change for any existing
-  caller of `POST /stock/receive` / `POST /reservations` that does not
+  caller of `POST /stock-receipts` / `POST /reservations` that does not
   yet send one (it will get a 400). No caller of this service exists
   outside this fleet today; this is an accepted, one-time contract
   tightening.
@@ -184,7 +188,7 @@ it instead of opening a second one.
 - **Contract documentation.** The header is documented in
   `apis/openapi.yaml` as the reusable `IdempotencyKey` parameter on both
   routes, with the `400 idempotency-key-required` and
-  `422 idempotency-key-reused` problems as response examples. It is
+  `422 idempotency-key-reused` problems (409 since ADR 0049) as response examples. It is
   declared `required: false` in the schema only because the in-memory
   development mode (which the Schemathesis contract run boots) does not
   enforce it; with Postgres — every deployment — it is mandatory.
@@ -232,7 +236,7 @@ it instead of opening a second one.
   scenarios (6 per protected route — fresh key creates the resource;
   replay with identical key+body returns the byte-identical cached
   response with no duplicate row / no re-execution of the handler; same
-  key + different body → 422; missing header → 400; N real goroutines
+  key + different body → 422 (409 since ADR 0049); missing header → 400; N real goroutines
   racing the same key+body → exactly one resource row created; a
   business-validation error response is itself cached and replayed
   verbatim on retry) — all green.

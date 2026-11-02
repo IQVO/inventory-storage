@@ -67,7 +67,7 @@ four repos ship in any order. This record is this service's part.
    body. A replay with the **same key and an identical body** (including the same
    `lineNo`) still returns the cached response byte for byte. **Adding `lineNo` to a
    request whose key was first used without it is a different body, so it answers
-   `422 idempotency-key-reused`.** That is correct and expected, not a regression: the
+   `409 idempotency-key-reused` (422 until ADR 0049).** That is correct and expected, not a regression: the
    body really is different, and order-management derives a fresh key per attempt
    (`res-<order>-line-<n>-att-<k>`), so a client that starts sending `lineNo` is sending
    new attempts. A client that wants to attach the line to an in-flight attempt uses a
@@ -127,8 +127,8 @@ four repos ship in any order. This record is this service's part.
   and per event.
 - Rollout order is free: a new consumer with old events/reservations counts; an old
   consumer ignores `line_no` (it decodes only the fields it knows) and counts.
-- A client that starts sending `lineNo` mid-flight can see one `422
-  idempotency-key-reused` for a key it had already used without it; the fix is a new
+- A client that starts sending `lineNo` mid-flight can see one `409
+  idempotency-key-reused` (422 until ADR 0049) for a key it had already used without it; the fix is a new
   key (decision 4).
 - Short picks are still not modelled (a Task has no quantity). Per-line identity makes
   them expressible later; that needs per-line quantities upstream and a business rule

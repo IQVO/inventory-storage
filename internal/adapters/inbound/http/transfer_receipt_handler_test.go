@@ -140,7 +140,7 @@ func TestTransferReceiptEndpoint_StageThenStow(t *testing.T) {
 	}
 
 	// Stow.
-	rec = postJSON(t, ts.handler, "/transfers/tl-1/stow", map[string]any{
+	rec = postJSON(t, ts.handler, "/transfers/tl-1/stowages", map[string]any{
 		"bins": []map[string]any{{"binId": "BIN-D1", "quantity": 5}},
 	})
 	if rec.Code != http.StatusOK {
@@ -217,7 +217,7 @@ func TestTransferStowEndpoint_WrongSiteBinIs409(t *testing.T) {
 		t.Fatalf("stage = %d: %s", rec.Code, rec.Body.String())
 	}
 
-	rec := postJSON(t, ts.handler, "/transfers/tl-1/stow", map[string]any{
+	rec := postJSON(t, ts.handler, "/transfers/tl-1/stowages", map[string]any{
 		"bins": []map[string]any{{"binId": "BIN-OTHER", "quantity": 5}},
 	})
 	if rec.Code != http.StatusConflict {
@@ -229,7 +229,7 @@ func TestTransferStowEndpoint_StowBeforeStageIs409(t *testing.T) {
 	ts := newTransferServer()
 	ts.seedSiteBin(t, "BIN-D1", "SITE-DEST", 10)
 
-	rec := postJSON(t, ts.handler, "/transfers/tl-none/stow", map[string]any{
+	rec := postJSON(t, ts.handler, "/transfers/tl-none/stowages", map[string]any{
 		"bins": []map[string]any{{"binId": "BIN-D1", "quantity": 5}},
 	})
 	if rec.Code != http.StatusConflict {
@@ -253,9 +253,9 @@ func TestTransferEndpoints_RejectBadScalarsWithBadRequest(t *testing.T) {
 			map[string]any{"transferId": "tr-1", "destinationSiteId": "SITE-DEST", "sku": "SKU-T", "receivedQuantity": 0}},
 		{"negative received quantity", "/transfers/tl-1/receipt", "quantity-not-positive",
 			map[string]any{"transferId": "tr-1", "destinationSiteId": "SITE-DEST", "sku": "SKU-T", "receivedQuantity": -1}},
-		{"zero bin quantity", "/transfers/tl-1/stow", "quantity-not-positive",
+		{"zero bin quantity", "/transfers/tl-1/stowages", "quantity-not-positive",
 			map[string]any{"bins": []map[string]any{{"binId": "BIN-D1", "quantity": 0}}}},
-		{"negative bin quantity", "/transfers/tl-1/stow", "quantity-not-positive",
+		{"negative bin quantity", "/transfers/tl-1/stowages", "quantity-not-positive",
 			map[string]any{"bins": []map[string]any{{"binId": "BIN-D1", "quantity": -3}}}},
 	}
 	for _, tc := range cases {

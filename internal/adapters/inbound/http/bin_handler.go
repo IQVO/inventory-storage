@@ -8,44 +8,9 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
+	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
-
-func (s *Server) handleRunCycleCount(w http.ResponseWriter, r *http.Request) {
-	binIDParam := chi.URLParam(r, "binId")
-	binID, err := shared.NewBinId(binIDParam)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	var req cycleCountRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.CountedQuantity == nil {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"counted-quantity-required", "countedQuantity is required"}, "countedQuantity must be present; an explicit 0 is a valid empty-bin count, omitting it is not", r.URL.Path)
-		return
-	}
-	countedQty, err := shared.NewQuantity(int(*req.CountedQuantity))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	result, err := s.RunCycleCount.Execute(r.Context(), binID, countedQty)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, cycleCountResponse{
-		BinID:       result.BinID.String(),
-		CountedQty:  result.CountedQty.Int(),
-		SystemQty:   result.SystemQty.Int(),
-		Discrepancy: result.Discrepancy,
-	})
-}
 
 // handleRegisterBin backs PUT /bins/{binId}. It is idempotent and
 // declarative: the body states the desired capacity and the response is
@@ -110,4 +75,13 @@ func (s *Server) handleGetBin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toBinResponse(bin))
+}
+
+func toBinResponse(b *location.Bin) binResponse {
+	return binResponse{
+		BinID:     b.ID().String(),
+		Capacity:  b.Capacity().Int(),
+		Occupied:  b.Occupied().Int(),
+		Available: b.Available().Int(),
+	}
 }

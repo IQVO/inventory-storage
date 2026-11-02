@@ -1,5 +1,5 @@
 # Derived from:
-#   - apis/openapi.yaml — POST /bins/{binId}/cycle-count: 400
+#   - apis/openapi.yaml — POST /bins/{binId}/cycle-counts: 400
 #     counted-quantity-required (an explicit 0 is valid, omitting it is not),
 #     422 negative-quantity; a shortfall marks "whichever StockUnits cover the
 #     difference" fully Unlocated and publishes ItemUnlocated per unit touched.

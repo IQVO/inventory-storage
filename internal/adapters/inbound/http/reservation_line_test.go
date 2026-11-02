@@ -17,7 +17,7 @@ func seededLineServer(t *testing.T) testServer {
 	t.Helper()
 	ts := newTestServer()
 	ts.seedBin(t, "A-1-1", 30)
-	ts.do(t, http.MethodPost, "/stock/stow", map[string]any{"sku": "SKU-1", "quantity": 30, "binId": "A-1-1"})
+	ts.do(t, http.MethodPost, "/stowages", map[string]any{"sku": "SKU-1", "quantity": 30, "binId": "A-1-1"})
 	return ts
 }
 
@@ -39,10 +39,13 @@ func TestReserveStock_Endpoint_LineNo_StoredAndReturned(t *testing.T) {
 	}
 
 	get := ts.do(t, http.MethodGet, "/reservations?demandRef=order-1", nil)
-	var list []lineReservation
-	if err := json.Unmarshal(get.Body.Bytes(), &list); err != nil {
+	var page struct {
+		Items []lineReservation `json:"items"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &page); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
+	list := page.Items
 	if len(list) != 1 || list[0].LineNo == nil || *list[0].LineNo != 2 {
 		t.Fatalf("GET by demandRef = %s, want one reservation with lineNo 2", get.Body.String())
 	}

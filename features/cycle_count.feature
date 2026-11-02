@@ -27,7 +27,7 @@ Feature: Cycle count
     And the domain event "ItemUnlocated" was published
     And the Usable inventory for SKU "SKU-C" is 0
 
-  # Derived from apis/openapi.yaml — POST /bins/{binId}/cycle-count
+  # Derived from apis/openapi.yaml — POST /bins/{binId}/cycle-counts
   # (runCycleCount): "An overage (counted > system) is reported as a
   # DiscrepancyDetected/CycleCountCompleted(discrepancy=true) pair for a
   # separate receiving/audit process to reconcile — this endpoint does not

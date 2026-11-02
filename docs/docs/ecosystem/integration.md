@@ -37,9 +37,9 @@ each edge behaves when the other side fails, as implemented here.
 | pick-face-replenishment | Kafka `warehouse.inventory.events`: `BinStockLevelChanged` ([ADR 0040](/docs/adr/0040)), `StockRelocated` | Same outbox guarantee. |
 | exception-management | Kafka `warehouse.inventory.events`: `bin.DiscrepancyDetected`, `stock.ItemUnlocated` (promoted [ADR 0043](/docs/adr/0043)) | Same outbox guarantee. |
 | returns-processing | Kafka `warehouse.inventory.events`: `stock.ItemStowed` (promoted [ADR 0043](/docs/adr/0043)) | Same outbox guarantee. |
-| order-management | REST `POST /reservations` (`Idempotency-Key`), `DELETE /reservations/{id}` | Synchronous: `409 insufficient-usable` / `concurrent-modification`, `422 idempotency-key-reused`. A retried POST with the same key and body replays the stored response. |
+| order-management | REST `POST /reservations` (`Idempotency-Key`), `DELETE /reservations/{id}` | Synchronous: `409 insufficient-usable` / `concurrent-modification`, `409 idempotency-key-reused` (told apart from a business 409 by its problem type). A retried POST with the same key and body replays the stored response with `Idempotency-Replayed: true`. |
 | network-fulfillment | REST `GET /inventory/{sku}/usable` | Read-only; no side effects. |
-| warehouse-ops-agent | REST `GET /reservations?demandRef=`; reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP `check_availability`, `get_bin_occupancy` ([MCP tools](../mcp/tools.md)) | Read-only. MCP sessions are per process; reports reflect the projector's lag. |
+| warehouse-ops-agent | REST `GET /reservations?demandRef=` (answers `{items, nextCursor}`; loop on `nextCursor`); reports REST `GET /reports/flow-accuracy`, `/reports/flow-accuracy/freshness`; MCP `check_availability`, `get_bin_occupancy` ([MCP tools](../mcp/tools.md)) | Read-only. MCP sessions are per process; reports reflect the projector's lag. |
 | warehouse-console | the inventory micro-frontend (`web/`) calls this REST API through Kong; CORS allows `CORS_ALLOWED_ORIGINS` | Standard RFC 7807 problems. |
 | inventory-projector (this repo) | Kafka `warehouse.inventory.analytics` | Analytics only; invalid CloudEvents are skipped, no DLQ. |
 
@@ -146,12 +146,12 @@ consumes (under the mandatory `INBOUND_RECEIPT_CONSUMER_GROUP`)
 `warehouse.inbound-receiving.events` (key = ASN number). A `condition=Good`
 line runs the existing `ReceiveStock` use case, in one transaction with the
 CloudEvents-id claim in `processed_events`: the same `StockReceived` as
-`POST /stock/receive`, the quantity staged and not yet usable, stow still the RF
+`POST /stock-receipts`, the quantity staged and not yet usable, stow still the RF
 action. A `Damaged` line is not booked in v1 (INFO log,
 `inventory.inbound_receipt_units{outcome=damaged_not_booked}`). Every other
 inbound-receiving type is committed past; a message that is not a valid
 CloudEvent, or carries an empty `sku`, a non-positive `quantity` or an unknown
-`condition`, is logged and committed past. `POST /stock/receive` is unchanged.
+`condition`, is logged and committed past. `POST /stock-receipts` is unchanged.
 See [ADR 0037](/docs/adr/0037).
 
 | Env var | Default | Purpose |

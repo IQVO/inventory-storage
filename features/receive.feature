@@ -1,5 +1,5 @@
 # Derived from:
-#   - apis/openapi.yaml — POST /stock/receive (receiveStock): "Stages a
+#   - apis/openapi.yaml — POST /stock-receipts (receiveStock): "Stages a
 #     quantity of a SKU as received into the building (publishes
 #     StockReceived) without assigning it to a bin yet. This does NOT
 #     create a StockUnit aggregate ... The durable, addressable record only

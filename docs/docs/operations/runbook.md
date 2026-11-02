@@ -285,7 +285,7 @@ stock, so the ledger is now out of step with the bins:
    (`reason` `SLOTTING`, `sourceRef` = the `relocation_ref`) under a fresh
    `Idempotency-Key`; do not do both.
 3. If the stock really is somewhere else, cycle-count both bins
-   (`POST /bins/{binId}/cycle-count`) instead.
+   (`POST /bins/{binId}/cycle-counts`) instead.
 
 Until fulfillment-execution sends the additive fields, every RELOCATE
 completion lands here with `malformed relocation task: sku: ...`; that is

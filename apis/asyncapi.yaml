@@ -76,7 +76,7 @@ info:
     from `warehouse.inbound-receiving.events` (channel below, ADR 0037): a
     line with `condition=Good` is booked as a staged receipt through the
     existing ReceiveStock use case (the same `StockReceived` as
-    `POST /stock/receive`, analytics topic; quantity staged, stow stays the RF
+    `POST /stock-receipts`, analytics topic; quantity staged, stow stays the RF
     action); `Damaged` is not booked in v1. And it consumes
     returns-processing's `ReturnLineStaged` from
     `warehouse.returns-processing.events` (channel below, ADR 0044): the
@@ -431,7 +431,7 @@ channels:
         SAME transaction as the existing ReceiveStock use case, which raises
         `StockReceived` through the outbox (analytics topic): the units are
         staged and not yet usable, and stow stays the RF action (item scan plus
-        location scan). `POST /stock/receive` is unchanged and keeps working
+        location scan). `POST /stock-receipts` is unchanged and keeps working
         for ad-hoc receipts. `condition=Damaged` is NOT booked in v1
         (quarantine is a later ADR): it is claimed, logged at INFO and counted
         in `inventory.inbound_receipt_units{outcome=damaged_not_booked}`.
@@ -472,7 +472,7 @@ channels:
         provenance record — the mirror of `inbound-receipt-line`) in the SAME
         transaction as the existing ReceiveStock use case — the SAME
         staged-receipt seam an inbound receipt line and
-        `POST /stock/receive` drive — which raises `StockReceived` through
+        `POST /stock-receipts` drive — which raises `StockReceived` through
         the outbox (analytics topic): the units are staged and not yet
         usable, and stow stays the RF action (item scan plus location scan).
         Return context (`receipt_id`, `rma_id`, `disposition_id`, `site_id`,
@@ -1507,7 +1507,7 @@ components:
       summary: A staged transfer receipt was placed into destination bins — destination usable rose, exactly once.
       description: >-
         Raised by the StowTransferStock use case (ADR 0033 — POST
-        /transfers/{transferLineId}/stow): the ONLY path that raises the
+        /transfers/{transferLineId}/stowages): the ONLY path that raises the
         destination site's usable stock for a transfer. One StockUnit per
         bin leg was created AT the destination site
         (NewStockUnitAtSite), every bin verified to belong to that

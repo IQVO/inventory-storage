@@ -43,3 +43,16 @@ func (uc *GetReservationsByDemandRef) Execute(ctx context.Context, demandRef str
 	}
 	return expireAllIfDue(ctx, uc.UnitOfWork, uc.Levels, uc.Stock, uc.Reservations, uc.Events, uc.Clock, results)
 }
+
+// Page is the keyset-paged read behind GET /reservations?demandRef=: up to
+// fetch reservations of demandRef strictly after the position (nil = from the
+// start), in (created_at, id) order, each lazily expired exactly like Execute.
+// The caller passes page.FetchSize(limit) so it can tell whether a next page
+// exists.
+func (uc *GetReservationsByDemandRef) Page(ctx context.Context, demandRef string, after *reservation.PageAfter, fetch int) ([]*reservation.Reservation, error) {
+	results, err := uc.Reservations.FindByDemandRefAfter(ctx, demandRef, after, fetch)
+	if err != nil {
+		return nil, err
+	}
+	return expireAllIfDue(ctx, uc.UnitOfWork, uc.Levels, uc.Stock, uc.Reservations, uc.Events, uc.Clock, results)
+}

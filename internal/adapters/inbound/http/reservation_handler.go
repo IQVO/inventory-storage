@@ -5,77 +5,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/claudioed/inventory-storage/internal/adapters/inbound/http/page"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 )
-
-func (s *Server) handleReceiveStock(w http.ResponseWriter, r *http.Request) {
-	var req receiveStockRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-
-	sku, err := shared.NewSKU(req.SKU)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	qty, err := shared.NewPositiveQuantity(req.Quantity)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	receipt, err := s.ReceiveStock.Execute(r.Context(), sku, qty)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	// 202 Accepted, not 201 Created: a staged receipt has no durable
-	// identity of its own (no ID, no GET route) — it is an acknowledgment
-	// that stock has been accepted into the building, not yet a queryable
-	// resource. The addressable resource (a StockUnit) is created later, at
-	// StowStock.
-	writeJSON(w, http.StatusAccepted, stagedReceiptResponse{
-		SKU:        receipt.SKU.String(),
-		Quantity:   receipt.Quantity.Int(),
-		ReceivedAt: receipt.ReceivedAt.Format(timeFormat),
-	})
-}
-
-func (s *Server) handleStowStock(w http.ResponseWriter, r *http.Request) {
-	var req stowStockRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-
-	sku, err := shared.NewSKU(req.SKU)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	qty, err := shared.NewPositiveQuantity(req.Quantity)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	binID, err := shared.NewBinId(req.BinID)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	unit, err := s.StowStock.Execute(r.Context(), sku, qty, binID)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	w.Header().Set("Location", "/stock/"+unit.ID())
-	writeJSON(w, http.StatusCreated, toStockUnitResponse(unit))
-}
 
 func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 	var req reserveStockRequest
@@ -152,27 +86,33 @@ func (s *Server) handleRevokeReservation(w http.ResponseWriter, r *http.Request)
 // handleGetReservationsByDemandRef backs GET /reservations?demandRef=<ref>.
 // demandRef is required (400 if missing/empty) since this is a lookup-by-key
 // endpoint, not a list-all — there is no meaningful "give me everything"
-// response here.
+// response here. The answer is one keyset page, {items, nextCursor}, ordered
+// by (created_at, id); `demandRef` is repeated on every page request.
 func (s *Server) handleGetReservationsByDemandRef(w http.ResponseWriter, r *http.Request) {
 	demandRef := r.URL.Query().Get("demandRef")
 	if demandRef == "" {
 		writeProblem(w, http.StatusBadRequest, problemInfo{"missing-demand-ref", "demandRef query parameter is required"}, "demandRef query parameter must not be empty", r.URL.Path)
 		return
 	}
+	limit, pos, ok := pageParams(w, r, "demandRef")
+	if !ok {
+		return
+	}
+	after, err := reservationAfter(pos)
+	if err != nil {
+		writeInvalidCursor(w, r)
+		return
+	}
 
-	reservations, err := s.GetReservationsByDemandRef.Execute(r.Context(), demandRef)
+	reservations, err := s.GetReservationsByDemandRef.Page(r.Context(), demandRef, after, page.FetchSize(limit))
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-
-	responses := make([]reservationResponse, 0, len(reservations))
-	for _, res := range reservations {
-		responses = append(responses, toReservationResponse(res))
-	}
-	writeJSON(w, http.StatusOK, responses)
+	writeJSON(w, http.StatusOK, pageOf(reservations, limit, reservationPosition, toReservationResponse))
 }
 
+// handleConfirmPick backs POST /reservations/{id}/pick-confirmations.
 func (s *Server) handleConfirmPick(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := s.ConfirmPick.Execute(r.Context(), id); err != nil {
@@ -182,28 +122,21 @@ func (s *Server) handleConfirmPick(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleGetUsable(w http.ResponseWriter, r *http.Request) {
-	skuParam := chi.URLParam(r, "sku")
-	sku, err := shared.NewSKU(skuParam)
-	if err != nil {
-		writeError(w, r, err)
-		return
+func toReservationResponse(res *reservation.Reservation) reservationResponse {
+	allocations := make([]allocationResponse, 0, len(res.Allocations()))
+	for _, a := range res.Allocations() {
+		allocations = append(allocations, allocationResponse{StockUnitID: a.StockUnitID, BinID: a.BinID.String(), Quantity: a.Quantity.Int()})
 	}
-
-	owner, err := shared.NewOwnerRef(r.URL.Query().Get("ownerRef"))
-	if err != nil {
-		writeError(w, r, err)
-		return
+	return reservationResponse{
+		ID:          res.ID(),
+		SKU:         res.SKU().String(),
+		Quantity:    res.Quantity().Int(),
+		DemandRef:   res.DemandRef(),
+		OwnerRef:    res.OwnerRef().String(),
+		LineNo:      res.LineNo(),
+		Status:      string(res.Status()),
+		Allocations: allocations,
+		CreatedAt:   res.CreatedAt().Format(timeFormat),
+		ExpiresAt:   res.ExpiresAt().Format(timeFormat),
 	}
-
-	usable, err := s.GetUsable.ExecuteFor(r.Context(), sku, owner)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, usableInventoryResponse{
-		SKU: usable.SKU.String(), OwnerRef: usable.OwnerRef.String(), Usable: usable.Usable.Int(),
-		LooseUsable: usable.LooseUsable.Int(), ReservableCases: usable.ReservableCases,
-	})
 }

@@ -35,6 +35,8 @@ Its aggregates are **StockUnit** (a quantity of a SKU at a specific bin — ever
 
 Out of this service's boundary: it does not pick, pack, ship, route associates, or manage stations/tasks/labor (that is Work Planning / fulfillment-execution); and it does not decide *what* to receive or forecast demand. Bins are registered declaratively by inventory control via `PUT /bins/{binId}` (ADR 0025); every reservation allocation names the bin to pick from (`allocations[].binId`). Error responses across this API use RFC 7807 (`application/problem+json`) Problem Details.
 
+This API follows the fleet REST API guideline (ADR 0049): URLs name things (commands are noun sub-resources such as `POST /stowages` or `POST /reservations/{id}/pick-confirmations`), EVERY `POST` is behind the Idempotency-Key middleware (a retry replays the stored answer with the response header `Idempotency-Replayed: true`; the same key with a different method, path or body is 409 `idempotency-key-reused`; a missing key is 400 `idempotency-key-required`), and every collection `GET` is keyset-paginated as `{items, nextCursor}` with `limit` and `cursor`.
+
 
 <div
   style={{"display":"flex","flexDirection":"column","marginBottom":"var(--ifm-paragraph-margin-bottom)"}}
