@@ -1,6 +1,7 @@
 package product
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -34,7 +35,7 @@ func TestParseHandlingTag(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := ParseHandlingTag(tt.input)
-			if err != tt.wantErr {
+			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
 			}
 			if got != tt.wantTag {
@@ -60,7 +61,7 @@ func TestParseTemperatureClass(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := ParseTemperatureClass(tt.input)
-			if err != tt.wantErr {
+			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
 			}
 			if got != tt.want {
@@ -193,7 +194,7 @@ func runClassificationCase(t *testing.T, sku string, tags []HandlingTag, temp Te
 	t.Helper()
 	s := shared.SKU(sku)
 	c, err := New(s, tags, temp, dot)
-	if err != wantErr {
+	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected error %v, got %v", wantErr, err)
 	}
 	if wantErr != nil {
@@ -298,7 +299,7 @@ func TestParseDOTHazardClass_Boundaries(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got, err := ParseDOTHazardClass(tt.value)
-		if err != tt.wantErr || got != tt.want {
+		if !errors.Is(err, tt.wantErr) || got != tt.want {
 			t.Fatalf("ParseDOTHazardClass(%d) = (%v, %v), want (%v, %v)", tt.value, got, err, tt.want, tt.wantErr)
 		}
 	}

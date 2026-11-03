@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
@@ -75,7 +76,7 @@ func TestStowStock_ExceedsBinCapacity_Rejected(t *testing.T) {
 	uc := &usecases.StowStock{Stock: e.Stock, Locations: e.Locations, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 6), mustBinID(t, "A-1-1"))
-	if err != location.ErrBinFull {
+	if !errors.Is(err, location.ErrBinFull) {
 		t.Fatalf("expected ErrBinFull, got %v", err)
 	}
 }
@@ -85,7 +86,7 @@ func TestStowStock_UnknownBin_Rejected(t *testing.T) {
 	uc := &usecases.StowStock{Stock: e.Stock, Locations: e.Locations, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), mustBinID(t, "A-1-1"))
-	if err != usecases.ErrBinNotFound {
+	if !errors.Is(err, usecases.ErrBinNotFound) {
 		t.Fatalf("expected ErrBinNotFound, got %v", err)
 	}
 }
@@ -96,7 +97,7 @@ func TestStowStock_LocationsFindByIDFails_PropagatesError(t *testing.T) {
 	uc := &usecases.StowStock{Stock: e.Stock, Locations: locs, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), mustBinID(t, "A-1-1"))
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -108,7 +109,7 @@ func TestStowStock_StockNextIDFails_PropagatesError(t *testing.T) {
 	uc := &usecases.StowStock{Stock: stockRepo, Locations: e.Locations, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), mustBinID(t, "A-1-1"))
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -120,7 +121,7 @@ func TestStowStock_LocationsSaveFails_PropagatesError(t *testing.T) {
 	uc := &usecases.StowStock{Stock: e.Stock, Locations: locs, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), mustBinID(t, "A-1-1"))
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -132,7 +133,7 @@ func TestStowStock_StockSaveFails_PropagatesError(t *testing.T) {
 	uc := &usecases.StowStock{Stock: stockRepo, Locations: e.Locations, Events: e.Events, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), mustBinID(t, "A-1-1"))
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -143,7 +144,7 @@ func TestStowStock_EventPublishFails_PropagatesError(t *testing.T) {
 	uc := &usecases.StowStock{Stock: e.Stock, Locations: e.Locations, Events: failingEvents{}, Clock: e.Clock}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 1), mustBinID(t, "A-1-1"))
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -237,7 +238,7 @@ func TestStowStock_Hazmat_NonHazmatZone_Rejected(t *testing.T) {
 	}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 5), mustBinID(t, "A-1-1"))
-	if err != usecases.ErrHazmatZoneRequired {
+	if !errors.Is(err, usecases.ErrHazmatZoneRequired) {
 		t.Fatalf("expected ErrHazmatZoneRequired, got %v", err)
 	}
 }
@@ -273,7 +274,7 @@ func TestStowStock_TemperatureSensitive_MismatchedClass_Rejected(t *testing.T) {
 	}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 5), mustBinID(t, "A-1-1"))
-	if err != usecases.ErrTemperatureClassMismatch {
+	if !errors.Is(err, usecases.ErrTemperatureClassMismatch) {
 		t.Fatalf("expected ErrTemperatureClassMismatch, got %v", err)
 	}
 }
@@ -309,7 +310,7 @@ func TestStowStock_ClassifiedSKU_TransportError_FailsClosed(t *testing.T) {
 	}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 5), mustBinID(t, "A-1-1"))
-	if err != usecases.ErrLocationClassificationUnavailable {
+	if !errors.Is(err, usecases.ErrLocationClassificationUnavailable) {
 		t.Fatalf("expected ErrLocationClassificationUnavailable, got %v", err)
 	}
 }
@@ -343,7 +344,7 @@ func TestStowStock_ClassificationsFindBySKUFails_PropagatesError(t *testing.T) {
 	}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 5), mustBinID(t, "A-1-1"))
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -388,7 +389,7 @@ func TestStowStock_Segregation_IncompatibleOccupant_Rejected(t *testing.T) {
 	}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 5), mustBinID(t, "A-1-1"))
-	if err != usecases.ErrHazmatClassIncompatible {
+	if !errors.Is(err, usecases.ErrHazmatClassIncompatible) {
 		t.Fatalf("expected ErrHazmatClassIncompatible, got %v", err)
 	}
 }
@@ -513,7 +514,7 @@ func TestStowStock_Segregation_FindByBinFails_PropagatesError(t *testing.T) {
 	}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 5), mustBinID(t, "A-1-1"))
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake, got %v", err)
 	}
 }
@@ -532,7 +533,7 @@ func TestStowStock_Segregation_IncomingClassificationLookupFails_PropagatesError
 	}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 5), mustBinID(t, "A-1-1"))
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake from incoming classification lookup, got %v", err)
 	}
 }
@@ -573,7 +574,7 @@ func TestStowStock_Segregation_OccupantClassificationLookupFails_PropagatesError
 	}
 
 	_, err := uc.Execute(context.Background(), mustSKU(t, "SKU-1"), mustQty(t, 5), mustBinID(t, "A-1-1"))
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake from occupant classification lookup, got %v", err)
 	}
 }

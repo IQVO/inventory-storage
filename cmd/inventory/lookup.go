@@ -63,7 +63,7 @@ func (noHandlingUnits) HandlingUnit(context.Context, shared.BinId) (container.Ha
 //     of the real-wiring scope and is retained as the rollback for "kafka".
 func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string, brokers []string, recorder resilience.StateRecorder, logger *slog.Logger) (locationLookupHandle, error) {
 	switch {
-	case strings.EqualFold(mode, "kafka"):
+	case strings.EqualFold(mode, modeKafka):
 		return kafkaLocationLookup(ctx, brokers, logger)
 
 	case strings.EqualFold(mode, "http"):
@@ -90,7 +90,7 @@ func kafkaLocationLookup(ctx context.Context, brokers []string, logger *slog.Log
 		return locationLookupHandle{}, err
 	}
 	logger.Info("location classification lookup configured",
-		"mode", "kafka", "topic", facilitycache.Topic, "brokers", brokers)
+		"mode", modeKafka, "topic", facilitycache.Topic, "brokers", brokers)
 
 	runDone := runFacilityCache(ctx, consumer, logger)
 	if err := awaitFacilityCacheReady(ctx, consumer, logger); err != nil {

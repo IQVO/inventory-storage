@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -84,7 +85,7 @@ func (r *ReservationRepo) FindByID(ctx context.Context, id string) (*reservation
 		SELECT sku, quantity, demand_ref, status, created_at, expires_at, version, line_no, COALESCE(owner_ref, '')
 		FROM reservations WHERE id = $1
 	`, id).Scan(&sku, &quantity, &demandRef, &status, &createdAt, &expiresAt, &version, &lineNo, &owner)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

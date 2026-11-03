@@ -2,6 +2,7 @@ package kafka_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -82,7 +83,7 @@ func TestPublisher_Encode_ReservationRevoked_UnknownReservation(t *testing.T) {
 	pub := kafka.NewPublisher(&fakeWriter{}, memory.NewReservationRepo())
 
 	event := shared.NewReservationRevoked(time.Now(), "does-not-exist")
-	if _, err := pub.Encode(context.Background(), event); err != kafka.ErrReservationNotFound {
+	if _, err := pub.Encode(context.Background(), event); !errors.Is(err, kafka.ErrReservationNotFound) {
 		t.Errorf("Encode error = %v, want ErrReservationNotFound", err)
 	}
 }

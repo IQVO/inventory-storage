@@ -57,7 +57,7 @@ func buildTransferAllocationConsumer(
 	logger *slog.Logger,
 	cfg config,
 	set adapterSet,
-) (transferConsumerHandle, error) {
+) transferConsumerHandle {
 	transfers := postgres.NewTransferAllocationRepo(set.pool)
 	clock := system.Clock{}
 	allocate := &usecases.AllocateTransferStock{
@@ -91,5 +91,5 @@ func buildTransferAllocationConsumer(
 				logger.Error("error closing transfer allocation consumer", "error", err)
 			}
 		},
-	}, nil
+	}
 }

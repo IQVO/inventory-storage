@@ -1,6 +1,7 @@
 package transfer_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -123,12 +124,12 @@ func TestReceipt_MarkStowed_RecordsLegsAndGuardsReplay(t *testing.T) {
 	}
 
 	// A second MarkStowed is the replay guard.
-	if err := r.MarkStowed(legs, stowedAt); err != transfer.ErrReceiptAlreadyStowed {
+	if err := r.MarkStowed(legs, stowedAt); !errors.Is(err, transfer.ErrReceiptAlreadyStowed) {
 		t.Fatalf("second MarkStowed err = %v, want ErrReceiptAlreadyStowed", err)
 	}
 	// Empty legs are refused.
 	fresh, _ := transfer.NewStagedReceipt("tr", "tl2", rSite(t, "SITE-D"), rSKU(t, "SKU-1"), "res-1", rQty(t, 5), rQty(t, 5), receiptAt)
-	if err := fresh.MarkStowed(nil, stowedAt); err != transfer.ErrStowLegsRequired {
+	if err := fresh.MarkStowed(nil, stowedAt); !errors.Is(err, transfer.ErrStowLegsRequired) {
 		t.Fatalf("empty-legs err = %v, want ErrStowLegsRequired", err)
 	}
 }
@@ -211,13 +212,13 @@ func TestNewException_MatchesIdenticalScan(t *testing.T) {
 
 func TestNewException_Validation(t *testing.T) {
 	// Validation: empty kind, empty line, negative quantity.
-	if _, err := transfer.NewException("tr", "tl", rSite(t, "SITE-D"), rSKU(t, "SKU-1"), rQty(t, 5), "", "d", receiptAt); err != transfer.ErrExceptionKindRequired {
+	if _, err := transfer.NewException("tr", "tl", rSite(t, "SITE-D"), rSKU(t, "SKU-1"), rQty(t, 5), "", "d", receiptAt); !errors.Is(err, transfer.ErrExceptionKindRequired) {
 		t.Fatalf("empty kind err = %v", err)
 	}
 	if _, err := transfer.NewException("tr", "", rSite(t, "SITE-D"), rSKU(t, "SKU-1"), rQty(t, 5), transfer.ExceptionUnknownTransfer, "d", receiptAt); err == nil {
 		t.Fatal("empty line id must be rejected")
 	}
-	if _, err := transfer.NewException("tr", "tl", rSite(t, "SITE-D"), rSKU(t, "SKU-1"), shared.Quantity(-1), transfer.ExceptionUnknownTransfer, "d", receiptAt); err != shared.ErrNegativeQuantity {
+	if _, err := transfer.NewException("tr", "tl", rSite(t, "SITE-D"), rSKU(t, "SKU-1"), shared.Quantity(-1), transfer.ExceptionUnknownTransfer, "d", receiptAt); !errors.Is(err, shared.ErrNegativeQuantity) {
 		t.Fatalf("negative quantity err = %v", err)
 	}
 	if _, err := transfer.NewException("tr", "tl", "", rSKU(t, "SKU-1"), rQty(t, 5), transfer.ExceptionUnknownTransfer, "d", receiptAt); err == nil {

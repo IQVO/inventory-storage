@@ -34,7 +34,7 @@ func buildReturnLineConsumer(
 	logger *slog.Logger,
 	cfg config,
 	set adapterSet,
-) (transferConsumerHandle, error) {
+) transferConsumerHandle {
 	book := &usecases.BookReturnLine{
 		Receive:         &usecases.ReceiveStock{Events: set.publisher, Clock: system.Clock{}, UnitOfWork: set.uow},
 		ProcessedEvents: postgres.NewProcessedEventRepo(set.pool),
@@ -60,5 +60,5 @@ func buildReturnLineConsumer(
 				logger.Error("error closing returns-processing return-line consumer", "error", err)
 			}
 		},
-	}, nil
+	}
 }

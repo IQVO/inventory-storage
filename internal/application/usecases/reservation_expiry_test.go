@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -242,7 +243,7 @@ func TestRevokeReservation_AfterExpiry_Rejected(t *testing.T) {
 	e.Clock.Advance(time.Hour + time.Second)
 
 	revokeUC := &usecases.RevokeReservation{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
-	if err := revokeUC.Execute(context.Background(), res.ID()); err != reservation.ErrAlreadyResolved {
+	if err := revokeUC.Execute(context.Background(), res.ID()); !errors.Is(err, reservation.ErrAlreadyResolved) {
 		t.Fatalf("expected ErrAlreadyResolved (already lazily expired), got %v", err)
 	}
 
@@ -271,7 +272,7 @@ func TestConfirmPick_AfterExpiry_Rejected(t *testing.T) {
 	e.Clock.Advance(time.Hour + time.Second)
 
 	pickUC := &usecases.ConfirmPick{Stock: e.Stock, Locations: e.Locations, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
-	if err := pickUC.Execute(context.Background(), res.ID()); err != reservation.ErrAlreadyResolved {
+	if err := pickUC.Execute(context.Background(), res.ID()); !errors.Is(err, reservation.ErrAlreadyResolved) {
 		t.Fatalf("expected ErrAlreadyResolved (already lazily expired), got %v", err)
 	}
 }
@@ -348,7 +349,7 @@ func TestGetReservationsByDemandRef_AfterExpiry_StockFindByIDFails_PropagatesErr
 		Stock:        &failingStockRepo{delegate: e.Stock, failFindByID: true},
 		Reservations: e.Reservations, Events: e.Events, Clock: e.Clock,
 	}
-	if _, err := getUC.Execute(context.Background(), "order-1"); err != errFake {
+	if _, err := getUC.Execute(context.Background(), "order-1"); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake from stock FindByID inside the release loop, got %v", err)
 	}
 }
@@ -360,7 +361,7 @@ func TestGetReservationsByDemandRef_AfterExpiry_MissingStockUnit_Rejected(t *tes
 	})
 	getUC := &usecases.GetReservationsByDemandRef{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
 
-	if _, err := getUC.Execute(context.Background(), "order-missing-unit"); err != usecases.ErrStockUnitNotFound {
+	if _, err := getUC.Execute(context.Background(), "order-missing-unit"); !errors.Is(err, usecases.ErrStockUnitNotFound) {
 		t.Fatalf("expected ErrStockUnitNotFound for an allocation pointing at a missing unit, got %v", err)
 	}
 }
@@ -380,7 +381,7 @@ func TestGetReservationsByDemandRef_AfterExpiry_ReleaseFails_PropagatesReleaseEr
 	})
 	getUC := &usecases.GetReservationsByDemandRef{Stock: e.Stock, Reservations: e.Reservations, Events: e.Events, Clock: e.Clock}
 
-	if _, err := getUC.Execute(context.Background(), "order-overallocated"); err != stock.ErrInsufficientReserved {
+	if _, err := getUC.Execute(context.Background(), "order-overallocated"); !errors.Is(err, stock.ErrInsufficientReserved) {
 		t.Fatalf("expected ErrInsufficientReserved from ReleaseReservation, got %v", err)
 	}
 }
@@ -400,7 +401,7 @@ func TestGetReservationsByDemandRef_AfterExpiry_StockSaveFails_PropagatesError(t
 		Events:       e.Events,
 		Clock:        e.Clock,
 	}
-	if _, err := getUC.Execute(context.Background(), "order-1"); err != errFake {
+	if _, err := getUC.Execute(context.Background(), "order-1"); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake from stock Save inside the release loop, got %v", err)
 	}
 }
@@ -419,7 +420,7 @@ func TestGetReservationsByDemandRef_AfterExpiry_ReservationSaveFails_PropagatesE
 		Reservations: &failingReservationRepo{delegate: e.Reservations, failSave: true},
 		Events:       e.Events, Clock: e.Clock,
 	}
-	if _, err := getUC.Execute(context.Background(), "order-1"); err != errFake {
+	if _, err := getUC.Execute(context.Background(), "order-1"); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake from reservation Save after Expire(), got %v", err)
 	}
 
@@ -443,7 +444,7 @@ func TestGetReservationsByDemandRef_AfterExpiry_EventPublishFails_PropagatesErro
 	e.Clock.Advance(time.Hour + time.Second)
 
 	getUC := &usecases.GetReservationsByDemandRef{Stock: e.Stock, Reservations: e.Reservations, Events: failingEvents{}, Clock: e.Clock}
-	if _, err := getUC.Execute(context.Background(), "order-1"); err != errFake {
+	if _, err := getUC.Execute(context.Background(), "order-1"); !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake from ReservationExpired publish, got %v", err)
 	}
 }
@@ -483,7 +484,7 @@ func TestGetReservationsByDemandRef_MixedResults_ExpiryFailure_AbortsWholeRead(t
 		Clock:        e.Clock,
 	}
 	results, err := getUC.Execute(context.Background(), "order-mixed")
-	if err != errFake {
+	if !errors.Is(err, errFake) {
 		t.Fatalf("expected errFake to abort the whole read, got %v", err)
 	}
 	if results != nil {

@@ -62,7 +62,7 @@ func (r *TransferAllocationRepo) FindByTransferLineID(ctx context.Context, trans
 		FROM transfer_allocations
 		WHERE transfer_line_id = $1
 	`, transferLineID).Scan(&transferID, &originSite, &sku, &requestedQuantity, &reservationID, &outcome, &reason, &decidedAt)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

@@ -112,23 +112,12 @@ func run(ctx context.Context) error {
 	// TransferAllocationRequested and runs AllocateTransferStock. Runs
 	// under the SAME lookupCtx, so shutdown's stopLookup cancel unblocks
 	// both consumer loops. Always on.
-	transfer, err := buildTransferAllocationConsumer(lookupCtx, logger, cfg, adapters)
-	if err != nil {
-		stopLookup()
-		lookup.close()
-		return err
-	}
+	transfer := buildTransferAllocationConsumer(lookupCtx, logger, cfg, adapters)
 
 	// product-master classification consumer (ADR 0034): keeps the local
 	// product_classifications copy StowStock reads in step with
 	// product-master. Same lookupCtx, so shutdown drains it with the rest.
-	productMaster, err := buildProductMasterConsumer(lookupCtx, logger, cfg, adapters)
-	if err != nil {
-		stopLookup()
-		lookup.close()
-		stopTransferConsumer(logger, transfer)
-		return err
-	}
+	productMaster := buildProductMasterConsumer(lookupCtx, logger, cfg, adapters)
 
 	// TaskCompleted confirm-pick (ADR 0035) and inbound-receiving receipt
 	// (ADR 0037) consumers, on the same lookupCtx; see

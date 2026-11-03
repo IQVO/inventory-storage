@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -40,7 +41,7 @@ func (r *ReceiptBookingRepo) Booked(ctx context.Context, receiptID string, lineN
 	var booked int
 	err := querierFrom(ctx, r.pool).QueryRow(ctx,
 		`SELECT booked_eaches FROM receipt_line_bookings WHERE receipt_id = $1 AND line_no = $2`, receiptID, lineNo).Scan(&booked)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}
 	if err != nil {
@@ -180,7 +181,7 @@ func (r *PackagingViewRepo) findOne(ctx context.Context, query string, args ...a
 	var to *time.Time
 	var version int64
 	err := querierFrom(ctx, r.pool).QueryRow(ctx, query, args...).Scan(&gtin, &sku, &level, &units, &child, &from, &to, &version)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

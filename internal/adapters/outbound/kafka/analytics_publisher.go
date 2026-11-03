@@ -195,37 +195,37 @@ func (p *AnalyticsPublisher) reservationSKU(ctx context.Context, reservationID s
 func (p *AnalyticsPublisher) analyticsEventFor(ctx context.Context, e shared.DomainEvent) (analyticsEvent, bool) {
 	switch ev := e.(type) {
 	case shared.StockReceived:
-		return analyticsEvent{entity: "stock", subject: ev.SKU.String(), key: ev.SKU.String(), data: map[string]any{
-			"sku":      ev.SKU.String(),
-			"quantity": ev.Quantity.Int(),
+		return analyticsEvent{entity: stockEntity, subject: ev.SKU.String(), key: ev.SKU.String(), data: map[string]any{
+			keySKU:      ev.SKU.String(),
+			keyQuantity: ev.Quantity.Int(),
 		}}, true
 	case shared.ItemStowed:
-		return analyticsEvent{entity: "stock", subject: ev.SKU.String(), key: ev.SKU.String(), data: map[string]any{
-			"sku":      ev.SKU.String(),
-			"bin_id":   ev.BinID.String(),
-			"quantity": ev.Quantity.Int(),
+		return analyticsEvent{entity: stockEntity, subject: ev.SKU.String(), key: ev.SKU.String(), data: map[string]any{
+			keySKU:      ev.SKU.String(),
+			keyBinID:    ev.BinID.String(),
+			keyQuantity: ev.Quantity.Int(),
 		}}, true
 	case shared.StockPicked:
-		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
-			"sku":            ev.SKU.String(),
-			"reservation_id": ev.ReservationID,
-			"quantity":       ev.Quantity.Int(),
+		return analyticsEvent{entity: reservationEntity, subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
+			keySKU:           ev.SKU.String(),
+			keyReservationID: ev.ReservationID,
+			keyQuantity:      ev.Quantity.Int(),
 		}}, true
 	case shared.StockReserved:
-		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
-			"sku":            ev.SKU.String(),
-			"reservation_id": ev.ReservationID,
-			"quantity":       ev.Quantity.Int(),
+		return analyticsEvent{entity: reservationEntity, subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
+			keySKU:           ev.SKU.String(),
+			keyReservationID: ev.ReservationID,
+			keyQuantity:      ev.Quantity.Int(),
 		}}, true
 	case shared.ReservationExpired:
-		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
-			"reservation_id": ev.ReservationID,
-			"sku":            p.reservationSKU(ctx, ev.ReservationID),
+		return analyticsEvent{entity: reservationEntity, subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
+			keyReservationID: ev.ReservationID,
+			keySKU:           p.reservationSKU(ctx, ev.ReservationID),
 		}}, true
 	case shared.ReservationRevoked:
-		return analyticsEvent{entity: "reservation", subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
-			"reservation_id": ev.ReservationID,
-			"sku":            p.reservationSKU(ctx, ev.ReservationID),
+		return analyticsEvent{entity: reservationEntity, subject: ev.ReservationID, key: ev.ReservationID, data: map[string]any{
+			keyReservationID: ev.ReservationID,
+			keySKU:           p.reservationSKU(ctx, ev.ReservationID),
 		}}, true
 	default:
 		return p.binOrUnlocatedEvent(e)
@@ -237,24 +237,24 @@ func (p *AnalyticsPublisher) analyticsEventFor(ctx context.Context, e shared.Dom
 func (p *AnalyticsPublisher) binOrUnlocatedEvent(e shared.DomainEvent) (analyticsEvent, bool) {
 	switch ev := e.(type) {
 	case shared.CycleCountCompleted:
-		return analyticsEvent{entity: "bin", subject: ev.BinID.String(), key: ev.BinID.String(), data: map[string]any{
-			"bin_id":      ev.BinID.String(),
-			"counted":     ev.CountedQty.Int(),
-			"system":      ev.SystemQty.Int(),
+		return analyticsEvent{entity: binEntity, subject: ev.BinID.String(), key: ev.BinID.String(), data: map[string]any{
+			keyBinID:      ev.BinID.String(),
+			keyCounted:    ev.CountedQty.Int(),
+			keySystem:     ev.SystemQty.Int(),
 			"discrepancy": ev.Discrepancy,
 		}}, true
 	case shared.DiscrepancyDetected:
-		return analyticsEvent{entity: "bin", subject: ev.BinID.String(), key: ev.BinID.String(), data: map[string]any{
-			"bin_id":  ev.BinID.String(),
-			"counted": ev.CountedQty.Int(),
-			"system":  ev.SystemQty.Int(),
+		return analyticsEvent{entity: binEntity, subject: ev.BinID.String(), key: ev.BinID.String(), data: map[string]any{
+			keyBinID:   ev.BinID.String(),
+			keyCounted: ev.CountedQty.Int(),
+			keySystem:  ev.SystemQty.Int(),
 		}}, true
 	case shared.ItemUnlocated:
-		return analyticsEvent{entity: "stock", subject: ev.StockUnitID, key: ev.SKU.String(), data: map[string]any{
-			"sku":           ev.SKU.String(),
-			"bin_id":        ev.BinID.String(),
+		return analyticsEvent{entity: stockEntity, subject: ev.StockUnitID, key: ev.SKU.String(), data: map[string]any{
+			keySKU:          ev.SKU.String(),
+			keyBinID:        ev.BinID.String(),
 			"stock_unit_id": ev.StockUnitID,
-			"quantity":      ev.Quantity.Int(),
+			keyQuantity:     ev.Quantity.Int(),
 		}}, true
 	default:
 		// LocationRecorded and any future event outside the analytics

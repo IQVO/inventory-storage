@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -65,7 +66,7 @@ func (r *ProductClassificationRepo) FindBySKU(ctx context.Context, sku shared.SK
 	err := querierFrom(ctx, r.pool).QueryRow(ctx, `
 		SELECT handling_tags, temperature_class, dot_hazard_class FROM product_classifications WHERE sku = $1
 	`, sku.String()).Scan(&rawTags, &temperatureClass, &dotHazardClass)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

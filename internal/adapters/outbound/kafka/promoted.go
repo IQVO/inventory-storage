@@ -6,6 +6,18 @@ import "github.com/claudioed/inventory-storage/internal/domain/shared"
 // aggregate raises (DiscrepancyDetected).
 const binEntity = "bin"
 
+// The payload keys of the frozen v1 analytics/promoted `data` payloads.
+// analytics_publisher.go and this file must stay in lock-step: a change to
+// either is a wire-contract change, never an edit.
+const (
+	keySKU           = "sku"
+	keyBinID         = "bin_id"
+	keyQuantity      = "quantity"
+	keyCounted       = "counted"
+	keySystem        = "system"
+	keyReservationID = "reservation_id"
+)
+
 // Promoted exception facts (ADR 0043). DiscrepancyDetected, ItemUnlocated and
 // ItemStowed were analytics-only until exception-management (the first two)
 // and returns-processing (ItemStowed) needed them as a cross-context
@@ -39,9 +51,9 @@ func encodePromotedEvent(event shared.DomainEvent) (data any, key, subject, enti
 // itemStowedData is the ItemStowed `data` (v1, frozen): {sku, bin_id, quantity}.
 func itemStowedData(e shared.ItemStowed) map[string]any {
 	return map[string]any{
-		"sku":      e.SKU.String(),
-		"bin_id":   e.BinID.String(),
-		"quantity": e.Quantity.Int(),
+		keySKU:      e.SKU.String(),
+		keyBinID:    e.BinID.String(),
+		keyQuantity: e.Quantity.Int(),
 	}
 }
 
@@ -49,10 +61,10 @@ func itemStowedData(e shared.ItemStowed) map[string]any {
 // {sku, bin_id, stock_unit_id, quantity}.
 func itemUnlocatedData(e shared.ItemUnlocated) map[string]any {
 	return map[string]any{
-		"sku":           e.SKU.String(),
-		"bin_id":        e.BinID.String(),
+		keySKU:          e.SKU.String(),
+		keyBinID:        e.BinID.String(),
 		"stock_unit_id": e.StockUnitID,
-		"quantity":      e.Quantity.Int(),
+		keyQuantity:     e.Quantity.Int(),
 	}
 }
 
@@ -60,8 +72,8 @@ func itemUnlocatedData(e shared.ItemUnlocated) map[string]any {
 // {bin_id, counted, system}.
 func discrepancyDetectedData(e shared.DiscrepancyDetected) map[string]any {
 	return map[string]any{
-		"bin_id":  e.BinID.String(),
-		"counted": e.CountedQty.Int(),
-		"system":  e.SystemQty.Int(),
+		keyBinID:   e.BinID.String(),
+		keyCounted: e.CountedQty.Int(),
+		keySystem:  e.SystemQty.Int(),
 	}
 }

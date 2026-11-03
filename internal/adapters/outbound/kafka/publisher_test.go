@@ -2,6 +2,7 @@ package kafka_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -217,7 +218,7 @@ func TestPublisher_ReservationRevoked_UnknownReservation(t *testing.T) {
 	pub := kafka.NewPublisher(writer, memory.NewReservationRepo())
 
 	event := shared.NewReservationRevoked(time.Now(), "does-not-exist")
-	if err := pub.Publish(context.Background(), event); err != kafka.ErrReservationNotFound {
+	if err := pub.Publish(context.Background(), event); !errors.Is(err, kafka.ErrReservationNotFound) {
 		t.Errorf("Publish error = %v, want ErrReservationNotFound", err)
 	}
 	if len(writer.messages) != 0 {

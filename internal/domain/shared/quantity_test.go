@@ -1,9 +1,12 @@
 package shared
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestNewQuantity_RejectsNegative(t *testing.T) {
-	if _, err := NewQuantity(-1); err != ErrNegativeQuantity {
+	if _, err := NewQuantity(-1); !errors.Is(err, ErrNegativeQuantity) {
 		t.Fatalf("expected ErrNegativeQuantity, got %v", err)
 	}
 }
@@ -16,7 +19,7 @@ func TestNewQuantity_AllowsZero(t *testing.T) {
 }
 
 func TestNewPositiveQuantity_RejectsZero(t *testing.T) {
-	if _, err := NewPositiveQuantity(0); err != ErrZeroQuantity {
+	if _, err := NewPositiveQuantity(0); !errors.Is(err, ErrZeroQuantity) {
 		t.Fatalf("expected ErrZeroQuantity, got %v", err)
 	}
 }
@@ -24,19 +27,19 @@ func TestNewPositiveQuantity_RejectsZero(t *testing.T) {
 func TestQuantity_Sub_RejectsNegativeResult(t *testing.T) {
 	q, _ := NewQuantity(2)
 	other, _ := NewQuantity(5)
-	if _, err := q.Sub(other); err != ErrNegativeQuantity {
+	if _, err := q.Sub(other); !errors.Is(err, ErrNegativeQuantity) {
 		t.Fatalf("expected ErrNegativeQuantity, got %v", err)
 	}
 }
 
 func TestSKU_RejectsEmpty(t *testing.T) {
-	if _, err := NewSKU(""); err != ErrEmptySKU {
+	if _, err := NewSKU(""); !errors.Is(err, ErrEmptySKU) {
 		t.Fatalf("expected ErrEmptySKU, got %v", err)
 	}
 }
 
 func TestBinId_RejectsEmpty(t *testing.T) {
-	if _, err := NewBinId(""); err != ErrEmptyBinID {
+	if _, err := NewBinId(""); !errors.Is(err, ErrEmptyBinID) {
 		t.Fatalf("expected ErrEmptyBinID, got %v", err)
 	}
 }

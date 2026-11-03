@@ -92,26 +92,47 @@ func (uc *ApplyRelocationTask) Execute(ctx context.Context, in RelocationTaskCom
 		return RelocationTaskResult{}, err
 	}
 
-	var result RelocationTaskResult
-	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
-		result = RelocationTaskResult{}
-		claimed, err := uc.ProcessedEvents.Claim(ctx, RelocateTaskConsumer, in.EventID)
+	return applyClaimed(ctx, uc.UnitOfWork, uc.ProcessedEvents, RelocateTaskConsumer, in.EventID,
+		RelocationTaskResult{Outcome: RelocationDuplicate},
+		func(ctx context.Context) (RelocationTaskResult, error) {
+			rel, err := uc.Relocate.Execute(ctx, cmd)
+			if err != nil {
+				return RelocationTaskResult{}, err
+			}
+			return RelocationTaskResult{Outcome: RelocationApplied, Relocation: rel}, nil
+		})
+}
+
+// applyClaimed is the claim-then-apply flow the RELOCATE and REPLENISH task
+// completions share: the CloudEvents id claim and the whole move commit in
+// ONE UnitOfWork, so a redelivery is a no-op and a failure un-claims the id.
+// dup is the result for an already-claimed event id; apply runs the move and
+// returns the applied result — its error goes through classifyRelocationError,
+// so a deterministic rejection dead-letters while a transient failure
+// surfaces unchanged.
+func applyClaimed[T any](ctx context.Context, uow ports.UnitOfWork, processed ports.ProcessedEventRepo, consumer, eventID string, dup T, apply func(ctx context.Context) (T, error)) (T, error) {
+	var result T
+	err := atomically(ctx, uow, func(ctx context.Context) error {
+		var blank T
+		result = blank
+		claimed, err := processed.Claim(ctx, consumer, eventID)
 		if err != nil {
 			return err
 		}
 		if !claimed {
-			result.Outcome = RelocationDuplicate
+			result = dup
 			return nil
 		}
-		rel, err := uc.Relocate.Execute(ctx, cmd)
+		applied, err := apply(ctx)
 		if err != nil {
 			return classifyRelocationError(err)
 		}
-		result = RelocationTaskResult{Outcome: RelocationApplied, Relocation: rel}
+		result = applied
 		return nil
 	})
 	if err != nil {
-		return RelocationTaskResult{}, err
+		var zero T
+		return zero, err
 	}
 	return result, nil
 }
@@ -123,22 +144,22 @@ func relocationCommand(in RelocationTaskCompletion) (RelocateStockCommand, error
 	}
 	sku, err := shared.NewSKU(strings.TrimSpace(in.SKU))
 	if err != nil {
-		return RelocateStockCommand{}, fmt.Errorf("%w: sku: %v", ErrMalformedRelocationTask, err)
+		return RelocateStockCommand{}, fmt.Errorf("%w: sku: %w", ErrMalformedRelocationTask, err)
 	}
 	from, err := shared.NewBinId(strings.TrimSpace(in.FromBin))
 	if err != nil {
-		return RelocateStockCommand{}, fmt.Errorf("%w: from_bin: %v", ErrMalformedRelocationTask, err)
+		return RelocateStockCommand{}, fmt.Errorf("%w: from_bin: %w", ErrMalformedRelocationTask, err)
 	}
 	to, err := shared.NewBinId(strings.TrimSpace(in.ToBin))
 	if err != nil {
-		return RelocateStockCommand{}, fmt.Errorf("%w: to_bin: %v", ErrMalformedRelocationTask, err)
+		return RelocateStockCommand{}, fmt.Errorf("%w: to_bin: %w", ErrMalformedRelocationTask, err)
 	}
 	if in.Quantity == nil {
 		return RelocateStockCommand{}, fmt.Errorf("%w: quantity is missing", ErrMalformedRelocationTask)
 	}
 	qty, err := shared.NewPositiveQuantity(*in.Quantity)
 	if err != nil {
-		return RelocateStockCommand{}, fmt.Errorf("%w: quantity %d: %v", ErrMalformedRelocationTask, *in.Quantity, err)
+		return RelocateStockCommand{}, fmt.Errorf("%w: quantity %d: %w", ErrMalformedRelocationTask, *in.Quantity, err)
 	}
 	ref := strings.TrimSpace(in.RelocationRef)
 	if ref == "" {
