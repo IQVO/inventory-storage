@@ -311,17 +311,23 @@ readinessProbe:
 
 # startupProbe covers this fleet's known ~10s post-start first-outbound-dial
 # reset (Istio native sidecars; holdApplicationUntilProxyStarts is a no-op
-# for them): failureThreshold * periodSeconds = 60s gives the app-side boot
-# retry (internal/adapters/outbound/bootretry: 5 attempts, 1+2+4+8 = 15s of
-# backoff plus the attempts' own duration) room to
-# finish before liveness/readiness probing (and any liveness-triggered
-# restart) begins.
+# for them) and the app-side boot retry (internal/adapters/outbound/bootretry:
+# 5 attempts, 1+2+4 = 15s of backoff plus the attempts' own duration).
+# It must ALSO cover the api Deployment's full pre-listener boot: the
+# facility-location cache replays its initial topic history before the HTTP
+# listener starts (cmd/inventory gates serveHTTPUntilSignal behind
+# awaitFacilityCacheReady, bounded by facilitycache.WaitReadyTimeout = 60s),
+# and observed boots on the kind cluster take 75-90s from container start
+# until /healthz answers. 30 x 2s = 60s killed the container mid-boot
+# (CrashLoopBackOff, 340+ restarts, 2026-11-04); 90 x 2s = 180s covers the
+# worst legitimate boot with margin while still bounding a hung start
+# (liveness/readiness probing only begins once this probe passes).
 startupProbe:
   httpGet:
     path: /healthz
     port: http
   periodSeconds: 2
-  failureThreshold: 30
+  failureThreshold: 90
 
 # Graceful shutdown budget (ADR-0020): the HTTP Shutdown drain window
 # (10s) plus the outbox relay/facility-location-cache-consumer stop
