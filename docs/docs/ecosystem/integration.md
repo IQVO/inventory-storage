@@ -234,7 +234,7 @@ sequenceDiagram
     participant W as wes-work-planning
 
     C->>I: POST /reservations {sku, quantity, demandRef}
-    I->>I: sum usable across StockUnits<br/>reserve first-fit, record Allocations
+    I->>I: sum usable across StockUnits<br/>reserve forward-first (ADR 0050), record Allocations
     I->>K: StockReserved {sku, quantity, demand_ref}
     I-->>C: 201 Created + Location
     K->>W: consume

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/claudioed/inventory-storage/internal/application/ports"
+	"github.com/claudioed/inventory-storage/internal/domain/allocation"
 	"github.com/claudioed/inventory-storage/internal/domain/reservation"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
@@ -34,6 +35,11 @@ type ReserveStock struct {
 	// expired reservations) in the same transaction (ADR 0040). Optional:
 	// nil means "not emitted".
 	Levels *BinLevelEmitter
+	// Forward tells which bins are a SKU's forward pick faces, so the draw
+	// takes the pick face before reserve storage (allocation.Order, ADR
+	// 0050). Optional: nil means no forward face is known, every bin is a
+	// reserve bin and only the deterministic tie-breakers order the draw.
+	Forward ports.ForwardFaceReader
 }
 
 func (uc *ReserveStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Quantity, demandRef string) (*reservation.Reservation, error) {
@@ -82,7 +88,7 @@ func (uc *ReserveStock) ExecuteFor(ctx context.Context, req ReserveRequest) (*re
 		return nil, err
 	}
 
-	allocations, touched, err := uc.allocate(units, req.Quantity, req.OwnerRef)
+	allocations, touched, err := uc.allocate(ctx, req.SKU, units, req.Quantity, req.OwnerRef)
 	if err != nil {
 		return nil, err
 	}
@@ -224,15 +230,23 @@ func isReplayOf(res *reservation.Reservation, sku shared.SKU, qty shared.Quantit
 	return *have == *lineNo
 }
 
-// allocate reserves qty across the given stock units, greedily drawing from
-// each unit's usable quantity until the full amount is covered. It returns
-// the allocations recorded and the units touched (mutated but not yet
+// allocate reserves qty across the given stock units, drawing in
+// allocation.Order (forward pick face before reserve storage, then the
+// deterministic tie-breakers; ADR 0050) until the full amount is covered. It
+// returns the allocations recorded and the units touched (mutated but not yet
 // persisted; persisting is Execute's job, inside its UnitOfWork, so a later failure never leaves a
 // partially-drawn reservation behind). It fails with ErrInsufficientUsable —
 // before any caller-visible state has been persisted — when the units'
 // combined usable quantity cannot cover qty.
-func (uc *ReserveStock) allocate(all []*stock.StockUnit, qty shared.Quantity, owner shared.OwnerRef) ([]reservation.Allocation, []*stock.StockUnit, error) {
-	units := reservableUnits(all, owner)
+func (uc *ReserveStock) allocate(ctx context.Context, sku shared.SKU, all []*stock.StockUnit, qty shared.Quantity, owner shared.OwnerRef) ([]reservation.Allocation, []*stock.StockUnit, error) {
+	faces := allocation.ForwardFaces{}
+	if uc.Forward != nil {
+		var err error
+		if faces, err = uc.Forward.ForwardFacesFor(ctx, sku); err != nil {
+			return nil, nil, err
+		}
+	}
+	units := allocation.Order(reservableUnits(all, owner), faces)
 	totalUsable := shared.Quantity(0)
 	for _, unit := range units {
 		totalUsable = totalUsable.Add(unit.Usable())

@@ -57,7 +57,7 @@ flowchart LR
         direction TB
         purpose["<b>Purpose</b><br/>The authoritative record of what is held where and how<br/>much of it is usable: bin-accurate location under chaotic<br/>stow, usable (not on-hand) quantity, and allocation as a<br/>revocable, expiring reservation."]:::card
         roles["<b>Domain roles</b><br/>- System of record (StockUnit, Bin, Reservation)<br/>- Open Host Service (REST + events)<br/>- Enforcer of every invariant on every write<br/>- Analytics data-product owner"]:::card
-        rules["<b>Business decisions it enforces</b><br/>- Chaotic stow: a stow needs both item and location scans<br/>- Reserve against usable, SKU-scoped, first-fit across bins<br/>- Reservations are revocable and expire (default 30 min),<br/>lazily<br/>- A retry of the same demandRef, sku, quantity returns the<br/>existing reservation<br/>- Cycle-count shortfall marks units Unlocated; overage is<br/>reported, never auto-reconciled<br/>- product-master owns classification; this context keeps a<br/>version-guarded local copy"]:::card
+        rules["<b>Business decisions it enforces</b><br/>- Chaotic stow: a stow needs both item and location scans<br/>- Reserve against usable, SKU-scoped, forward-first across bins (ADR 0050)<br/>- Reservations are revocable and expire (default 30 min),<br/>lazily<br/>- A retry of the same demandRef, sku, quantity returns the<br/>existing reservation<br/>- Cycle-count shortfall marks units Unlocated; overage is<br/>reported, never auto-reconciled<br/>- product-master owns classification; this context keeps a<br/>version-guarded local copy"]:::card
         purpose ~~~ roles ~~~ rules
     end
     in0 -->|"cmd - REST<br/>RegisterBin, ReceiveStock,<br/>StowStock, RunCycleCount,<br/>ConfirmPick"| BC
@@ -246,7 +246,7 @@ The terms that carry the model:
 | Decision | Source |
 | --- | --- |
 | Chaotic (random) stow, no fixed slotting; a stow needs both scans. | ADR 0002, `stock.ErrStowRequiresItemAndLocation` |
-| Reserve against **usable**, SKU-scoped and first-fit across bins; never bin-scoped. | ADR 0003, `ReserveStock.allocate` |
+| Reserve against **usable**, SKU-scoped and forward-first across bins (pick face before reserve, then a total order); never bin-scoped. | ADR 0003, ADR 0050, `allocation.Order`, `ReserveStock.allocate` |
 | Reservations are revocable and expire after a timeout (default 30 min); expiry is lazy, on the next read. | ADR 0003, `DefaultReservationTimeout`, `expireIfDue` |
 | A retry for the same `(demandRef, sku, quantity)` returns the existing ACTIVE reservation. | `isReplayOf` |
 | Cycle-count shortfall marks whole units Unlocated; overage is reported, never auto-reconciled. | `RunCycleCount` |

@@ -312,6 +312,35 @@ channels:
           - $ref: "#/components/messages/FacilityLayoutLocationSlotDecommissioned"
           - $ref: "#/components/messages/FacilityLayoutLocationSlotHandlingUnitDeclared"
 
+  warehouse.slotting-optimization.events:
+    description: |
+      slotting-optimization's integration topic. Consumed ONLY for
+      `SlotPlanApproved` (key and subject = the plan id); `SlotPlanGenerated`
+      and `SlotPlanRejected` are committed past (ADR 0050). The consumer always
+      runs, under the group `SLOT_PLAN_CONSUMER_GROUP` (default
+      `inventory-storage-slot-plan`), and replays the topic from the first
+      offset for a new group.
+    publish:
+      operationId: applySlotPlanApproved
+      summary: Apply slotting-optimization's approved forward-slot map to the local forward-face read model.
+      description: >
+        At-least-once, fixed group. The CloudEvents `id` is claimed in
+        `processed_events` in the SAME transaction as the replacement of the
+        site's `forward_pick_faces` (`assignments` is the FULL map of the site:
+        it replaces the site's previous map wholesale). A plan applies only
+        when its `approved_at` is later than the held plan's, or equal with a
+        higher `plan_id`; an older plan delivered late is ignored. A message
+        that is not a valid CloudEvent, has an undecodable payload, or lacks
+        the plan id, site, approval time, or a SKU or slot is logged and
+        committed past. Nothing is published in response. ReserveStock reads
+        the read model to draw a SKU's forward pick face before its reserve
+        bins.
+      tags:
+        - name: slotting-optimization
+          description: Consumed from the slotting-optimization bounded context.
+      message:
+        $ref: "#/components/messages/SlottingSlotPlanApproved"
+
   warehouse.fulfillment.events:
     description: >
       fulfillment-execution's integration topic, its Published Language for
@@ -710,6 +739,27 @@ components:
           description: Consumed from facility-layout.
       payload:
         $ref: "#/components/schemas/FacilityLayoutLocationSlotHandlingUnitDeclaredEvent"
+
+    SlottingSlotPlanApproved:
+      name: SlottingSlotPlanApproved
+      title: SlotPlanApproved (from slotting-optimization, consumed)
+      summary: A slot plan was approved; its FULL assignment map is the site's forward pick faces (ADR 0050).
+      description: >
+        CONSUMED, not produced. Pinned by slotting-optimization's
+        `apis/asyncapi.yaml` on develop: type
+        `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved`,
+        `source=/warehouse/slotting-optimization`, subject and Kafka key = the
+        plan id. Only `plan_id`, `site_id`, `approved_at` and
+        `assignments[].{sku, slot}` are read; `moves`, `supersedes_plan_id`,
+        `pick_unit` and `cases_capacity` are ignored. The consumer is
+        consumer-first safe: it only reads what slotting already publishes, so
+        no producer change is required.
+      contentType: application/cloudevents+json
+      tags:
+        - name: slotting-optimization
+          description: Consumed from slotting-optimization.
+      payload:
+        $ref: "#/components/schemas/SlottingSlotPlanApprovedEvent"
 
     ProductMasterProductClassified:
       name: ProductMasterProductClassified
@@ -2184,6 +2234,61 @@ components:
             zoneId: { type: string }
             temperatureClass: { type: string }
             hazmat: { type: boolean }
+    SlottingSlotPlanApprovedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of slotting-optimization's SlotPlanApproved as consumed here
+        (not composed from CloudEventBase, whose `source` is this service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events).
+        source:
+          type: string
+          enum: ["/warehouse/slotting-optimization"]
+        type:
+          type: string
+          const: "com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved"
+        subject:
+          type: string
+          description: The plan id (also the Kafka key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:slotting-optimization:events:SlotPlanApproved:v1
+        data:
+          type: object
+          required: [plan_id, site_id, approved_at, assignments]
+          properties:
+            plan_id: { type: string }
+            site_id: { type: string }
+            approved_at: { type: string, format: date-time }
+            assignments:
+              type: array
+              description: The FULL assignment map of the plan; replaces the site's previous map.
+              items:
+                type: object
+                required: [sku, slot]
+                properties:
+                  sku: { type: string }
+                  slot: { type: string, description: The facility-layout location code of the forward pick face. }
     FacilityLayoutLocationSlotRegisteredEvent:
       type: object
       description: >

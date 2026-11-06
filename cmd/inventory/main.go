@@ -119,10 +119,14 @@ func run(ctx context.Context) error {
 	// product-master. Same lookupCtx, so shutdown drains it with the rest.
 	productMaster := buildProductMasterConsumer(lookupCtx, logger, cfg, adapters)
 
+	// Slot-plan consumer (ADR 0050): keeps the local forward-face read model
+	// ReserveStock draws its pick face from in step with slotting-optimization.
+	slotPlan := buildSlotPlanConsumer(lookupCtx, logger, cfg, adapters)
+
 	// TaskCompleted confirm-pick (ADR 0035) and inbound-receiving receipt
 	// (ADR 0037) consumers, on the same lookupCtx; see
 	// buildEventDrivenConsumers. It stops the consumers built above on error.
-	consumers, err := buildEventDrivenConsumers(lookupCtx, logger, cfg, adapters, combineConsumerHandles(transfer, productMaster))
+	consumers, err := buildEventDrivenConsumers(lookupCtx, logger, cfg, adapters, combineConsumerHandles(transfer, productMaster, slotPlan))
 	if err != nil {
 		stopLookup()
 		lookup.close()

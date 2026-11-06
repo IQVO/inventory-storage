@@ -142,6 +142,7 @@ const sidebars: SidebarsConfig = {
         'adr/0047-bin-handling-unit-declared-event',
         'adr/0048-a2a-inbound-adapter',
         'adr/0049-adopt-the-fleet-rest-api-guideline',
+        'adr/0050-deterministic-forward-first-allocation',
       ],
     },
   ],
