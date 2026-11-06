@@ -194,6 +194,7 @@ channels:
           - $ref: "#/components/messages/ReservationRevoked"
           - $ref: "#/components/messages/TransferStockAllocated"
           - $ref: "#/components/messages/TransferStockAllocationRejected"
+          - $ref: "#/components/messages/TransferStockAllocationReleased"
           - $ref: "#/components/messages/TransferReceiptStaged"
           - $ref: "#/components/messages/TransferStockStowed"
           - $ref: "#/components/messages/StockRelocated"
@@ -533,36 +534,41 @@ channels:
       network-inventory-planning's integration topic, its Published Language
       for transfer commands (the `Topic` constant in
       `internal/adapters/inbound/kafka/transfer_consumer.go`). CONSUMED by
-      this service (ADR 0030), not published: key and `subject` = the
+      this service (ADR 0030, ADR 0050), not published: key and `subject` = the
       transfer line id, `source=/warehouse/network-inventory-planning`.
       Only
       `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested`
-      is acted on; every other CloudEvents `type` on the topic is ignored.
+      and
+      `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested`
+      (the cancel-after-allocation compensation command, ADR 0050) are acted
+      on; every other CloudEvents `type` on the topic is ignored.
       The consumer always runs (ADR 0042), under the stable group
       `TRANSFER_ALLOCATION_CONSUMER_GROUP` (mandatory, as are `DATABASE_URL`
       and `KAFKA_BROKERS`; chart default
       `inventory-storage-transfer-allocation`).
     publish:
-      operationId: allocateTransferStock
-      summary: Apply the transfer-allocation command and reply through the outbox.
+      operationId: applyTransferCommands
+      summary: Apply the transfer-allocation and transfer-release commands and reply through the outbox.
       description: >
         At-least-once, fixed group: FetchMessage, then CommitMessages only
         after the handler settles; a transient error retries the SAME message
         with capped backoff (200ms to 5s), so a failed handler can never drop
-        or skip a command. The CloudEvents `id` is claimed in
-        `processed_events` in the SAME transaction as AllocateTransferStock,
-        so a redelivery is a no-op. A payload that can never be applied (an
+        or skip a command. A payload that can never be applied (an
         undecodable payload, an invalid `origin_site_id`, an empty `sku`, a
-        non-positive `quantity`) is logged (WARN) and committed past; there
-        is no DLQ on this topic. The reply — TransferStockAllocated or
-        TransferStockAllocationRejected — is published on this service's own
-        integration topic through the transactional outbox, never back onto
-        the command topic.
+        non-positive `quantity`, a release naming a transfer line this
+        service never decided, or a release disagreeing with the allocation
+        ledger) is logged (WARN) and committed past; there is no DLQ on this
+        topic. The replies — TransferStockAllocated,
+        TransferStockAllocationRejected, or TransferStockAllocationReleased —
+        are published on this service's own integration topic through the
+        transactional outbox, never back onto the command topic.
       tags:
         - name: network-inventory-planning
           description: Consumed from the network-inventory-planning bounded context.
       message:
-        $ref: "#/components/messages/NetworkInventoryPlanningTransferAllocationRequested"
+        oneOf:
+          - $ref: "#/components/messages/NetworkInventoryPlanningTransferAllocationRequested"
+          - $ref: "#/components/messages/NetworkInventoryPlanningTransferAllocationReleaseRequested"
 
 components:
   messages:
@@ -1367,6 +1373,53 @@ components:
               sku: SKU-1
               quantity: 24
 
+    NetworkInventoryPlanningTransferAllocationReleaseRequested:
+      name: NetworkInventoryPlanningTransferAllocationReleaseRequested
+      title: Transfer Allocation Release Requested (from network-inventory-planning, consumed)
+      summary: network-inventory-planning cancelled a transfer AFTER allocation and asked this context to release the origin hold.
+      description: >
+        CONSUMED command, not produced (ADR 0050 — the compensation leg
+        that closes the saga's cancel-after-allocation gap). Pinned by
+        network-inventory-planning's `apis/asyncapi.yaml`: type
+        `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested`,
+        `source=/warehouse/network-inventory-planning`, subject and Kafka
+        key = the transfer line id. `data` is exactly seven fields — the
+        whole consumed contract; this service replies with
+        TransferStockAllocationReleased on its own integration topic.
+        Idempotent by transfer_line_id through the
+        `transfer_allocation_releases` ledger: a byte-identical replay
+        returns the original outcome untouched, a conflicting payload is
+        answered with the original outcome and reason IDEMPOTENCY_CONFLICT.
+        A command naming a line this service never decided, or disagreeing
+        with the allocation ledger, is a deterministic refusal — logged and
+        committed past, no event.
+      contentType: application/cloudevents+json
+      tags:
+        - name: network-inventory-planning
+          description: Consumed from network-inventory-planning.
+      payload:
+        $ref: "#/components/schemas/NetworkInventoryPlanningTransferAllocationReleaseRequestedEvent"
+      examples:
+        - name: releaseAllocatedLine
+          summary: Release the 24-unit hold on SKU-1 for a transfer cancelled after allocation.
+          payload:
+            specversion: "1.0"
+            id: c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f
+            source: /warehouse/network-inventory-planning
+            type: com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested
+            subject: tfr-77451:1
+            time: "2026-11-05T09:40:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:network-inventory-planning:events:TransferAllocationReleaseRequested:v1
+            data:
+              transfer_id: tfr-77451
+              transfer_line_id: tfr-77451:1
+              reservation_id: res-9f2c1
+              origin_site_id: ABE1
+              sku: SKU-1
+              quantity: 24
+              reason: superseded by a cheaper source
+
     StockReserved:
       name: StockReserved
       title: Stock Reserved
@@ -1508,6 +1561,57 @@ components:
               sku: SKU-T2
               requested_quantity: 9
               reason: INSUFFICIENT_USABLE
+
+    TransferStockAllocationReleased:
+      name: TransferStockAllocationReleased
+      title: Transfer Stock Allocation Released
+      summary: A transfer cancelled after allocation had its origin hold resolved; the saga settles.
+      description: >
+        Raised by the ReleaseTransferAllocation use case (ADR 0051) when a
+        TransferAllocationReleaseRequested command was decided — the
+        compensation leg of the transfer saga, so a stuck or abandoned
+        ALLOCATED transfer never strands its origin reservation until lazy
+        expiry. `outcome` is a CLOSED set: RELEASED (the reservation still
+        held the stock; this revoked it and returned the quantity to
+        usable), ALREADY_RESOLVED (the reservation had already expired or
+        been confirmed — or the line's allocation was REJECTED, so no hold
+        ever existed; either way the hold is gone). BOTH outcomes settle
+        the saga as success. `reason` is the command's cancellation reason
+        carried through, or IDEMPOTENCY_CONFLICT on the answer to a
+        conflicting replay (the original ledger decision stands).
+
+
+        **Integration topic only** (no analytics variant). Kafka key and
+        CloudEvents `subject` are the transfer_line_id, mirroring
+        TransferStockAllocationRejected — the release settles the line, so
+        the line is the aggregate the fact is about.
+      contentType: application/cloudevents+json
+      tags:
+        - name: reservation
+          description: Fact reply on the transfer allocation release path.
+      payload:
+        $ref: "#/components/schemas/TransferStockAllocationReleasedEvent"
+      examples:
+        - name: releasedAfterCancel
+          summary: The hold on tl-77-1 was revoked and six units returned to usable.
+          payload:
+            specversion: "1.0"
+            id: 6b2f8d14-e5a9-4c71-d8e4-8f1c3a7b9d26
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased
+            subject: tl-77-1
+            time: "2026-11-05T09:41:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:TransferStockAllocationReleased:v1
+            data:
+              transfer_id: tr-77
+              transfer_line_id: tl-77-1
+              reservation_id: res-tr-1
+              origin_site_id: SITE-A
+              sku: SKU-T1
+              quantity: 6
+              outcome: RELEASED
+              reason: superseded by a cheaper source
 
     TransferReceiptStaged:
       name: TransferReceiptStaged
@@ -3289,6 +3393,78 @@ components:
               type: integer
               minimum: 1
 
+    NetworkInventoryPlanningTransferAllocationReleaseRequestedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of network-inventory-planning's
+        TransferAllocationReleaseRequested command as consumed here (ADR
+        0050; not composed from CloudEventBase, whose `source` is this
+        service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events).
+        source:
+          type: string
+          enum: ["/warehouse/network-inventory-planning"]
+        type:
+          type: string
+          const: "com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested"
+        subject:
+          type: string
+          description: The transfer line id (also the Kafka key and the reply-correlation key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:network-inventory-planning:events:TransferAllocationReleaseRequested:v1
+        data:
+          type: object
+          description: Exactly seven fields — the whole consumed contract.
+          required:
+            - transfer_id
+            - transfer_line_id
+            - reservation_id
+            - origin_site_id
+            - sku
+            - quantity
+            - reason
+          properties:
+            transfer_id:
+              type: string
+            transfer_line_id:
+              type: string
+              description: "<transfer_id>:1 in v1's single-line saga; also the allocation-ledger, release-ledger and reply-correlation key."
+            reservation_id:
+              type: string
+              description: The reservation TransferStockAllocated named; validated against the allocation ledger.
+            origin_site_id:
+              type: string
+            sku:
+              type: string
+            quantity:
+              type: integer
+              minimum: 1
+            reason:
+              type: string
+              description: Why the transfer is being cancelled after allocation; carried through onto the released fact.
+
     StockReservedEvent:
       description: >
         CloudEvents envelope for a StockReserved domain event, on both
@@ -3737,6 +3913,68 @@ components:
                     holds the SKU but not enough usable quantity.
                     IDEMPOTENCY_CONFLICT: the line id was replayed with a
                     different payload; the original decision stands.
+
+    TransferStockAllocationReleasedEvent:
+      description: CloudEvents envelope for a TransferStockAllocationReleased domain event (ADR 0051).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for TransferStockAllocationReleased.
+              const: "com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:TransferStockAllocationReleased:v1
+              pattern: "^urn:warehouse:inventory-storage:events:TransferStockAllocationReleased:v1$"
+            data:
+              type: object
+              description: Business payload for TransferStockAllocationReleased.
+              required:
+                - transfer_id
+                - transfer_line_id
+                - reservation_id
+                - origin_site_id
+                - sku
+                - quantity
+                - outcome
+                - reason
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                reservation_id:
+                  type: string
+                  description: The reservation whose hold this release resolved (as named by the command and the allocation ledger).
+                origin_site_id:
+                  type: string
+                sku:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+                outcome:
+                  type: string
+                  enum:
+                    - RELEASED
+                    - ALREADY_RESOLVED
+                  description: >
+                    Closed outcome set; BOTH settle the saga as success.
+                    RELEASED: the reservation still held the stock and this
+                    revoked it (quantity back in usable). ALREADY_RESOLVED:
+                    the reservation had already expired or been confirmed —
+                    either way the hold is gone.
+                reason:
+                  type: string
+                  description: >
+                    The command's cancellation reason carried through, or
+                    IDEMPOTENCY_CONFLICT on the answer to a conflicting
+                    replay (the original ledger decision stands).
 
     TransferReceiptStagedEvent:
       description: CloudEvents envelope for a TransferReceiptStaged domain event (ADR 0033).

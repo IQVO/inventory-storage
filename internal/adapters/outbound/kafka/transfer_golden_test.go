@@ -85,6 +85,37 @@ func TestGolden_Integration_TransferStockAllocationRejected(t *testing.T) {
 	}`)
 }
 
+func TestGolden_Integration_TransferStockAllocationReleased(t *testing.T) {
+	pub := kafka.NewPublisher(&fakeWriter{}, memory.NewReservationRepo())
+	pub.NewID = fixedID
+
+	event := shared.NewTransferStockAllocationReleased(
+		goldenAt, "tr-77", "tl-77-1", "res-tr-1", shared.SiteID("SITE-A"), mustSKU(t, "SKU-T1"), newQty(t, 6),
+		"RELEASED", "cancelled by planner",
+	)
+
+	assertGolden(t, encodeOne(t, pub, event), "tl-77-1", `{
+		"specversion": "1.0",
+		"id": "`+goldenID+`",
+		"source": "/warehouse/inventory-storage",
+		"type": "com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased",
+		"subject": "tl-77-1",
+		"time": "2026-08-21T22:00:00Z",
+		"datacontenttype": "application/json",
+		"dataschema": "urn:warehouse:inventory-storage:events:TransferStockAllocationReleased:v1",
+		"data": {
+			"transfer_id": "tr-77",
+			"transfer_line_id": "tl-77-1",
+			"reservation_id": "res-tr-1",
+			"origin_site_id": "SITE-A",
+			"sku": "SKU-T1",
+			"quantity": 6,
+			"outcome": "RELEASED",
+			"reason": "cancelled by planner"
+		}
+	}`)
+}
+
 // The analytics publisher must NOT forward the transfer events: they are
 // integration replies, not analytics facts (the Inventory Flow &
 // Accuracy projection has no transfer dimension). A regression here
@@ -100,5 +131,10 @@ func TestTransferEvents_NotOnAnalyticsTopic(t *testing.T) {
 	rejected := shared.NewTransferStockAllocationRejected(goldenAt, "tr", "tl", "SITE-A", mustSKU(t, "SKU-T"), newQty(t, 1), "ORIGIN_SITE_UNKNOWN")
 	if out, err := p.Encode(context.Background(), rejected); err != nil || len(out) != 0 {
 		t.Fatalf("analytics Encode of TransferStockAllocationRejected = %v, %v; want no messages", out, err)
+	}
+
+	released := shared.NewTransferStockAllocationReleased(goldenAt, "tr", "tl", "res-1", "SITE-A", mustSKU(t, "SKU-T"), newQty(t, 1), "RELEASED", "cancel")
+	if out, err := p.Encode(context.Background(), released); err != nil || len(out) != 0 {
+		t.Fatalf("analytics Encode of TransferStockAllocationReleased = %v, %v; want no messages", out, err)
 	}
 }

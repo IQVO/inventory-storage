@@ -400,6 +400,19 @@ of the site-scoped transfer allocation exchange (ADR-0030),
   ```
   `reason` is the closed set `ORIGIN_SITE_UNKNOWN | INSUFFICIENT_USABLE |
   IDEMPOTENCY_CONFLICT`.
+  The cancel-after-allocation compensation leg (ADR-0050) adds
+  `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased`
+  (key/subject = transfer_line_id) with `data`:
+  ```json
+  {
+    "transfer_id": "tr-77", "transfer_line_id": "tl-77-1",
+    "reservation_id": "res-tr-1", "origin_site_id": "SITE-A",
+    "sku": "SKU-T1", "quantity": 6,
+    "outcome": "RELEASED", "reason": "superseded by a cheaper source"
+  }
+  ```
+  `outcome` is the closed set `RELEASED | ALREADY_RESOLVED` — both settle
+  the saga as success.
   The legacy `com.warehouse.wms.inventory-storage.product.ProductClassified`
   is **no longer published**: ADR-0034 stage E (2026-10-17) removed the type,
   the `republish-product-classifications` backfill and both

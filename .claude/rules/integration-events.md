@@ -83,9 +83,9 @@ NO envelope toggle.
   `log`).
 - Topic: `warehouse.inventory.events`.
 
-## Published today: 11 of 13 catalog events
+## Published today: 12 of 14 catalog events
 
-**`StockReserved`, `ReservationRevoked`, the four transfer replies/facts,
+**`StockReserved`, `ReservationRevoked`, the five transfer replies/facts,
 `StockRelocated`, `BinStockLevelChanged`, and the promoted exception facts
 `DiscrepancyDetected`, `ItemUnlocated`, `ItemStowed` cross the service
 boundary.** The promoted three (ADR-0043) are byte-identical copies of the
@@ -121,6 +121,18 @@ wired one.
 - **TransferStockAllocationRejected** — `data`: `{"transfer_id", "transfer_line_id", "origin_site_id", "sku", "requested_quantity", "reason"}`.
   `reason` is the closed set `ORIGIN_SITE_UNKNOWN | INSUFFICIENT_USABLE |
   IDEMPOTENCY_CONFLICT`. Key/subject = transfer_line_id. Integration topic only.
+
+- **TransferStockAllocationReleased** — `data`: `{"transfer_id", "transfer_line_id", "reservation_id", "origin_site_id", "sku", "quantity", "outcome", "reason"}`.
+  `outcome` is the closed set `RELEASED | ALREADY_RESOLVED` (both settle the
+  saga as success — either way the hold is gone); `reason` carries the
+  command's cancellation reason, or `IDEMPOTENCY_CONFLICT` on a conflicting
+  replay's answer. Reply leg of the transfer-allocation RELEASE command
+  (ADR-0050): raised by `ReleaseTransferAllocation` when a transfer cancelled
+  after allocation had its origin hold resolved. Key/subject =
+  transfer_line_id (mirroring the rejection). Integration topic only. The
+  release leg deliberately does NOT publish `ReservationRevoked`: transfer
+  reservations never emitted `StockReserved`, so a revoke event would corrupt
+  wes-work-planning's observed-usable projection.
 
 Both events already exist in the domain event list above — do not invent
 new event names when wiring a publisher; carry them through with this exact
@@ -269,9 +281,13 @@ not the event stream.
   UnitOfWork/outbox, so an in-memory run must not consume real commands).
   Consumer group: `TRANSFER_ALLOCATION_CONSUMER_GROUP` (default
   `inventory-storage-transfer-allocation`).
-- Dispatches ONLY on the full type
+- Dispatches ONLY on the full types
   `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested`
-  with `data` `{transfer_id, transfer_line_id, origin_site_id, sku, quantity}`;
+  with `data` `{transfer_id, transfer_line_id, origin_site_id, sku, quantity}`
+  and (ADR-0050, the cancel-after-allocation compensation leg)
+  `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested`
+  with `data` `{transfer_id, transfer_line_id, reservation_id,
+  origin_site_id, sku, quantity, reason}`;
   every other type on the topic is acknowledged untouched.
 - Run loop follows the at-least-once atomicity checklist: `FetchMessage`
   (never auto-committing `ReadMessage`), commit only after the handler
@@ -282,7 +298,14 @@ not the event stream.
   `transfer_line_id`): a replayed command returns the original outcome
   without touching stock or republishing; the same line id with a
   DIFFERENT payload answers `IDEMPOTENCY_CONFLICT` while the original
-  decision stands.
+  decision stands. The release leg mirrors it through the
+  `transfer_allocation_releases` ledger (same uniqueness, same replay and
+  conflict discipline, migration 0039) and answers with
+  `TransferStockAllocationReleased` (`outcome` `RELEASED` |
+  `ALREADY_RESOLVED`, both settle the saga). Release commands naming a
+  line this service never decided (`ErrUnknownTransferLine`) or
+  disagreeing with the allocation ledger (`ErrTransferReleaseMismatch`)
+  are deterministic refusals: logged, committed past, NO event.
 
 ## Consumed: `warehouse.facility.events` (ADR-0013)
 

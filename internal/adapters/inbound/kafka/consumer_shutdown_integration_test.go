@@ -146,7 +146,7 @@ func TestConsumers_ShutdownMidHandle_IsCleanAndDeadLettersNothing(t *testing.T) 
 		assertShutdownMidHandleIsClean(t, ctx, brokers, topic, p,
 			kafkago.Message{Key: []byte(id), Value: buildTransferCommandCE(t, id, "tr-1", "tl-1", "SITE-A", "SKU-1", 5)},
 			func(logger *slog.Logger) runCloser {
-				return NewConsumerForTopic(topic, brokers, shutdownItGroup(), parkingAllocator{p}, logger)
+				return NewConsumerForTopic(topic, brokers, shutdownItGroup(), parkingAllocator{p}, nil, logger)
 			})
 	})
 }
