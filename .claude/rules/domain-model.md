@@ -128,11 +128,18 @@ the one-shot `republish-product-classifications` backfill re-emits it
    otherwise via `Bin.Resize` (rejects below occupancy). No domain event —
    local topology master data (ADR-0025)
 11. `GetBin(binId)` -> bin capacity/occupancy read model
+12. `ApplySlotPlan(eventId, planId, siteId, approvedAt, assignments)` -> the
+   slotting-optimization consumer's use case (ADR-0050): claims the CloudEvents
+   id and replaces the site's forward pick-face map (`forward_pick_faces`, the
+   local read model `ReserveStock` draws its pick face from) in ONE UnitOfWork,
+   only when the plan is newer than the held one. Raises NO domain event.
 
 ## Design notes (from README)
 
 - **Reservation is SKU-scoped, not bin-scoped.** `ReserveStock` draws from
-  whichever `StockUnit`s have usable quantity (first-fit across bins) and
+  whichever `StockUnit`s have usable quantity (forward pick face first, then
+  reserve bins, in the one deterministic order of `allocation.Order`: forward
+  before reserve, smaller usable first, bin id, stock unit id; ADR-0050) and
   records exactly which units/quantities it drew from as `Allocation`s on
   the `Reservation`. `RevokeReservation` returns quantity to those same
   units, but because a fresh `ReserveStock` call is free to draw from any

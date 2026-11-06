@@ -9,7 +9,7 @@ import (
 
 // TransferReleaseRepo is an in-memory implementation of
 // ports.TransferReleaseRepo, the release ledger's twin of
-// TransferAllocationRepo over the shared lineLedger (ADR 0050): one
+// TransferAllocationRepo over the shared lineLedger (ADR 0051): one
 // decision per transfer_line_id, a second Save for a decided line fails
 // with usecases.ErrTransferReleaseAlreadyDecided.
 type TransferReleaseRepo struct {

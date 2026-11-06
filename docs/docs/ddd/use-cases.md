@@ -158,7 +158,8 @@ blocks the stow (fail-open).
 ## 3. ReserveStock(sku, qty, demandRef)
 
 Creates a revocable `Reservation` against **usable** inventory, drawing
-first-fit across the SKU's `StockUnit`s.
+forward-first across the SKU's `StockUnit`s (the SKU's pick face before its
+reserve bins, then smaller usable first, bin id, unit id; ADR 0050).
 
 **Collaborators:** `StockRepo`, `ReservationRepo`, `EventPublisher`, `Clock`,
 `ReservationMetrics`, `UnitOfWork`, plus a `Timeout` (defaults to

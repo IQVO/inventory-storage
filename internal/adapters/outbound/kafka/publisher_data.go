@@ -45,7 +45,7 @@ type transferRejectedData struct {
 }
 
 // transferReleasedData is the `data` payload for
-// TransferStockAllocationReleased (v1, frozen — ADR 0050).
+// TransferStockAllocationReleased (v1, frozen — ADR 0051).
 type transferReleasedData struct {
 	TransferID     string `json:"transfer_id"`
 	TransferLineID string `json:"transfer_line_id"`

@@ -18,7 +18,7 @@ import (
 // TransferReleaseRepo is the pgxpool-backed implementation of
 // ports.TransferReleaseRepo over the transfer_allocation_releases ledger
 // table (DB-unique on transfer_line_id — the idempotency anchor of the
-// release leg, ADR 0050).
+// release leg, ADR 0051).
 type TransferReleaseRepo struct {
 	pool *pgxpool.Pool
 }

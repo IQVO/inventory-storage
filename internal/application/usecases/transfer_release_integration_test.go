@@ -33,7 +33,7 @@ import (
 // publishTransferReleaseCommand writes one
 // TransferAllocationReleaseRequested CloudEvent onto the command topic,
 // keyed by transfer_line_id, exactly as network-inventory-planning
-// (ADR 0050) would.
+// (ADR 0051) would.
 func publishTransferReleaseCommand(t *testing.T, topic string, brokers []string, id, transferID, lineID, reservationID, site, sku string, qty int, reason string) {
 	t.Helper()
 	payload, _ := json.Marshal(map[string]any{

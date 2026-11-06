@@ -84,7 +84,7 @@ type Consumer struct {
 	Reader Reader
 	// Allocate is the allocation command handler. Required.
 	Allocate TransferAllocator
-	// Release is the release command handler (ADR 0050). Required in
+	// Release is the release command handler (ADR 0051). Required in
 	// production wiring; a release command arriving while it is nil is
 	// logged and committed past (a wiring bug is not retryable).
 	Release TransferReleaser

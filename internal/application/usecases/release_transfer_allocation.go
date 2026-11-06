@@ -13,7 +13,7 @@ import (
 )
 
 // ReleaseTransferAllocation is the compensation leg of the network
-// transfer saga (ADR 0050): a transfer cancelled AFTER allocation gets
+// transfer saga (ADR 0051): a transfer cancelled AFTER allocation gets
 // its origin-site hold resolved here, so a stuck or abandoned ALLOCATED
 // transfer never strands its reservation until lazy expiry.
 //

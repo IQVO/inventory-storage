@@ -95,7 +95,7 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | reservation id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated` | reservation id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected` | transfer line id |
-| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased` (ADR 0050) | transfer line id |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased` (ADR 0051) | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged` (ADR 0040) | `<bin>:<sku>` |

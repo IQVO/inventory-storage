@@ -1,10 +1,10 @@
 ---
-id: 0050-transfer-allocation-release
-slug: /adr/0050
-title: "ADR 0050: Transfer allocation release — the cancel-after-allocation compensation leg"
-sidebar_label: "50. Transfer allocation release"
-sidebar_position: 50
-description: "ADR 0050: inventory-storage consumes TransferAllocationReleaseRequested and answers TransferStockAllocationReleased, resolving the origin reservation of a transfer cancelled after allocation. Idempotent by transfer_line_id through a second ledger (transfer_allocation_releases), one UnitOfWork per decision, outcomes RELEASED | ALREADY_RESOLVED — both settle the saga as success."
+id: 0051-transfer-allocation-release
+slug: /adr/0051
+title: "ADR 0051: Transfer allocation release — the cancel-after-allocation compensation leg"
+sidebar_label: "51. Transfer allocation release"
+sidebar_position: 51
+description: "ADR 0051: inventory-storage consumes TransferAllocationReleaseRequested and answers TransferStockAllocationReleased, resolving the origin reservation of a transfer cancelled after allocation. Idempotent by transfer_line_id through a second ledger (transfer_allocation_releases), one UnitOfWork per decision, outcomes RELEASED | ALREADY_RESOLVED — both settle the saga as success."
 ---
 
 # 0050. Transfer allocation release — the cancel-after-allocation compensation leg

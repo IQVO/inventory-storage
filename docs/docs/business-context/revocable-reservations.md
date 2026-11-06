@@ -92,7 +92,8 @@ This is the subtle one, and it is what "re-allocatable against a **different**
 holding" means concretely.
 
 `ReserveStock` is **SKU-scoped**, not bin-scoped. It sums usable quantity
-across every `StockUnit` for the SKU, then draws from them first-fit,
+across every `StockUnit` for the SKU, then draws from them forward-first (the
+SKU's pick face before its reserve bins, ADR 0050),
 recording an `Allocation` per unit it touched:
 
 ```go

@@ -221,7 +221,7 @@ type TransferAllocationRepo interface {
 }
 
 // TransferReleaseRepo persists and retrieves the transfer-allocation
-// RELEASE ledger (ADR 0050): one row per released transfer line,
+// RELEASE ledger (ADR 0051): one row per released transfer line,
 // DB-unique on transfer_line_id — the idempotency anchor of the
 // cancel-after-allocation compensation leg, mirroring
 // TransferAllocationRepo for the allocation leg.

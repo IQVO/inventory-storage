@@ -91,7 +91,7 @@ response is a DTO.
 ## Design notes
 
 - **Reservation is SKU-scoped, not bin-scoped.** `ReserveStock` draws from
-  whichever `StockUnit`s have usable quantity (first-fit across bins) and
+  whichever `StockUnit`s have usable quantity (forward pick face first, then reserve bins, in the deterministic order of [ADR 0050](docs/docs/adr/0050-deterministic-forward-first-allocation.md)) and
   records exactly which units/quantities it drew from as `Allocation`s on the
   `Reservation`. `RevokeReservation` returns quantity to those same units, but
   because a fresh `ReserveStock` call is free to draw from any unit with

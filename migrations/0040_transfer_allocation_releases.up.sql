@@ -1,5 +1,5 @@
 -- Transfer allocation RELEASE ledger (cancel-after-allocation
--- compensation, ADR 0050).
+-- compensation, ADR 0051).
 --
 -- One row PER transfer line this service has ever released, keyed by the
 -- planning context's transfer_line_id (DB-unique) — the mirror of the
