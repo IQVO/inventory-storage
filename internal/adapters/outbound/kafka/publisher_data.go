@@ -44,6 +44,19 @@ type transferRejectedData struct {
 	Reason            string `json:"reason"`
 }
 
+// transferReleasedData is the `data` payload for
+// TransferStockAllocationReleased (v1, frozen — ADR 0050).
+type transferReleasedData struct {
+	TransferID     string `json:"transfer_id"`
+	TransferLineID string `json:"transfer_line_id"`
+	ReservationID  string `json:"reservation_id"`
+	OriginSiteID   string `json:"origin_site_id"`
+	SKU            string `json:"sku"`
+	Quantity       int    `json:"quantity"`
+	Outcome        string `json:"outcome"`
+	Reason         string `json:"reason"`
+}
+
 // receiptStagedData is the `data` payload for TransferReceiptStaged
 // (v1, frozen — ADR 0033).
 type receiptStagedData struct {

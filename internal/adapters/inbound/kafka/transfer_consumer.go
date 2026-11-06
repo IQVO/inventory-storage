@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"time"
 
+	ce "github.com/cloudevents/sdk-go/v2/event"
 	kafkago "github.com/segmentio/kafka-go"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
@@ -36,6 +37,11 @@ const DefaultConsumerGroup = "inventory-storage-transfer-allocation"
 // this consumer dispatches on — never a suffix match.
 const typeTransferAllocationRequested = "com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested"
 
+// typeTransferAllocationReleaseRequested is the FULL CloudEvents type of
+// the compensation command (ADR 0050): a transfer cancelled after
+// allocation asks this service to resolve the origin hold.
+const typeTransferAllocationReleaseRequested = "com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested"
+
 // commandData is the TransferAllocationRequested payload, per
 // network-inventory-planning's contract:
 // {transfer_id, transfer_line_id, origin_site_id, sku, quantity}.
@@ -45,6 +51,20 @@ type commandData struct {
 	OriginSiteID   string `json:"origin_site_id"`
 	SKU            string `json:"sku"`
 	Quantity       int    `json:"quantity"`
+}
+
+// releaseCommandData is the TransferAllocationReleaseRequested payload,
+// per network-inventory-planning's contract (ADR 0050):
+// {transfer_id, transfer_line_id, reservation_id, origin_site_id, sku,
+// quantity, reason}.
+type releaseCommandData struct {
+	TransferID     string `json:"transfer_id"`
+	TransferLineID string `json:"transfer_line_id"`
+	ReservationID  string `json:"reservation_id"`
+	OriginSiteID   string `json:"origin_site_id"`
+	SKU            string `json:"sku"`
+	Quantity       int    `json:"quantity"`
+	Reason         string `json:"reason"`
 }
 
 // Reader is the subset of *kafkago.Reader this consumer needs, so unit
@@ -62,9 +82,13 @@ type Reader interface {
 // transient error, so a failed handler can never drop or skip a command.
 type Consumer struct {
 	Reader Reader
-	// Allocate is the command handler. Required.
+	// Allocate is the allocation command handler. Required.
 	Allocate TransferAllocator
-	Logger   *slog.Logger
+	// Release is the release command handler (ADR 0050). Required in
+	// production wiring; a release command arriving while it is nil is
+	// logged and committed past (a wiring bug is not retryable).
+	Release TransferReleaser
+	Logger  *slog.Logger
 }
 
 // TransferAllocator is the use-case port the consumer drives —
@@ -73,17 +97,23 @@ type TransferAllocator interface {
 	Execute(ctx context.Context, cmd usecases.TransferCommand) (*usecases.Result, error)
 }
 
+// TransferReleaser is the release use-case port the consumer drives —
+// satisfied by *usecases.ReleaseTransferAllocation.
+type TransferReleaser interface {
+	Execute(ctx context.Context, cmd usecases.TransferReleaseCommand) (*usecases.ReleaseResult, error)
+}
+
 // NewConsumer constructs the reader and consumer. groupID is the
 // consumer group (env-configurable at the composition root; the named
 // const documents the default and its reasoning).
-func NewConsumer(brokers []string, groupID string, allocate TransferAllocator, logger *slog.Logger) *Consumer {
-	return NewConsumerForTopic(Topic, brokers, groupID, allocate, logger)
+func NewConsumer(brokers []string, groupID string, allocate TransferAllocator, release TransferReleaser, logger *slog.Logger) *Consumer {
+	return NewConsumerForTopic(Topic, brokers, groupID, allocate, release, logger)
 }
 
 // NewConsumerForTopic is NewConsumer with an explicit topic, so
 // integration tests can drive the identical consume/commit semantics
 // against a throwaway topic instead of the production one.
-func NewConsumerForTopic(topic string, brokers []string, groupID string, allocate TransferAllocator, logger *slog.Logger) *Consumer {
+func NewConsumerForTopic(topic string, brokers []string, groupID string, allocate TransferAllocator, release TransferReleaser, logger *slog.Logger) *Consumer {
 	if groupID == "" {
 		groupID = DefaultConsumerGroup
 	}
@@ -99,7 +129,7 @@ func NewConsumerForTopic(topic string, brokers []string, groupID string, allocat
 		// skipped; once the group has committed, offsets take over.
 		StartOffset: kafkago.FirstOffset,
 	})
-	return &Consumer{Reader: reader, Allocate: allocate, Logger: logger}
+	return &Consumer{Reader: reader, Allocate: allocate, Release: release, Logger: logger}
 }
 
 // retryBackoff is the capped exponential backoff between retries of the
@@ -190,10 +220,20 @@ func (c *Consumer) Handle(ctx context.Context, msg kafkago.Message) error {
 	}
 
 	// Dispatch on the FULL type; ignore everything else on the topic.
-	if e.Type() != typeTransferAllocationRequested {
+	switch e.Type() {
+	case typeTransferAllocationRequested:
+		return c.handleAllocate(ctx, e, msg)
+	case typeTransferAllocationReleaseRequested:
+		return c.handleRelease(ctx, e, msg)
+	default:
 		return nil
 	}
+}
 
+// handleAllocate decodes and applies one TransferAllocationRequested.
+// It needs the cloudevents event for its id and the raw message for its
+// partition/offset in log lines.
+func (c *Consumer) handleAllocate(ctx context.Context, e ce.Event, msg kafkago.Message) error {
 	var data commandData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping TransferAllocationRequested with undecodable payload",
@@ -255,10 +295,90 @@ func (c *Consumer) Handle(ctx context.Context, msg kafkago.Message) error {
 	return nil
 }
 
+// handleRelease decodes and applies one
+// TransferAllocationReleaseRequested — the compensation command of a
+// transfer cancelled after allocation (ADR 0050). Refusals (unknown
+// line, ledger mismatch, malformed payload) are deterministic: logged
+// and committed past, never retried, and the use case publishes no event
+// for them.
+func (c *Consumer) handleRelease(ctx context.Context, e ce.Event, msg kafkago.Message) error {
+	if c.Release == nil {
+		// A wiring bug, not a retryable failure: the composition root
+		// always wires the release handler.
+		c.Logger.ErrorContext(ctx, "transfer allocation release command arrived but no release handler is wired; committing past it",
+			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset)
+		return nil
+	}
+
+	var data releaseCommandData
+	if err := e.DataAs(&data); err != nil {
+		c.Logger.WarnContext(ctx, "skipping TransferAllocationReleaseRequested with undecodable payload",
+			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+		return nil
+	}
+
+	site, err := shared.NewSiteID(data.OriginSiteID)
+	if err != nil {
+		c.Logger.WarnContext(ctx, "skipping TransferAllocationReleaseRequested with invalid origin_site_id",
+			"id", e.ID(), "origin_site_id", data.OriginSiteID, "error", err)
+		return nil
+	}
+	sku, err := shared.NewSKU(data.SKU)
+	if err != nil {
+		c.Logger.WarnContext(ctx, "skipping TransferAllocationReleaseRequested with invalid sku",
+			"id", e.ID(), "sku", data.SKU, "error", err)
+		return nil
+	}
+	qty, err := shared.NewPositiveQuantity(data.Quantity)
+	if err != nil {
+		c.Logger.WarnContext(ctx, "skipping TransferAllocationReleaseRequested with non-positive quantity",
+			"id", e.ID(), "quantity", data.Quantity, "error", err)
+		return nil
+	}
+
+	result, err := c.Release.Execute(ctx, usecases.TransferReleaseCommand{
+		TransferID:     data.TransferID,
+		TransferLineID: data.TransferLineID,
+		ReservationID:  data.ReservationID,
+		OriginSiteID:   site,
+		SKU:            sku,
+		Quantity:       qty,
+		Reason:         data.Reason,
+	})
+	if err != nil {
+		if isDeterministic(err) {
+			// Deterministic refusal (malformed command, unknown line,
+			// ledger mismatch): log, commit past, never retry.
+			c.Logger.WarnContext(ctx, "transfer allocation release command refused; committing past it",
+				"id", e.ID(), "transfer_line_id", data.TransferLineID, "error", err)
+			return nil
+		}
+		return err
+	}
+
+	outcome := "UNKNOWN"
+	if result.Release != nil {
+		outcome = string(result.Release.Outcome())
+	}
+	if result.Replay {
+		c.Logger.InfoContext(ctx, "transfer allocation release command replayed; original outcome returned",
+			"ce_id", e.ID(), "transfer_line_id", data.TransferLineID,
+			"outcome", outcome)
+	} else {
+		c.Logger.InfoContext(ctx, "transfer allocation release decided",
+			"ce_id", e.ID(), "transfer_line_id", data.TransferLineID,
+			"outcome", outcome,
+			"reservation_id", data.ReservationID)
+	}
+	return nil
+}
+
 // isDeterministic reports whether err can never succeed on retry:
 // a malformed command (validation) or a non-CloudEvent envelope.
 func isDeterministic(err error) bool {
 	return errors.Is(err, usecases.ErrMalformedTransferCommand) ||
+		errors.Is(err, usecases.ErrUnknownTransferLine) ||
+		errors.Is(err, usecases.ErrTransferReleaseMismatch) ||
 		errors.Is(err, cloudevents.ErrNotCloudEvent)
 }
 

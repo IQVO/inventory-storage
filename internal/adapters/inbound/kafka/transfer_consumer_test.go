@@ -279,6 +279,162 @@ func TestConsumer_UnknownTypeIgnored(t *testing.T) {
 	}
 }
 
+// fakeReleaser records the release commands it was asked to decide.
+type fakeReleaser struct {
+	mu       sync.Mutex
+	commands []usecases.TransferReleaseCommand
+	err      error // returned verbatim, e.g. a deterministic refusal
+}
+
+func (f *fakeReleaser) commandsLen() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.commands)
+}
+
+func (f *fakeReleaser) commandAt(i int) usecases.TransferReleaseCommand {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.commands[i]
+}
+
+func (f *fakeReleaser) Execute(ctx context.Context, cmd usecases.TransferReleaseCommand) (*usecases.ReleaseResult, error) {
+	f.mu.Lock()
+	f.commands = append(f.commands, cmd)
+	err := f.err
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return &usecases.ReleaseResult{Replay: false}, nil
+}
+
+// buildTransferReleaseCommandCE encodes one
+// TransferAllocationReleaseRequested CloudEvent exactly as
+// network-inventory-planning would (ADR 0050).
+func buildTransferReleaseCommandCE(t *testing.T, id, transferID, lineID, reservationID, site, sku string, qty int, reason string) []byte {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"transfer_id":      transferID,
+		"transfer_line_id": lineID,
+		"reservation_id":   reservationID,
+		"origin_site_id":   site,
+		"sku":              sku,
+		"quantity":         qty,
+		"reason":           reason,
+	})
+	if err != nil {
+		t.Fatalf("marshal data: %v", err)
+	}
+	value, err := json.Marshal(map[string]any{
+		"specversion":     "1.0",
+		"id":              id,
+		"source":          "/warehouse/network-inventory-planning",
+		"type":            typeTransferAllocationReleaseRequested,
+		"subject":         lineID,
+		"time":            "2026-11-05T12:00:00Z",
+		"datacontenttype": "application/json",
+		"dataschema":      "urn:warehouse:network-inventory-planning:events:TransferAllocationReleaseRequested:v1",
+		"data":            json.RawMessage(payload),
+	})
+	if err != nil {
+		t.Fatalf("marshal CE: %v", err)
+	}
+	return value
+}
+
+// runOne drives the consumer until the predicate holds or the deadline
+// passes, then stops it.
+func runOne(t *testing.T, c *Consumer, until func() bool) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if until() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+}
+
+// A well-formed release command reaches the release use case with the
+// decoded fields (the allocation handler must NOT see it).
+func TestConsumer_ValidReleaseCommandReachesReleaseUseCase(t *testing.T) {
+	alloc := &fakeAllocator{}
+	rel := &fakeReleaser{}
+	reader := &fakeReader{queue: []kafkago.Message{
+		{Topic: Topic, Partition: 0, Offset: 0, Value: buildTransferReleaseCommandCE(t, "ce-r1", "tr-9", "tl-9", "res-9", "SITE-A", "SKU-9", 12, "cancelled by planner")},
+	}}
+	c := &Consumer{Reader: reader, Allocate: alloc, Release: rel, Logger: quietLogger()}
+
+	runOne(t, c, func() bool { return rel.commandsLen() >= 1 })
+
+	if alloc.commandsLen() != 0 {
+		t.Fatalf("release command reached the ALLOCATE handler %d times", alloc.commandsLen())
+	}
+	got := rel.commandAt(0)
+	if got.TransferID != "tr-9" || got.TransferLineID != "tl-9" || got.ReservationID != "res-9" ||
+		got.OriginSiteID != shared.SiteID("SITE-A") || got.SKU != shared.SKU("SKU-9") || got.Quantity.Int() != 12 ||
+		got.Reason != "cancelled by planner" {
+		t.Fatalf("decoded release command = %+v", got)
+	}
+}
+
+// A deterministic refusal from the release use case (unknown line) is
+// committed past on the FIRST attempt — no retry, no partition wedge.
+func TestConsumer_RefusedReleaseCommittedPastImmediately(t *testing.T) {
+	rel := &fakeReleaser{err: usecases.ErrUnknownTransferLine}
+	reader := &fakeReader{queue: []kafkago.Message{
+		{Topic: Topic, Partition: 0, Offset: 4, Value: buildTransferReleaseCommandCE(t, "ce-r2", "tr-x", "tl-x", "res-x", "SITE-A", "SKU-1", 1, "cancel")},
+	}}
+	c := &Consumer{Reader: reader, Allocate: &fakeAllocator{}, Release: rel, Logger: quietLogger()}
+
+	runOne(t, c, func() bool { return reader.commitsLen() >= 1 })
+
+	if reader.commitsLen() != 1 {
+		t.Fatalf("commits = %d, want 1", reader.commitsLen())
+	}
+	if rel.commandsLen() != 1 {
+		t.Fatalf("release handler invoked %d times, want exactly 1 (no retry)", rel.commandsLen())
+	}
+}
+
+// A release command with an invalid payload (non-positive quantity)
+// never reaches the use case and is committed past.
+func TestConsumer_MalformedReleaseCommittedPastImmediately(t *testing.T) {
+	rel := &fakeReleaser{}
+	reader := &fakeReader{queue: []kafkago.Message{
+		{Topic: Topic, Partition: 0, Offset: 8, Value: buildTransferReleaseCommandCE(t, "ce-r3", "tr-y", "tl-y", "res-y", "SITE-A", "SKU-1", 0, "cancel")},
+	}}
+	c := &Consumer{Reader: reader, Allocate: &fakeAllocator{}, Release: rel, Logger: quietLogger()}
+
+	runOne(t, c, func() bool { return reader.commitsLen() >= 1 })
+
+	if reader.commitsLen() != 1 || rel.commandsLen() != 0 {
+		t.Fatalf("commits/handler = %d/%d, want 1/0", reader.commitsLen(), rel.commandsLen())
+	}
+}
+
+// A release command arriving with no release handler wired (a
+// composition-root bug) is logged and committed past — never retried.
+func TestConsumer_ReleaseWithoutHandlerCommittedPast(t *testing.T) {
+	reader := &fakeReader{queue: []kafkago.Message{
+		{Topic: Topic, Partition: 0, Offset: 9, Value: buildTransferReleaseCommandCE(t, "ce-r4", "tr-z", "tl-z", "res-z", "SITE-A", "SKU-1", 1, "cancel")},
+	}}
+	c := &Consumer{Reader: reader, Allocate: &fakeAllocator{}, Logger: quietLogger()}
+
+	runOne(t, c, func() bool { return reader.commitsLen() >= 1 })
+
+	if reader.commitsLen() != 1 {
+		t.Fatalf("commits = %d, want 1 (committed past, not wedged)", reader.commitsLen())
+	}
+}
+
 // A well-formed command reaches the use case with the decoded fields.
 func TestConsumer_ValidCommandReachesUseCase(t *testing.T) {
 	alloc := &fakeAllocator{}
