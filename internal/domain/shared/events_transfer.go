@@ -63,6 +63,40 @@ func NewTransferStockAllocationRejected(occurredAt time.Time, transferID, transf
 	}
 }
 
+// TransferStockAllocationReleased: the compensation leg of the transfer
+// saga (ADR 0050) — a transfer cancelled after allocation had its origin
+// hold resolved. `Outcome` is the closed set RELEASED (the reservation
+// still held the stock; this revoked it, quantity back in usable) |
+// ALREADY_RESOLVED (the reservation had already expired or been
+// confirmed — either way the hold is gone). Both settle the saga as
+// success. `Reason` is the command's cancellation reason carried
+// through, or IDEMPOTENCY_CONFLICT on a conflicting replay's answer.
+type TransferStockAllocationReleased struct {
+	base
+	TransferID     string
+	TransferLineID string
+	ReservationID  string
+	OriginSiteID   SiteID
+	SKU            SKU
+	Quantity       Quantity
+	Outcome        string
+	Reason         string
+}
+
+func NewTransferStockAllocationReleased(occurredAt time.Time, transferID, transferLineID, reservationID string, originSiteID SiteID, sku SKU, qty Quantity, outcome, reason string) TransferStockAllocationReleased {
+	return TransferStockAllocationReleased{
+		base:           newBase("TransferStockAllocationReleased", occurredAt),
+		TransferID:     transferID,
+		TransferLineID: transferLineID,
+		ReservationID:  reservationID,
+		OriginSiteID:   originSiteID,
+		SKU:            sku,
+		Quantity:       qty,
+		Outcome:        outcome,
+		Reason:         reason,
+	}
+}
+
 // TransferReceiptStaged: a destination site counted goods against a
 // recognized (ALLOCATED) transfer line (ADR 0031, Phase 3 — destination
 // receipt custody). No usable stock moves: the destination's usable
