@@ -220,6 +220,22 @@ type TransferAllocationRepo interface {
 	Save(ctx context.Context, a *transfer.Allocation) error
 }
 
+// TransferReleaseRepo persists and retrieves the transfer-allocation
+// RELEASE ledger (ADR 0050): one row per released transfer line,
+// DB-unique on transfer_line_id — the idempotency anchor of the
+// cancel-after-allocation compensation leg, mirroring
+// TransferAllocationRepo for the allocation leg.
+type TransferReleaseRepo interface {
+	// FindByTransferLineID returns the decided release for that line,
+	// or nil when this line's allocation has never been released.
+	FindByTransferLineID(ctx context.Context, transferLineID string) (*transfer.Release, error)
+	// Save inserts the release. A second Save for an already-decided
+	// transfer_line_id must fail with ErrTransferReleaseAlreadyDecided
+	// (the DB unique constraint) so the use case can route the replay
+	// to the "return the original outcome" path.
+	Save(ctx context.Context, r *transfer.Release) error
+}
+
 // TransferReceiptRepo persists and retrieves destination transfer
 // receipts (ADR 0031): one row per arrived transfer line, DB-unique on
 // transfer_line_id — the idempotency anchor for BOTH the stage and the
