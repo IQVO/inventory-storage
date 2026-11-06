@@ -60,7 +60,7 @@ Typos, broken links and formatting are of course fair game.
 | --- | --- | --- |
 | [0001](./0001-hexagonal-ports-and-adapters.md) | Hexagonal (ports & adapters) architecture | Accepted |
 | [0002](./0002-chaotic-storage-over-fixed-slotting.md) | Chaotic (random) stow over fixed slotting | Accepted |
-| [0003](./0003-revocable-reservations.md) | Revocable reservations over hard allocation | Accepted |
+| [0003](./0003-revocable-reservations.md) | Revocable reservations over hard allocation | Accepted (amended by 0050 s3) |
 | [0004](./0004-kafka-integration-events.md) | Kafka and a shared envelope for integration events | Superseded by [0024](./0024-cloudevents-mandatory-envelope.md) (envelope) |
 | [0005](./0005-rfc-7807-problem-details.md) | RFC 7807 Problem Details for all error responses | Accepted |
 | [0006](./0006-arch-go-fitness-tests.md) | arch-go fitness tests to enforce the dependency rule | Accepted |
@@ -107,6 +107,7 @@ Typos, broken links and formatting are of course fair game.
 | [0047](./0047-bin-handling-unit-declared-event.md) | The bin handling unit arrives on `LocationSlotRegistered` (optional `handlingUnit`) and the new `LocationSlotHandlingUnitDeclared`; the facility cache reads both; amends 0045 section 4 (fail-closed unchanged) | Accepted |
 | [0048](./0048-a2a-inbound-adapter.md) | A2A inbound adapter: a third driving adapter over the same use cases as REST and MCP; two curated skills derived from the MCP tools, `check_availability` (read) and `revoke_reservation` (write), in a message-only agent served by `cmd/a2a` on 8093; in-band RFC 7807 problems with REST's classification; A2A carries delegation only, facts still leave through the outbox | Accepted |
 | [0049](./0049-adopt-the-fleet-rest-api-guideline.md) | Adopt the fleet REST API guideline: noun routes (`/stock-receipts`, `/stowages`, `/pick-confirmations`, `/cycle-counts`, `/case-breaks`), an `Idempotency-Key` on every POST with `409 idempotency-key-reused` and `Idempotency-Replayed` on replay, keyset-paged `{items, nextCursor}` collections; amends 0018 | Accepted |
+| [0050](./0050-deterministic-forward-first-allocation.md) | Reservations draw a SKU's forward pick face (from the approved slot plan, a local read model fed by `SlotPlanApproved`) before its reserve bins, then smaller usable first, bin id, stock unit id; the order is the domain policy `allocation.Order`, not SQL; transfer allocation and sealed-case reservation unchanged; amends 0003 section 3 | Accepted |
 
 Each of these reconstructs a decision that is actually visible in this
 repository's history, `CLAUDE.md`, `TASKS.md` or code — none is a generic

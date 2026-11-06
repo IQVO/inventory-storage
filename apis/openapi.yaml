@@ -577,7 +577,9 @@ paths:
       summary: Create a revocable reservation against usable inventory
       description: >
         Binds a quantity of a SKU's usable inventory (on-hand minus
-        existing reservations, first-fit across whichever StockUnits have
+        existing reservations, drawn forward-first: a SKU's forward pick face
+        before its reserve bins, then smaller usable first, bin id, stock unit
+        id (ADR 0050), across whichever StockUnits have
         usable quantity) to a piece of demand identified by demandRef. The
         reservation is NOT permanently bound to one physical StockUnit —
         the specific units/quantities drawn from are recorded as
