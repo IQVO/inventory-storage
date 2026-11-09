@@ -180,6 +180,10 @@ move happened. `pick-face-replenishment` acts on `BinStockLevelChanged`
 service never calls either: stock moves arrive as `TaskCompleted` (RELOCATE,
 REPLENISH) from fulfillment-execution and run through `RelocateStock`, which
 stays the only writer of the ledger.
+The reverse edge with slotting-optimization is also Kafka: this service consumes its `SlotPlanApproved` from
+`warehouse.slotting-optimization.events` into a local forward-slot map (`forward_pick_face_plans`,
+`forward_pick_faces`) that `ReserveStock` draws first ([ADR 0050](/docs/adr/0050)); no call is made to
+slotting-optimization at reservation time.
 
 ### inventory-storage ↔ workforce-management — **no relationship**
 
