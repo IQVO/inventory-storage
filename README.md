@@ -474,7 +474,10 @@ reads for the ADR-0009/0010 placement rules (unchanged). It is fed by
 `com.warehouse.wms.product-master.product.ProductClassified` on
 `warehouse.product-master.events`; the CloudEvents `id` is claimed in
 `processed_events` in the same transaction as the upsert, and a message
-applies only when its `version` is newer than the stored one. Other
+applies only when its `version` is newer than the stored one. The same consumer
+also reads `com.warehouse.wms.product-master.product.ProductPackLevelDeclared` and
+`com.warehouse.wms.product-master.product.ProductPackLevelRetired` into the local packaging view
+`pack_levels` ([ADR-0046](docs/docs/adr/0046-containers-no-site-on-carton-local-packaging-view.md)). Other
 product-master event types are ignored.
 
 | Env var | Required | Meaning |
@@ -530,6 +533,19 @@ types are ignored.
 
 The one-shot `republish-product-classifications` backfill (product-master ADR
 0003 stage B) was retired with stage E: `cmd/inventory` has no subcommands.
+
+### Consumed: slotting-optimization's SlotPlanApproved → forward-slot map (ADR-0050)
+
+slotting-optimization owns the slot plan. On `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved`
+from `warehouse.slotting-optimization.events` (`SlotPlanGenerated` and `SlotPlanRejected` are ignored) this service
+replaces the site's forward-slot map in `forward_pick_face_plans` / `forward_pick_faces`, claiming the CloudEvents `id`
+in `processed_events` in the same transaction; a plan older than the held one is a no-op and a malformed plan is
+logged (WARN) and skipped. `ReserveStock` draws a SKU's forward pick face before its reserve bins from these local
+tables, with no call to a sibling at reservation time.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `SLOT_PLAN_CONSUMER_GROUP` | `inventory-storage-slot-plan` | Stable consumer group id. The consumer always runs; the default lets a deployment that predates it boot unchanged. |
 
 ### Consumed: fulfillment-execution's TaskCompleted → confirm exactly the picked line (ADR-0036; counting fallback ADR-0035)
 

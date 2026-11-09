@@ -10,7 +10,8 @@ description: The final OLTP and analytical Postgres schemas of inventory-storage
 The schema after applying `migrations/0001`…`0008`, `0030`…`0033`
 (site custody, transfer ledger, transfer receipts and exceptions, `processed_events`),
 `0034` (`order_pick_progress`), `0035` (`reservations.line_no`), `0036` (`relocations`),
-`0037` (`bin_sku_levels`) and `0038` (containers, owners, packaging) (OLTP database,
+`0037` (`bin_sku_levels`), `0038` (containers, owners, packaging), `0039` (forward pick faces) and
+`0040` (`transfer_allocation_releases`) (OLTP database,
 `DATABASE_URL`) and `migrations/analytics/0001` (analytical database,
 `ANALYTICS_DATABASE_URL`) in order. Relationship lines are drawn **only**
 where a real `FOREIGN KEY` (`REFERENCES`) exists in the migrations.
@@ -24,6 +25,7 @@ erDiagram
         INTEGER capacity "CHECK capacity > 0"
         INTEGER occupied "CHECK occupied >= 0"
         INTEGER version "optimistic concurrency, default 1"
+        TEXT site_id "nullable, 0030"
     }
     stock_units {
         TEXT id PK
@@ -33,6 +35,9 @@ erDiagram
         INTEGER reserved "CHECK reserved >= 0"
         TEXT state "AVAILABLE RESERVED PICKED REMOVED UNLOCATED"
         INTEGER version "default 1"
+        TEXT site_id "nullable, 0030, indexed with sku while not null"
+        TEXT owner_ref "nullable, 0038"
+        TEXT pack_state "nullable, 0038: LOOSE or SEALED_CASE"
     }
     reservations {
         TEXT id PK
@@ -44,6 +49,7 @@ erDiagram
         TIMESTAMPTZ expires_at
         INTEGER version "default 1"
         INTEGER line_no "nullable order line, 32-bit: 1..2147483647 (CHECK >= 1, 0035, ADR 0036)"
+        TEXT owner_ref "nullable, 0038"
     }
     reservation_allocations {
         TEXT reservation_id PK,FK "REFERENCES reservations"
@@ -56,6 +62,8 @@ erDiagram
         TEXT_ARRAY handling_tags "TEXT array"
         TEXT temperature_class "default empty string"
         SMALLINT dot_hazard_class "nullable, 1 to 9"
+        BIGINT version "0033, product-master version guard, default 0"
+        TEXT classification_source "0033, default inventory-storage"
     }
     outbox_events {
         BIGSERIAL id PK
@@ -212,9 +220,35 @@ erDiagram
         TIMESTAMPTZ created_at
     }
 
+    forward_pick_face_plans {
+        TEXT site_id PK "one applied plan per site, 0039"
+        TEXT plan_id "slotting-optimization's plan id, no FK"
+        TIMESTAMPTZ approved_at "supersession guard"
+    }
+    forward_pick_faces {
+        TEXT site_id PK,FK "REFERENCES forward_pick_face_plans, ON DELETE CASCADE"
+        TEXT sku PK "indexed"
+        TEXT bin_id PK "the SKU's forward pick face, no FK"
+    }
+    transfer_allocation_releases {
+        BIGSERIAL id PK
+        TEXT transfer_id "indexed"
+        TEXT transfer_line_id "UNIQUE, planning context's identity"
+        TEXT reservation_id "no FK"
+        TEXT origin_site_id
+        TEXT sku
+        INTEGER quantity "CHECK quantity > 0"
+        TEXT outcome "RELEASED ALREADY_RESOLVED"
+        TEXT reason "the command's cancellation reason"
+        TIMESTAMPTZ decided_at
+        TIMESTAMPTZ created_at
+        TIMESTAMPTZ updated_at
+    }
+
     bins ||--o{ stock_units : "bin_id"
     reservations ||--|{ reservation_allocations : "reservation_id"
     stock_units ||--o{ reservation_allocations : "stock_unit_id"
+    forward_pick_face_plans ||--o{ forward_pick_faces : "site_id"
 ```
 
 Source: `migrations/0001_init.up.sql` … `migrations/0008_reservation_allocation_bin_id.up.sql`,
@@ -226,7 +260,9 @@ plus `0030_stock_unit_site_custody.up.sql` (`stock_units.site_id`, `bins.site_id
 `0035_reservation_line_no.up.sql` (`reservations.line_no`, ADR 0036),
 `0036_relocations.up.sql` (`relocations`, ADR 0039), `0037_bin_sku_levels.up.sql` (`bin_sku_levels`, ADR 0040) and
 `0038_containers_owner_stock_packaging.up.sql` (`pack_levels`, `containers`, `receipt_line_bookings`,
-`container_pending_links`, owner/pack columns on `stock_units`, `reservations`, `bin_sku_levels`, ADR 0045, 0046);
+`container_pending_links`, owner/pack columns on `stock_units`, `reservations`, `bin_sku_levels`, ADR 0045, 0046),
+`0039_forward_pick_faces.up.sql` (`forward_pick_face_plans`, `forward_pick_faces`, ADR 0050) and
+`0040_transfer_allocation_releases.up.sql` (`transfer_allocation_releases`, ADR 0051);
 `schema_migrations` is created by golang-migrate (`internal/adapters/outbound/postgres/migrate.go`).
 Omitted: the `events` table created by `0001` — `0005` drops it, so it is
 not part of the final schema. `TEXT_ARRAY` stands for Postgres `TEXT[]`
@@ -245,6 +281,8 @@ not part of the final schema. `TEXT_ARRAY` stands for Postgres `TEXT[]`
 | `transfer_allocations.reservation_id` | `reservations.id` | Ledger row written in the same transaction as the hold; NULL exactly when `outcome = REJECTED`; a replayed command is answered from the ledger, so the reference is never joined (transfer-safe allocation, Phase 2). |
 | `transfer_receipts.reservation_id` | `reservations.id` | Copied from the allocation ledger; the receipt stages and stows independently of the reservation lifecycle (ADR 0031). |
 | `transfer_allocations.transfer_id` / `transfer_line_id`, `transfer_receipts.transfer_id` / `transfer_line_id` | a transfer in `network-inventory-planning` | Another bounded context's identity; stored opaquely, `transfer_line_id` made DB-unique so replays return the original outcome. |
+| `forward_pick_face_plans.plan_id`, `forward_pick_faces.sku` / `bin_id` | a slot plan and its assignments in `slotting-optimization`; `bins.id` | Another bounded context's identity (`SlotPlanApproved.plan_id`, `assignments[{sku, slot}]`) kept by value as a local read model, so `bin_id` carries no FK to `bins` (ADR 0050). The only real FK of the pair is `forward_pick_faces.site_id` → `forward_pick_face_plans.site_id` (`ON DELETE CASCADE`); a site's map is replaced wholesale when a later plan is approved. |
+| `transfer_allocation_releases.reservation_id`, `.transfer_id` / `.transfer_line_id` | `reservations.id`; a transfer in `network-inventory-planning` | The release ledger mirrors `transfer_allocations`: references held by value, `transfer_line_id` DB-unique so a replayed `TransferAllocationReleaseRequested` returns the original outcome (ADR 0051). |
 | `containers.stock_unit_id` | `stock_units.id` | The 1:1 SEALED_CASE unit, enforced by a unique index, not a FK; NULL until the container's stock unit exists (ADR 0045). |
 | `containers.receipt_id` / `line_no`, `receipt_line_bookings.receipt_id` / `line_no`, `container_pending_links.receipt_id` / `line_no` | a receipt line in `inbound-receiving` | Another bounded context's identity, carried on `ReceiptLineReceived` events; stored opaquely (ADR 0045). |
 | `pack_levels.gtin`, `pack_levels.child_gtin` | a GTIN in `product-master` | Local projection of `ProductPackLevelDeclared`/`Retired`; another bounded context's identity, resolvable after retirement (ADR 0046). |
@@ -306,6 +344,11 @@ and hour, and the two event-id tables are idempotency ledgers.
 | `receipt_line_bookings` | infrastructure — booked-quantity record | what `ReceiptLineReceived` booked per (receipt, line); bounds container creation (ADR 0045 section 6) |
 | `container_pending_links` | infrastructure — quarantine | sealed cartons not yet linkable to a Container; re-evaluated when the booking or pack level arrives; REJECTED rows kept for audit |
 | `transfer_allocations` | infrastructure — idempotent transfer-decision ledger | one row per `transfer_line_id`; the unique constraint routes replays to the original outcome (transfer-safe allocation, Phase 2) |
+| `transfer_allocation_releases` | infrastructure — idempotent release ledger (cancel-after-allocation compensation) | one row per `transfer_line_id` this service has released; outcome `RELEASED` or `ALREADY_RESOLVED` (ADR 0051, migration 0040) |
+| `relocations` | infrastructure — immutable relocation record | one row per applied `RelocateStock` (ADR 0039, migration 0036) |
+| `bin_sku_levels` | infrastructure — per-(bin, SKU, owner) version counter | the version behind `BinStockLevelChanged`, bumped inside the ledger transaction (ADR 0040, migrations 0037, 0038) |
+| `forward_pick_face_plans` | read model — slotting-optimization's applied plan per site | the supersession guard of the forward map: a plan applies only if its `approved_at` is later than the held one, or equal with a higher `plan_id` (ADR 0050) |
+| `forward_pick_faces` | read model — slotting-optimization's forward-slot map | the full `sku` → `bin_id` assignment map of the site's applied plan, replaced wholesale; `ReserveStock` draws these bins first (ADR 0050) |
 | `transfer_receipts` | infrastructure — destination receipt ledger | one row per arrived transfer line; STAGED → STOWED; over/short variance explicit on the row (ADR 0031) |
 | `inventory_exceptions` | infrastructure — quarantine | destination scans not matched to an ALLOCATED line; no stock row, no usable change, no availability event |
 | `analytics_processed_events` | analytics projection | projection idempotency + freshness (`GET /reports/flow-accuracy/freshness`) |

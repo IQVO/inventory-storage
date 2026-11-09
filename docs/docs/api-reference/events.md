@@ -99,7 +99,11 @@ integration topic only, for product-master's legacy importer (it was published
 on both topics per write from 2026-10-06 under [ADR 0031](/docs/adr/0031)).
 This service also **consumes** product-master's
 `com.warehouse.wms.product-master.product.ProductClassified` from
-`warehouse.product-master.events` into its local classification copy.
+`warehouse.product-master.events` into its local classification copy, and
+`com.warehouse.wms.product-master.product.ProductPackLevelDeclared` and `ProductPackLevelRetired` from the same topic into its local packaging view
+(`pack_levels`, [ADR 0046](/docs/adr/0046)), and slotting-optimization's
+`com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved` from
+`warehouse.slotting-optimization.events` into its local forward-slot map ([ADR 0050](/docs/adr/0050)).
 
 ### Reservation entity
 

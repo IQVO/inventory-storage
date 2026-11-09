@@ -120,7 +120,11 @@ relayed by `cmd/inventory`.
 
 Consumed (not produced): `com.warehouse.wms.product-master.product.ProductClassified`
 on `warehouse.product-master.events` feeds the local classification copy via
-`ApplyProductClassification` ([ADR 0034](/docs/adr/0034)), and
+`ApplyProductClassification` ([ADR 0034](/docs/adr/0034)); on the same topic
+`com.warehouse.wms.product-master.product.ProductPackLevelDeclared` and `ProductPackLevelRetired` feed the local
+packaging view `pack_levels` via `ApplyPackLevel` ([ADR 0046](/docs/adr/0046)); `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved`
+on `warehouse.slotting-optimization.events` replaces a site's forward-slot map (`forward_pick_face_plans`,
+`forward_pick_faces`) via `ApplySlotPlan` ([ADR 0050](/docs/adr/0050)); and
 `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` on
 `warehouse.fulfillment.events` confirms the order's picked reservations via
 `ConfirmPicksForOrder`: exactly the picked line's reservation when the event
