@@ -324,7 +324,7 @@ func TestList_FiltersByReasonSkuAgeAndPages(t *testing.T) {
 		t.Fatalf("older than = %d", len(older))
 	}
 	first, _ := w.list.Execute(ctx, usecases.ListHeldStockQuery{Limit: 2})
-	next, _ := w.list.Execute(ctx, usecases.ListHeldStockQuery{After: &ports.HeldPageAfter{HeldAt: first[1].HeldAt(), ID: first[1].ID()}, Limit: 2})
+	next, _ := w.list.Execute(ctx, usecases.ListHeldStockQuery{After: &stock.HeldPageAfter{HeldAt: first[1].HeldAt(), ID: first[1].ID()}, Limit: 2})
 	if len(first) != 2 || len(next) != 1 || next[0].ID() != all[2].ID() {
 		t.Fatalf("paging: first %d next %d", len(first), len(next))
 	}

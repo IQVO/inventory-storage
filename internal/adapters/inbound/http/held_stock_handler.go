@@ -8,7 +8,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/inbound/http/page"
-	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
@@ -70,7 +69,7 @@ func heldPosition(h *stock.HeldUnit) page.Position {
 
 // heldAfter turns a decoded cursor into the repository's keyset position; a
 // cursor whose sort key is not a timestamp is invalid.
-func heldAfter(pos *page.Position) (*ports.HeldPageAfter, error) {
+func heldAfter(pos *page.Position) (*stock.HeldPageAfter, error) {
 	if pos == nil {
 		return nil, nil
 	}
@@ -78,7 +77,7 @@ func heldAfter(pos *page.Position) (*ports.HeldPageAfter, error) {
 	if err != nil {
 		return nil, page.ErrInvalidCursor
 	}
-	return &ports.HeldPageAfter{HeldAt: heldAt, ID: pos.ID}, nil
+	return &stock.HeldPageAfter{HeldAt: heldAt, ID: pos.ID}, nil
 }
 
 // heldQuery reads the reason, sku and olderThanHours filters. On a bad value

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/container"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -30,7 +29,7 @@ func (h *heldFake) Save(_ context.Context, u *stock.HeldUnit) error {
 
 func (h *heldFake) FindByID(context.Context, string) (*stock.HeldUnit, error) { return nil, nil }
 
-func (h *heldFake) ListHeld(context.Context, ports.HeldStockQuery) ([]*stock.HeldUnit, error) {
+func (h *heldFake) ListHeld(context.Context, stock.HeldQuery) ([]*stock.HeldUnit, error) {
 	return nil, nil
 }
 

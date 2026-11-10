@@ -80,6 +80,24 @@ type HeldSource struct {
 	SSCC     string
 }
 
+// HeldQuery filters a read of the held units. Zero values mean "any".
+type HeldQuery struct {
+	Reason HoldReason
+	SKU    shared.SKU
+	// HeldBefore keeps units held strictly before this instant (the age filter).
+	HeldBefore time.Time
+	After      *HeldPageAfter
+	// Limit is the maximum number of rows to return; 0 means no limit.
+	Limit int
+}
+
+// HeldPageAfter is the keyset position of the last row of the previous page:
+// units sort by (HeldAt, ID).
+type HeldPageAfter struct {
+	HeldAt time.Time
+	ID     string
+}
+
 // HeldUnit is a quantity of one SKU received but held out of usable stock
 // (ADR 0052). It has no bin: the goods wait in the receiving or quarantine
 // area, so it is never a stock_units row and no reader of usable quantity can

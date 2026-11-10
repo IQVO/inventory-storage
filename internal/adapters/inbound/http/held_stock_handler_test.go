@@ -103,7 +103,7 @@ func decodeHeld(t *testing.T, rec *httptest.ResponseRecorder) heldJSON {
 	return h
 }
 
-func problemSlug(t *testing.T, rec *httptest.ResponseRecorder) string {
+func heldProblemSlug(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
 	var p struct {
 		Type string `json:"type"`
@@ -134,7 +134,7 @@ func TestGetHeldStock_OneUnitWithItsSourceAndAge(t *testing.T) {
 	if len(h.LPNs) != 1 || h.LPNs[0] != "LPN-1" {
 		t.Fatalf("lpns = %v", h.LPNs)
 	}
-	if rec := hs.do(http.MethodGet, "/held-stock/hu-nope", ""); rec.Code != http.StatusNotFound || problemSlug(t, rec) != "held-unit-not-found" {
+	if rec := hs.do(http.MethodGet, "/held-stock/hu-nope", ""); rec.Code != http.StatusNotFound || heldProblemSlug(t, rec) != "held-unit-not-found" {
 		t.Fatalf("unknown id = %d %s", rec.Code, rec.Body.String())
 	}
 }
@@ -206,7 +206,7 @@ func TestListHeldStock_RejectsBadQueries(t *testing.T) {
 			}
 			continue
 		}
-		if rec.Code != http.StatusBadRequest || problemSlug(t, rec) != slug {
+		if rec.Code != http.StatusBadRequest || heldProblemSlug(t, rec) != slug {
 			t.Errorf("%s = %d %s, want 400 %s", path, rec.Code, rec.Body.String(), slug)
 		}
 	}
@@ -276,7 +276,7 @@ func TestPostDisposition_Problems(t *testing.T) {
 		{"malformed body", id, `{`, http.StatusBadRequest, ""},
 	} {
 		rec := post(tc.id, tc.body)
-		if rec.Code != tc.status || (tc.slug != "" && problemSlug(t, rec) != tc.slug) {
+		if rec.Code != tc.status || (tc.slug != "" && heldProblemSlug(t, rec) != tc.slug) {
 			t.Errorf("%s = %d %s, want %d %s", tc.name, rec.Code, rec.Body.String(), tc.status, tc.slug)
 		}
 	}
@@ -284,7 +284,7 @@ func TestPostDisposition_Problems(t *testing.T) {
 	if rec := post(id, `{"disposition":"SCRAP"}`); rec.Code != http.StatusOK {
 		t.Fatalf("scrap = %d", rec.Code)
 	}
-	if rec := post(id, `{"disposition":"RELEASE"}`); rec.Code != http.StatusConflict || problemSlug(t, rec) != "held-unit-closed" {
+	if rec := post(id, `{"disposition":"RELEASE"}`); rec.Code != http.StatusConflict || heldProblemSlug(t, rec) != "held-unit-closed" {
 		t.Fatalf("second decision = %d %s, want 409 held-unit-closed", rec.Code, rec.Body.String())
 	}
 }

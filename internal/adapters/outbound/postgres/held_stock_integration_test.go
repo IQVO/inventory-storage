@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
-	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
@@ -105,7 +104,7 @@ func TestHeldStock_ReworkKeepsItHeldWithReasonUpdated(t *testing.T) {
 	if got.State() != stock.StateHeld || got.Reason() != stock.ReasonSuspect || got.ReworkCount() != 1 || got.Disposition() != stock.DispositionRework {
 		t.Fatalf("after REWORK: %s %s %d %s", got.State(), got.Reason(), got.ReworkCount(), got.Disposition())
 	}
-	listed, _ := repo.ListHeld(ctx, ports.HeldStockQuery{Reason: stock.ReasonSuspect})
+	listed, _ := repo.ListHeld(ctx, stock.HeldQuery{Reason: stock.ReasonSuspect})
 	if len(listed) != 1 {
 		t.Fatalf("a reworked unit is still held and listed under its new reason: %d", len(listed))
 	}
@@ -151,7 +150,7 @@ func TestHeldStock_ListFiltersOrdersAndPages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ids := func(q ports.HeldStockQuery) []string {
+	ids := func(q stock.HeldQuery) []string {
 		t.Helper()
 		got, err := repo.ListHeld(ctx, q)
 		if err != nil {
@@ -174,12 +173,12 @@ func TestHeldStock_ListFiltersOrdersAndPages(t *testing.T) {
 			}
 		}
 	}
-	eq("all, oldest first, closed excluded", ids(ports.HeldStockQuery{}), oldest, middle, newest)
-	eq("by sku", ids(ports.HeldStockQuery{SKU: "SKU-A"}), oldest, newest)
-	eq("by reason", ids(ports.HeldStockQuery{Reason: stock.ReasonQCPending}), middle)
-	eq("older than", ids(ports.HeldStockQuery{HeldBefore: heldBase.Add(90 * time.Minute)}), oldest, middle)
-	eq("limit", ids(ports.HeldStockQuery{Limit: 2}), oldest, middle)
-	eq("after the first page", ids(ports.HeldStockQuery{After: &ports.HeldPageAfter{HeldAt: middle.HeldAt(), ID: middle.ID()}, Limit: 2}), newest)
+	eq("all, oldest first, closed excluded", ids(stock.HeldQuery{}), oldest, middle, newest)
+	eq("by sku", ids(stock.HeldQuery{SKU: "SKU-A"}), oldest, newest)
+	eq("by reason", ids(stock.HeldQuery{Reason: stock.ReasonQCPending}), middle)
+	eq("older than", ids(stock.HeldQuery{HeldBefore: heldBase.Add(90 * time.Minute)}), oldest, middle)
+	eq("limit", ids(stock.HeldQuery{Limit: 2}), oldest, middle)
+	eq("after the first page", ids(stock.HeldQuery{After: &stock.HeldPageAfter{HeldAt: middle.HeldAt(), ID: middle.ID()}, Limit: 2}), newest)
 }
 
 func TestHeldStock_CartonMarksAreIdempotentAndIndependentOfOrder(t *testing.T) {

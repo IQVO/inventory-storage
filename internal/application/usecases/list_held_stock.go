@@ -18,7 +18,7 @@ type ListHeldStockQuery struct {
 	OlderThan time.Duration
 	// After is the keyset position of the last row of the previous page and
 	// Limit the page size (zero means no limit).
-	After *ports.HeldPageAfter
+	After *stock.HeldPageAfter
 	Limit int
 }
 
@@ -34,7 +34,7 @@ type ListHeldStock struct {
 
 // Execute returns the held units matching q.
 func (uc *ListHeldStock) Execute(ctx context.Context, q ListHeldStockQuery) ([]*stock.HeldUnit, error) {
-	query := ports.HeldStockQuery{Reason: q.Reason, SKU: q.SKU, After: q.After, Limit: q.Limit}
+	query := stock.HeldQuery{Reason: q.Reason, SKU: q.SKU, After: q.After, Limit: q.Limit}
 	if q.OlderThan > 0 {
 		query.HeldBefore = uc.Clock.Now().Add(-q.OlderThan)
 	}

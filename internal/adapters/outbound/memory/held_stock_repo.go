@@ -44,7 +44,7 @@ func (r *HeldStockRepo) FindByID(_ context.Context, id string) (*stock.HeldUnit,
 }
 
 // matches reports whether h is still held and passes q's filters.
-func matches(h *stock.HeldUnit, q ports.HeldStockQuery) bool {
+func matches(h *stock.HeldUnit, q stock.HeldQuery) bool {
 	switch {
 	case h.State() != stock.StateHeld:
 		return false
@@ -59,14 +59,14 @@ func matches(h *stock.HeldUnit, q ports.HeldStockQuery) bool {
 }
 
 // after reports whether h sorts strictly after the keyset position.
-func after(h *stock.HeldUnit, pos *ports.HeldPageAfter) bool {
+func after(h *stock.HeldUnit, pos *stock.HeldPageAfter) bool {
 	if pos == nil {
 		return true
 	}
 	return h.HeldAt().After(pos.HeldAt) || (h.HeldAt().Equal(pos.HeldAt) && h.ID() > pos.ID)
 }
 
-func (r *HeldStockRepo) ListHeld(_ context.Context, q ports.HeldStockQuery) ([]*stock.HeldUnit, error) {
+func (r *HeldStockRepo) ListHeld(_ context.Context, q stock.HeldQuery) ([]*stock.HeldUnit, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []*stock.HeldUnit

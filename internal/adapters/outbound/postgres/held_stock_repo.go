@@ -75,7 +75,7 @@ func (r *HeldStockRepo) FindByID(ctx context.Context, id string) (*stock.HeldUni
 }
 
 // ListHeld returns the units still HELD matching q in (held_at, id) order.
-func (r *HeldStockRepo) ListHeld(ctx context.Context, q ports.HeldStockQuery) ([]*stock.HeldUnit, error) {
+func (r *HeldStockRepo) ListHeld(ctx context.Context, q stock.HeldQuery) ([]*stock.HeldUnit, error) {
 	where := []string{"h.state = 'HELD'"}
 	var args []any
 	add := func(cond string, v any) {

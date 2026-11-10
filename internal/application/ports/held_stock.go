@@ -2,9 +2,7 @@ package ports
 
 import (
 	"context"
-	"time"
 
-	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/stock"
 )
 
@@ -19,29 +17,12 @@ type HeldStockRepo interface {
 	FindByID(ctx context.Context, id string) (*stock.HeldUnit, error)
 	// ListHeld returns the units still HELD that match q, oldest first, in
 	// (held_at, id) order, strictly after q.After.
-	ListHeld(ctx context.Context, q HeldStockQuery) ([]*stock.HeldUnit, error)
+	ListHeld(ctx context.Context, q stock.HeldQuery) ([]*stock.HeldUnit, error)
 	// MarkCarton records that a Damaged carton content named (receiptID,
 	// lineNo) with lpn and sscc. It is a no-op for a mark already recorded and
 	// books no quantity: the line event is the sole quantity authority.
 	MarkCarton(ctx context.Context, receiptID string, lineNo int, lpn, sscc string) error
 	NextID(ctx context.Context) (string, error)
-}
-
-// HeldStockQuery filters the held-stock list. Zero values mean "any".
-type HeldStockQuery struct {
-	Reason stock.HoldReason
-	SKU    shared.SKU
-	// HeldBefore keeps units held strictly before this instant (the age filter).
-	HeldBefore time.Time
-	After      *HeldPageAfter
-	// Limit is the maximum number of rows to return; 0 means no limit.
-	Limit int
-}
-
-// HeldPageAfter is the keyset position of the last row of the previous page.
-type HeldPageAfter struct {
-	HeldAt time.Time
-	ID     string
 }
 
 // HeldStockMetrics records the units currently held per reason, so the
