@@ -10,8 +10,9 @@ import (
 )
 
 // inboundReceiptCounterName counts, in units, what the inbound-receiving
-// consumer did with each received line (ADR 0037). outcome=damaged_not_booked
-// is the one to watch: those units were counted at the dock but are not stock.
+// consumer did with each received line (ADR 0037). outcome=held is the one to
+// watch: those Damaged units were counted at the dock and sit out of usable
+// stock until a disposition (ADR 0052); it replaced damaged_not_booked.
 const inboundReceiptCounterName = "inventory.inbound_receipt_units"
 
 // InboundReceiptMetrics implements ports.InboundReceiptMetrics against the
@@ -27,7 +28,7 @@ var _ ports.InboundReceiptMetrics = (*InboundReceiptMetrics)(nil)
 func NewInboundReceiptMetrics() (*InboundReceiptMetrics, error) {
 	counter, err := otel.Meter(meterName).Int64Counter(
 		inboundReceiptCounterName,
-		metric.WithDescription("Units on inbound-receiving ReceiptLineReceived events, by outcome (booked, damaged_not_booked)."),
+		metric.WithDescription("Units on inbound-receiving ReceiptLineReceived events, by outcome (booked, held)."),
 		metric.WithUnit("{unit}"),
 	)
 	if err != nil {

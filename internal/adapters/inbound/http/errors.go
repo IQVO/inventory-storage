@@ -22,6 +22,7 @@ func statusFor(err error) int {
 		errors.Is(err, usecases.ErrReservationNotFound),
 		errors.Is(err, usecases.ErrRelocationNotFound),
 		errors.Is(err, usecases.ErrContainerNotFound),
+		errors.Is(err, usecases.ErrHeldUnitNotFound),
 		errors.Is(err, usecases.ErrProductClassificationNotFound):
 		return http.StatusNotFound
 
@@ -46,6 +47,8 @@ func statusFor(err error) int {
 		errors.Is(err, relocation.ErrSameBin),
 		errors.Is(err, relocation.ErrUnknownReason),
 		errors.Is(err, relocation.ErrSourceRefTooLong),
+		errors.Is(err, stock.ErrInvalidDisposition),
+		errors.Is(err, stock.ErrInvalidHoldReason),
 		errors.Is(err, location.ErrInvalidCapacity):
 		return http.StatusUnprocessableEntity
 
@@ -56,6 +59,8 @@ func statusFor(err error) int {
 		errors.Is(err, stock.ErrInsufficientUsable),
 		errors.Is(err, stock.ErrInsufficientReserved),
 		errors.Is(err, stock.ErrUnitUnlocated),
+		errors.Is(err, stock.ErrUnitHeld),
+		errors.Is(err, stock.ErrHeldUnitClosed),
 		errors.Is(err, reservation.ErrAlreadyResolved),
 		errors.Is(err, reservation.ErrExpired),
 		errors.Is(err, reservation.ErrNoAllocations),
@@ -116,6 +121,7 @@ func problemCatalog() []struct {
 		{usecases.ErrRelocationNotFound, problemInfo{"relocation-not-found", "Relocation not found"}},
 		{usecases.ErrProductClassificationNotFound, problemInfo{"product-classification-not-found", "Product classification not found"}},
 		{usecases.ErrContainerNotFound, problemInfo{"container-not-found", "Container not found"}},
+		{usecases.ErrHeldUnitNotFound, problemInfo{"held-unit-not-found", "Held unit not found"}},
 
 		{shared.ErrEmptySKU, problemInfo{"empty-sku", "SKU must not be empty"}},
 		{shared.ErrEmptySiteID, problemInfo{"empty-site-id", "Site ID must not be empty"}},
@@ -138,6 +144,8 @@ func problemCatalog() []struct {
 		{relocation.ErrSameBin, problemInfo{"same-bin", "Relocation source and destination bin must differ"}},
 		{relocation.ErrUnknownReason, problemInfo{"invalid-relocation-reason", "Relocation reason must be SLOTTING, CONSOLIDATION or MANUAL"}},
 		{relocation.ErrSourceRefTooLong, problemInfo{"source-ref-too-long", "Relocation source reference must be at most 200 characters"}},
+		{stock.ErrInvalidDisposition, problemInfo{"invalid-disposition", "Disposition must be RELEASE, RETURN_TO_VENDOR, SCRAP or REWORK"}},
+		{stock.ErrInvalidHoldReason, problemInfo{"invalid-hold-reason", "Hold reason must be DAMAGED, QC_PENDING, SUSPECT or OTHER"}},
 
 		{location.ErrBinFull, problemInfo{"bin-full", "Bin is full: capacity exceeded"}},
 		{location.ErrCapacityBelowOccupancy, problemInfo{"capacity-below-occupancy", "Bin capacity cannot be set below current occupancy"}},
@@ -146,6 +154,8 @@ func problemCatalog() []struct {
 		{stock.ErrInsufficientUsable, problemInfo{"insufficient-usable", "Requested quantity exceeds usable inventory"}},
 		{stock.ErrInsufficientReserved, problemInfo{"insufficient-reserved", "Pick quantity exceeds reserved quantity"}},
 		{stock.ErrUnitUnlocated, problemInfo{"unit-unlocated", "Stock unit is unlocated"}},
+		{stock.ErrUnitHeld, problemInfo{"unit-held", "Stock unit is held and cannot be used until a disposition releases it"}},
+		{stock.ErrHeldUnitClosed, problemInfo{"held-unit-closed", "Held unit already has a final disposition"}},
 		{reservation.ErrAlreadyResolved, problemInfo{"reservation-already-resolved", "Reservation is already resolved"}},
 		{reservation.ErrExpired, problemInfo{"reservation-expired", "Reservation has expired"}},
 		{reservation.ErrNoAllocations, problemInfo{"reservation-no-allocations", "Reservation requires at least one allocation"}},

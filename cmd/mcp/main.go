@@ -206,7 +206,9 @@ type adapters struct {
 	relocations ports.RelocationRepo
 	// containers backs the read-only get_container tool (ADR 0045).
 	containers ports.ContainerRepo
-	publisher  ports.EventPublisher
+	// held backs the read-only list_held_stock tool (ADR 0052).
+	held      ports.HeldStockRepo
+	publisher ports.EventPublisher
 	// uow brackets every write use case's Save + Publish in one Postgres
 	// transaction (ADR-0017).
 	uow   ports.UnitOfWork
@@ -236,6 +238,7 @@ func buildDeps(ad adapters, clock ports.Clock, metrics ports.ReservationMetrics)
 		Stock:         ad.stock,
 		GetRelocation: &usecases.GetRelocation{Relocations: ad.relocations},
 		GetContainer:  &usecases.GetContainer{Containers: ad.containers},
+		ListHeldStock: &usecases.ListHeldStock{Held: ad.held, Clock: clock},
 	}
 }
 
@@ -294,6 +297,7 @@ func buildAdapters(ctx context.Context, databaseURL, migrationsDatabaseURL, migr
 		stock: stockRepo, reservations: reservationRepo,
 		locations: postgres.NewLocationRepo(pool), binLevels: postgres.NewBinLevelLedger(pool),
 		relocations: postgres.NewRelocationRepo(pool),
+		held:        postgres.NewHeldStockRepo(pool),
 		containers:  postgres.NewContainerRepo(pool),
 		publisher:   publisher,
 		uow:         postgres.NewUnitOfWork(pool),

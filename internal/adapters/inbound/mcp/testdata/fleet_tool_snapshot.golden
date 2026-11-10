@@ -16,6 +16,7 @@ inventory-storage	get_bin_occupancy
 inventory-storage	get_container
 inventory-storage	get_inventory_flow_accuracy_report
 inventory-storage	get_relocation
+inventory-storage	list_held_stock
 inventory-storage	revoke_reservation
 labor-performance	get_associate_scorecard
 labor-performance	get_labor_standard

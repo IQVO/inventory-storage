@@ -25,8 +25,8 @@ func TestInboundReceiptMetrics_CountsUnitsByOutcome(t *testing.T) {
 
 	ctx := context.Background()
 	metrics.InboundReceiptUnits(ctx, ports.InboundReceiptOutcomeBooked, 40)
-	metrics.InboundReceiptUnits(ctx, ports.InboundReceiptOutcomeDamaged, 4)
-	metrics.InboundReceiptUnits(ctx, ports.InboundReceiptOutcomeDamaged, 1)
+	metrics.InboundReceiptUnits(ctx, ports.InboundReceiptOutcomeHeld, 4)
+	metrics.InboundReceiptUnits(ctx, ports.InboundReceiptOutcomeHeld, 1)
 
 	var collected metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &collected); err != nil {
@@ -51,7 +51,7 @@ func TestInboundReceiptMetrics_CountsUnitsByOutcome(t *testing.T) {
 			}
 		}
 	}
-	if counts["booked"] != 40 || counts["damaged_not_booked"] != 5 {
-		t.Fatalf("counts = %v, want booked=40 damaged_not_booked=5", counts)
+	if counts["booked"] != 40 || counts["held"] != 5 {
+		t.Fatalf("counts = %v, want booked=40 held=5", counts)
 	}
 }

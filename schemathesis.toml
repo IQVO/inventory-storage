@@ -6,7 +6,7 @@
 
 # Paged collections (REST guideline 3): `cursor` is an opaque token only this API can
 # mint, so OpenAPI can only say "string". A schema-valid string that this API did not
-# issue is correctly 400 `invalid-cursor`. The 400 is documented on both operations and
+# issue is correctly 400 `invalid-cursor`. The 400 is documented on all three operations and
 # pinned by TestCollections_RejectBadLimitAndCursor
 # (internal/adapters/inbound/http/rest_guideline_test.go). Default
 # positive_data_acceptance statuses plus 400; every other check runs unchanged.
@@ -16,4 +16,8 @@ checks.positive_data_acceptance.expected-statuses = ["2xx", "400", "401", "403",
 
 [[operations]]
 include-operation-id = "listBinContainers"
+checks.positive_data_acceptance.expected-statuses = ["2xx", "400", "401", "403", "404", "409", "429", "5xx"]
+
+[[operations]]
+include-operation-id = "listHeldStock"
 checks.positive_data_acceptance.expected-statuses = ["2xx", "400", "401", "403", "404", "409", "429", "5xx"]

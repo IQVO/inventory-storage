@@ -16,4 +16,8 @@ const (
 	// StateUnlocated: a cycle count could not account for this quantity; the
 	// physical item exists somewhere but the system no longer knows where.
 	StateUnlocated State = "UNLOCATED"
+	// StateHeld: received but not fit for sale (damaged, QC pending, suspect)
+	// and waiting for a disposition (ADR 0052). A held unit has no usable
+	// quantity and can never be reserved.
+	StateHeld State = "HELD"
 )

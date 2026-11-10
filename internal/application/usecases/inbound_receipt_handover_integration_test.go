@@ -92,6 +92,28 @@ func stockReceivedAnalyticsRows(t *testing.T, env *transferTestEnv, sku string) 
 	return rows, quantity
 }
 
+// heldRows counts the held_stock rows of sku.
+func heldRows(t *testing.T, env *transferTestEnv, sku string) int {
+	t.Helper()
+	var n int
+	if err := env.pool.QueryRow(context.Background(), `SELECT count(*) FROM held_stock WHERE sku = $1`, sku).Scan(&n); err != nil {
+		t.Fatalf("count held_stock: %v", err)
+	}
+	return n
+}
+
+// heldOutboxRows counts the StockHeld outbox rows of sku.
+func heldOutboxRows(t *testing.T, env *transferTestEnv, sku string) int {
+	t.Helper()
+	var n int
+	if err := env.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM outbox_events
+		WHERE event_type LIKE '%StockHeld' AND convert_from(value, 'UTF8')::jsonb -> 'data' ->> 'sku' = $1`, sku).Scan(&n); err != nil {
+		t.Fatalf("count StockHeld outbox rows: %v", err)
+	}
+	return n
+}
+
 func processedReceiptEvents(t *testing.T, env *transferTestEnv, ids ...string) int {
 	t.Helper()
 	var n int
@@ -142,12 +164,28 @@ func TestIntegration_InboundReceipt_GoodLineBecomesStagedStock(t *testing.T) {
 			}
 		}
 	})
+	// A held unit's StockHeld also reaches the integration topic's outbox rows
+	// and the held_stock table: leave none of them behind either.
+	t.Cleanup(func() {
+		if _, err := env.pool.Exec(context.Background(), `
+			DELETE FROM outbox_events WHERE convert_from(value, 'UTF8')::jsonb -> 'data' ->> 'sku' = $1`, damagedSKU); err != nil {
+			t.Errorf("clean held outbox rows: %v", err)
+		}
+		if _, err := env.pool.Exec(context.Background(), `DELETE FROM held_stock WHERE sku = $1`, damagedSKU); err != nil {
+			t.Errorf("clean held_stock rows: %v", err)
+		}
+	})
 	uow := postgres.NewUnitOfWork(env.pool)
+	outbox := postgres.NewOutboxPublisher(env.pool, analytics)
 	book := &usecases.BookInboundReceiptLine{
 		Receive: &usecases.ReceiveStock{
-			Events:     postgres.NewOutboxPublisher(env.pool, analytics),
+			Events:     outbox,
 			Clock:      memory.SystemClock{},
 			UnitOfWork: uow,
+		},
+		// A Damaged line is held, never staged (ADR 0052).
+		Hold: &usecases.HoldStock{
+			Held: postgres.NewHeldStockRepo(env.pool), Events: outbox, Clock: memory.SystemClock{}, UnitOfWork: uow,
 		},
 		ProcessedEvents: postgres.NewProcessedEventRepo(env.pool),
 		UnitOfWork:      uow,
@@ -162,7 +200,7 @@ func TestIntegration_InboundReceipt_GoodLineBecomesStagedStock(t *testing.T) {
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		rows, _ := stockReceivedAnalyticsRows(t, env, goodSKU)
-		if rows == 2 && groupLag(env, group) == 0 {
+		if rows == 2 && heldRows(t, env, damagedSKU) == 1 && groupLag(env, group) == 0 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -178,11 +216,30 @@ func TestIntegration_InboundReceipt_GoodLineBecomesStagedStock(t *testing.T) {
 	if rows, qty := stockReceivedAnalyticsRows(t, env, goodSKU); rows != 2 || qty != 42 {
 		t.Fatalf("Good SKU: %d StockReceived rows / %d units, want 2 / 42", rows, qty)
 	}
-	// Damaged and invalid lines leave no stock event behind.
+	// Damaged and invalid lines are never staged as stock.
 	for _, sku := range []string{damagedSKU, invalidSKU} {
 		if rows, _ := stockReceivedAnalyticsRows(t, env, sku); rows != 0 {
 			t.Fatalf("%s: %d StockReceived rows, want 0", sku, rows)
 		}
+	}
+	// The Damaged line is HELD (ADR 0052): one held_stock row of 4 units with
+	// its source, a StockHeld outbox row (this test's outbox carries the
+	// analytics encoder only), no stock_units row and so no usable quantity.
+	var qty int
+	var reason, state, receipt string
+	if err := env.pool.QueryRow(ctx, `SELECT quantity, reason, state, receipt_id FROM held_stock WHERE sku = $1`, damagedSKU).
+		Scan(&qty, &reason, &state, &receipt); err != nil {
+		t.Fatalf("read held_stock: %v", err)
+	}
+	if qty != 4 || reason != "DAMAGED" || state != "HELD" || receipt != "rcpt-itest" {
+		t.Fatalf("held_stock = %d %s %s %s, want 4 DAMAGED HELD rcpt-itest", qty, reason, state, receipt)
+	}
+	if n := heldOutboxRows(t, env, damagedSKU); n != 1 {
+		t.Fatalf("StockHeld outbox rows = %d, want 1", n)
+	}
+	var stockUnits int
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM stock_units WHERE sku = $1`, damagedSKU).Scan(&stockUnits); err != nil || stockUnits != 0 {
+		t.Fatalf("stock_units rows of the held SKU = %d (err %v), want 0", stockUnits, err)
 	}
 	// The Good, Damaged and second Good ids are claimed once each; the invalid
 	// line and the ReceiptOpened are never claimed.

@@ -61,6 +61,7 @@ func newCW() *cw {
 	w.Link = &usecases.LinkReceiptCarton{ProcessedEvents: w.Processed, Pending: w.Pending, Linker: w.Linker}
 	w.Book = &usecases.BookInboundReceiptLine{
 		Receive: &usecases.ReceiveStock{Events: e.Events, Clock: e.Clock}, ProcessedEvents: memory.NewProcessedEventRepo(),
+		Hold:     &usecases.HoldStock{Held: memory.NewHeldStockRepo(), Events: e.Events, Clock: e.Clock},
 		Bookings: w.Bookings, Linker: w.Linker,
 	}
 	w.Pack = &usecases.ApplyPackLevel{Projection: w.Packaging, ProcessedEvents: memory.NewProcessedEventRepo(), Linker: w.Linker}

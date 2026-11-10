@@ -301,6 +301,14 @@ func wireTransferConsumer(t *testing.T, env *transferTestEnv, groupID string) *i
 		Events:       publisher,
 		Clock:        memory.SystemClock{},
 		UnitOfWork:   uow,
+	}, &usecases.ReleaseTransferAllocation{
+		Stock:        stockRepo,
+		Reservations: reservations,
+		Transfers:    transfers,
+		Releases:     postgres.NewTransferReleaseRepo(env.pool),
+		Events:       publisher,
+		Clock:        memory.SystemClock{},
+		UnitOfWork:   uow,
 	}, slog.New(slog.DiscardHandler))
 	t.Cleanup(func() { _ = consumer.Close() })
 	return consumer

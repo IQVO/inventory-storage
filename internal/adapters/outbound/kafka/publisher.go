@@ -113,10 +113,12 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 	switch event.(type) {
 	case shared.StockReserved, shared.ReservationRevoked,
 		shared.TransferStockAllocated, shared.TransferStockAllocationRejected,
+		shared.TransferStockAllocationReleased,
 		shared.TransferReceiptStaged, shared.TransferStockStowed,
 		shared.StockRelocated, shared.BinStockLevelChanged,
 		shared.DiscrepancyDetected, shared.ItemUnlocated, shared.ItemStowed,
-		shared.ContainerRegistered, shared.ContainerStowed, shared.CaseBroken, shared.ContainerEmptied:
+		shared.ContainerRegistered, shared.ContainerStowed, shared.CaseBroken, shared.ContainerEmptied,
+		shared.StockHeld, shared.StockReleased, shared.StockDispositioned:
 		return true
 	default:
 		return false
@@ -183,6 +185,21 @@ func (p *Publisher) Encode(ctx context.Context, event shared.DomainEvent) ([]Enc
 	return []Encoded{{Topic: Topic, EventType: cloudevents.Type(entity, event.EventName()), Key: []byte(key), Value: msg, Headers: headers}}, nil
 }
 
+// encodeReservationRevoked fills the ReservationRevoked payload from the
+// reservation repo (the one event that needs a lookup): a missing
+// reservation is ErrReservationNotFound, never a silent empty payload.
+func encodeReservationRevoked(ctx context.Context, p *Publisher, e shared.ReservationRevoked) (any, string, string, error) {
+	res, err := p.reservations.FindByID(ctx, e.ReservationID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if res == nil {
+		return nil, "", "", ErrReservationNotFound
+	}
+	data := reservationData{SKU: res.SKU().String(), Quantity: res.Quantity().Int(), DemandRef: res.DemandRef()}
+	return data, e.ReservationID, reservationEntity, nil
+}
+
 // encodeEvent maps one domain event onto its wire data payload, Kafka
 // key, and CloudEvents entity segment. A nil data return (with nil
 // error) means the event is not part of this publisher's contract — the
@@ -197,15 +214,7 @@ func encodeEvent(ctx context.Context, p *Publisher, event shared.DomainEvent) (d
 		data = reservationData{SKU: e.SKU.String(), Quantity: e.Quantity.Int(), DemandRef: e.DemandRef}
 		key = e.ReservationID
 	case shared.ReservationRevoked:
-		res, err := p.reservations.FindByID(ctx, e.ReservationID)
-		if err != nil {
-			return nil, "", "", err
-		}
-		if res == nil {
-			return nil, "", "", ErrReservationNotFound
-		}
-		data = reservationData{SKU: res.SKU().String(), Quantity: res.Quantity().Int(), DemandRef: res.DemandRef()}
-		key = e.ReservationID
+		return encodeReservationRevoked(ctx, p, e)
 	case shared.TransferStockAllocated:
 		legs := make([]transferAllocationLegOut, 0, len(e.Allocations))
 		for _, leg := range e.Allocations {
@@ -235,6 +244,21 @@ func encodeEvent(ctx context.Context, p *Publisher, event shared.DomainEvent) (d
 		}
 		// Key = subject = transfer_line_id: a rejection has no
 		// reservation, so the line is the aggregate the reply is about.
+		key = e.TransferLineID
+	case shared.TransferStockAllocationReleased:
+		data = transferReleasedData{
+			TransferID:     e.TransferID,
+			TransferLineID: e.TransferLineID,
+			ReservationID:  e.ReservationID,
+			OriginSiteID:   e.OriginSiteID.String(),
+			SKU:            e.SKU.String(),
+			Quantity:       e.Quantity.Int(),
+			Outcome:        e.Outcome,
+			Reason:         e.Reason,
+		}
+		// Key = subject = transfer_line_id, mirroring
+		// TransferStockAllocationRejected: the release settles the line,
+		// so the line is the aggregate the fact is about (ADR 0021).
 		key = e.TransferLineID
 	case shared.TransferReceiptStaged:
 		data = receiptStagedData{

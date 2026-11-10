@@ -2,6 +2,7 @@ package main
 
 import (
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
+	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
 	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 )
@@ -20,7 +21,7 @@ func buildServer(
 	stockRepo, locationRepo, reservationRepo, classificationRepo := a.stock, a.locations, a.reservations, a.classifications
 	publisher, uow := a.publisher, a.uow
 	levels := a.levelEmitter(clock)
-	reserve := &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow, Levels: levels}
+	reserve := &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow, Levels: levels, Forward: postgres.NewForwardFaceRepo(a.pool)}
 	// placement applies the hazmat, temperature and segregation rules of a
 	// plain stow to container stows and case breaks.
 	placement := &usecases.StowStock{Stock: stockRepo, Classifications: classificationRepo, LocationLookup: locationLookup}
@@ -66,9 +67,12 @@ func buildServer(
 			UnitOfWork: uow,
 			Levels:     levels,
 		},
-		RelocateStock:   newRelocateStock(a, clock),
-		GetRelocation:   &usecases.GetRelocation{Relocations: a.relocations},
-		Classifications: classificationRepo,
+		RelocateStock: newRelocateStock(a, clock),
+		GetRelocation: &usecases.GetRelocation{Relocations: a.relocations},
+		// Held stock (ADR 0052): the list read and the disposition decision.
+		ListHeldStock:         &usecases.ListHeldStock{Held: a.held, Clock: clock},
+		DecideHeldDisposition: a.decideHeldDisposition(clock),
+		Classifications:       classificationRepo,
 		// IdempotencyPool wires RequireIdempotencyKey onto every POST
 		// route (see inboundhttp.NewRouter). nil (in-memory/no-DATABASE_URL
 		// configuration) leaves those routes unprotected, mirroring

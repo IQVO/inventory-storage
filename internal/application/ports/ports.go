@@ -113,9 +113,10 @@ type PickConfirmationMetrics interface {
 const (
 	// InboundReceiptOutcomeBooked: a Good line was booked as a staged receipt.
 	InboundReceiptOutcomeBooked = "booked"
-	// InboundReceiptOutcomeDamaged: a Damaged line was NOT booked (v1 books
-	// Good units only; quarantine is a later ADR).
-	InboundReceiptOutcomeDamaged = "damaged_not_booked"
+	// InboundReceiptOutcomeHeld: a Damaged line was booked as HELD stock
+	// (ADR 0052): counted, owned, never usable. It replaces the former
+	// damaged_not_booked outcome, since a Damaged line is no longer dropped.
+	InboundReceiptOutcomeHeld = "held"
 )
 
 // InboundReceiptMetrics records, in units, what the inbound-receiving
@@ -218,6 +219,22 @@ type TransferAllocationRepo interface {
 	// DB unique constraint) so the use case can route the replay to the
 	// "return the original outcome" path.
 	Save(ctx context.Context, a *transfer.Allocation) error
+}
+
+// TransferReleaseRepo persists and retrieves the transfer-allocation
+// RELEASE ledger (ADR 0051): one row per released transfer line,
+// DB-unique on transfer_line_id — the idempotency anchor of the
+// cancel-after-allocation compensation leg, mirroring
+// TransferAllocationRepo for the allocation leg.
+type TransferReleaseRepo interface {
+	// FindByTransferLineID returns the decided release for that line,
+	// or nil when this line's allocation has never been released.
+	FindByTransferLineID(ctx context.Context, transferLineID string) (*transfer.Release, error)
+	// Save inserts the release. A second Save for an already-decided
+	// transfer_line_id must fail with ErrTransferReleaseAlreadyDecided
+	// (the DB unique constraint) so the use case can route the replay
+	// to the "return the original outcome" path.
+	Save(ctx context.Context, r *transfer.Release) error
 }
 
 // TransferReceiptRepo persists and retrieves destination transfer

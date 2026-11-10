@@ -1,0 +1,70 @@
+---
+id: get-held-unit
+title: "Read one held unit"
+description: "A held unit with its receipt line, owner, carton marks and, once decided, its disposition. A unit that was released, returned or scrapped stays readable here as the audit trail. Side-effect-free."
+sidebar_label: "Read one held unit"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Read one held unit"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/held-stock/{id}"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+A held unit with its receipt line, owner, carton marks and, once decided, its disposition. A unit that was released, returned or scrapped stays readable here as the audit trail. Side-effect-free.
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-held-unit.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-held-unit.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-held-unit.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

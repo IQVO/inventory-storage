@@ -72,7 +72,16 @@ type config struct {
 	// stable consumer group of the TaskCompleted confirm-pick consumer
 	// (ADR 0035).
 	taskCompletedConsumerGroup string
+
+	// slotPlanConsumerGroup is SLOT_PLAN_CONSUMER_GROUP: the stable consumer
+	// group of the slotting-optimization slot-plan consumer (ADR 0050). Unlike
+	// the groups above it has a default (defaultSlotPlanConsumerGroup), so a
+	// deployment that predates the consumer boots unchanged.
+	slotPlanConsumerGroup string
 }
+
+// defaultSlotPlanConsumerGroup is used when SLOT_PLAN_CONSUMER_GROUP is unset.
+const defaultSlotPlanConsumerGroup = "inventory-storage-slot-plan"
 
 // loadConfig reads and validates the process environment through get
 // (os.Getenv in production, a map lookup in the tests). Postgres and Kafka
@@ -138,6 +147,7 @@ func loadConfig(get func(string) string) (config, error) {
 		}
 		*g.dst = v
 	}
+	cfg.slotPlanConsumerGroup = or("SLOT_PLAN_CONSUMER_GROUP", defaultSlotPlanConsumerGroup)
 	return cfg, nil
 }
 

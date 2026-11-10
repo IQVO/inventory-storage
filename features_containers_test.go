@@ -63,8 +63,9 @@ func (w *world) wireContainers(s *inboundhttp.Server, reservations *memory.Reser
 		book: &usecases.BookInboundReceiptLine{
 			Receive: &usecases.ReceiveStock{Events: w.publisher, Clock: w.clock}, ProcessedEvents: memory.NewProcessedEventRepo(),
 			Bookings: bookings, Linker: linker,
+			Hold: &usecases.HoldStock{Held: w.held, Events: w.publisher, Clock: w.clock},
 		},
-		link: &usecases.LinkReceiptCarton{ProcessedEvents: memory.NewProcessedEventRepo(), Pending: pending, Linker: linker},
+		link: &usecases.LinkReceiptCarton{ProcessedEvents: memory.NewProcessedEventRepo(), Pending: pending, Linker: linker, Held: w.held},
 		pack: &usecases.ApplyPackLevel{Projection: packaging, ProcessedEvents: memory.NewProcessedEventRepo(), Linker: linker},
 	}
 }

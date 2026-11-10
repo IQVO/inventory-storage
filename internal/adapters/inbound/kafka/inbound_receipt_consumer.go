@@ -82,8 +82,9 @@ type InboundCartonLinker interface {
 	Execute(ctx context.Context, c usecases.ReceiptCarton) (usecases.CartonOutcome, usecases.SettleResult, error)
 }
 
-// InboundReceiptConsumer books the Good lines of inbound-receiving's
-// ReceiptLineReceived as staged stock (ADR 0037). Fixed consumer group from
+// InboundReceiptConsumer books the lines of inbound-receiving's
+// ReceiptLineReceived: Good as staged stock (ADR 0037), Damaged as held stock
+// (ADR 0052). Fixed consumer group from
 // configuration (INBOUND_RECEIPT_CONSUMER_GROUP), state-mutating,
 // at-least-once: FetchMessage, handler, then CommitMessages; a transient
 // handler error retries the SAME message with capped backoff; deterministic
@@ -228,16 +229,16 @@ func (d receiptCartonReceivedData) carton(eventID string) usecases.ReceiptCarton
 }
 
 // logOutcome logs what the use case did with one settled line. A Damaged line
-// is an INFO: it is expected, recorded on the receipt, and counted in
-// inventory.inbound_receipt_units{outcome=damaged_not_booked}.
+// is an INFO: it is expected, held out of usable stock and counted in
+// inventory.inbound_receipt_units{outcome=held} (ADR 0052).
 func (c *InboundReceiptConsumer) logOutcome(ctx context.Context, id string, data receiptLineReceivedData, outcome usecases.BookOutcome) {
 	attrs := []any{
 		"id", id, "receipt_id", data.ReceiptID, "asn_number", data.ASNNumber, "line_no", data.LineNo,
 		"sku", data.SKU, "quantity", data.Quantity, "condition", data.Condition,
 	}
 	switch outcome {
-	case usecases.LineDamagedNotBooked:
-		c.Logger.InfoContext(ctx, "inbound-receiving receipt line is Damaged; not booked as stock (v1)", attrs...)
+	case usecases.LineHeld:
+		c.Logger.InfoContext(ctx, "inbound-receiving receipt line is Damaged; booked as held stock, not usable", attrs...)
 	case usecases.LineDuplicate:
 		c.Logger.InfoContext(ctx, "inbound-receiving receipt line already handled; redelivery ignored", attrs...)
 	case usecases.LineBooked:

@@ -1,0 +1,1 @@
+{"parameters":[{"name":"id","in":"path","required":true,"description":"The held unit's id (`hu-<uuid>`).","schema":{"type":"string","example":"hu-3f6c1b0e-7a52-4d11-8c3e-0a9d5b7e2f64"}}]}

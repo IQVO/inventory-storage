@@ -32,7 +32,7 @@ sequenceDiagram
     PM-)OM: evt: com.warehouse.wms.product-master.product.ProductClassified on warehouse.product-master.events
     Note over OM: local classification copy read once per line at intake, fail-open when unclassified
     OM->>INV: cmd: ReserveStock POST /reservations with Idempotency-Key per order line (demandRef, optional lineNo, ADR 0036)
-    Note over INV: replay guard, then reserve first-fit against usable
+    Note over INV: replay guard, then reserve forward-first against usable
     Note over OM,INV: 201 reservation with allocations and pick locations, or 409 insufficient-usable
     INV-)WP: evt: com.warehouse.wms.inventory-storage.reservation.StockReserved on warehouse.inventory.events
     Note over WP: UsableInventoryObserved for the SKU decremented

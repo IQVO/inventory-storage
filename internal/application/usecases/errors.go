@@ -12,6 +12,9 @@ var (
 	ErrContainerNotFound  = errors.New("container not found")
 	ErrInsufficientUsable = errors.New("requested quantity exceeds usable inventory")
 
+	// ErrHeldUnitNotFound: no held unit has this id (ADR 0052).
+	ErrHeldUnitNotFound = errors.New("held unit not found")
+
 	// ErrProductClassificationNotFound is returned when a GetProductClassification
 	// (or similar) lookup finds no registered classification for the SKU.
 	ErrProductClassificationNotFound = errors.New("product classification not found")
@@ -55,6 +58,27 @@ var (
 	// treats it as "replay — return the original outcome", never as a
 	// write failure.
 	ErrTransferLineAlreadyDecided = errors.New("transfer line already decided")
+
+	// ErrTransferReleaseAlreadyDecided is returned by
+	// TransferReleaseRepo.Save when the transfer_line_id already has a
+	// decided RELEASE ledger row (the DB unique constraint fired). The
+	// use case treats it as "replay — return the original outcome",
+	// never as a write failure.
+	ErrTransferReleaseAlreadyDecided = errors.New("transfer allocation release already decided")
+
+	// ErrUnknownTransferLine is returned by ReleaseTransferAllocation
+	// when the transfer_allocations ledger has NO row for the command's
+	// transfer_line_id: this service never decided an allocation for
+	// that line, so there is no hold to release. Deterministic — the
+	// consumer logs it and commits past; no event is published.
+	ErrUnknownTransferLine = errors.New("transfer line unknown to the allocation ledger")
+
+	// ErrTransferReleaseMismatch is returned by ReleaseTransferAllocation
+	// when the release command disagrees with the allocation ledger row
+	// it names (a different reservation_id, origin_site_id, sku or
+	// quantity than the line was decided with). Deterministic — the
+	// consumer logs it and commits past; no event is published.
+	ErrTransferReleaseMismatch = errors.New("transfer allocation release command disagrees with the allocation ledger")
 
 	// ErrTransferReceiptAlreadyStaged is returned by
 	// TransferReceiptRepo.Save when the transfer_line_id already has a

@@ -51,6 +51,7 @@ func lineData(sku string, qty any, condition string) map[string]any {
 type receivedStock struct {
 	mu        sync.Mutex
 	got       []shared.StockReceived
+	held      []shared.StockHeld
 	attempts  int
 	failFirst int
 }
@@ -65,7 +66,16 @@ func (r *receivedStock) Publish(_ context.Context, e shared.DomainEvent) error {
 	if sr, ok := e.(shared.StockReceived); ok {
 		r.got = append(r.got, sr)
 	}
+	if sh, ok := e.(shared.StockHeld); ok {
+		r.held = append(r.held, sh)
+	}
 	return nil
+}
+
+func (r *receivedStock) heldEvents() []shared.StockHeld {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]shared.StockHeld(nil), r.held...)
 }
 
 func (r *receivedStock) received() []shared.StockReceived {
@@ -127,6 +137,7 @@ func (u rollbackUoW) Execute(ctx context.Context, fn func(ctx context.Context) e
 
 type receiptFixture struct {
 	stock    *receivedStock
+	held     *heldFake
 	reader   *fakeReader
 	consumer *InboundReceiptConsumer
 }
@@ -135,17 +146,21 @@ func newReceiptFixture(failFirst int, msgs ...kafkago.Message) receiptFixture {
 	stock := &receivedStock{failFirst: failFirst}
 	processed := &claims{}
 	uow := rollbackUoW{claims: processed}
+	held := &heldFake{}
+	clock := fixedNow(time.Date(2026, 10, 8, 14, 0, 0, 0, time.UTC))
 	book := &usecases.BookInboundReceiptLine{
-		Receive:         &usecases.ReceiveStock{Events: stock, Clock: fixedNow(time.Date(2026, 10, 8, 14, 0, 0, 0, time.UTC)), UnitOfWork: uow},
+		Receive:         &usecases.ReceiveStock{Events: stock, Clock: clock, UnitOfWork: uow},
+		Hold:            &usecases.HoldStock{Held: held, Events: stock, Clock: clock, UnitOfWork: uow},
 		ProcessedEvents: processed,
 		UnitOfWork:      uow,
 	}
+	carton := &usecases.LinkReceiptCarton{ProcessedEvents: processed, Pending: nopPending{}, Linker: nopSettler{}, Held: held, UnitOfWork: uow}
 	reader := &fakeReader{queue: msgs}
 	consumer := &InboundReceiptConsumer{
-		Reader: reader, Book: book, Logger: quietLogger(),
+		Reader: reader, Book: book, Carton: carton, Logger: quietLogger(),
 		Backoff: func(int) time.Duration { return time.Millisecond },
 	}
-	return receiptFixture{stock: stock, reader: reader, consumer: consumer}
+	return receiptFixture{stock: stock, held: held, reader: reader, consumer: consumer}
 }
 
 // runUntilCommitted runs the consumer until want messages are committed (or a
@@ -183,13 +198,56 @@ func TestInboundReceiptConsumer_GoodLineIsBookedAsStagedStock(t *testing.T) {
 	}
 }
 
-func TestInboundReceiptConsumer_DamagedLineIsCommittedButNotBooked(t *testing.T) {
-	f := newReceiptFixture(0, receiptMsg(0, receiptCE(t, "ce-1", typeReceiptLineReceived, lineData("SKU-1", 4, "Damaged"))))
+func TestInboundReceiptConsumer_DamagedLineIsHeldNotStaged(t *testing.T) {
+	data := lineData("SKU-1", 4, "Damaged")
+	data["owner_ref"], data["sscc"] = "seller-a", "003400000000000017"
+	f := newReceiptFixture(0, receiptMsg(0, receiptCE(t, "ce-1", typeReceiptLineReceived, data)))
 
 	f.runUntilCommitted(t, 1)
 
-	if n := f.stock.attemptCount(); n != 0 {
-		t.Fatalf("a Damaged line reached ReceiveStock %d times", n)
+	if n := f.stock.attemptCount() - len(f.stock.heldEvents()); n != 0 {
+		t.Fatalf("a Damaged line raised %d events other than StockHeld (it must never be staged)", n)
+	}
+	held := f.stock.heldEvents()
+	if len(held) != 1 || held[0].SKU != "SKU-1" || held[0].Quantity.Int() != 4 || held[0].Reason != "DAMAGED" ||
+		held[0].ReceiptID != "rcpt-1" || held[0].ASNNumber != "ASN-1001" || held[0].LineNo != 1 ||
+		held[0].OwnerRef != "seller-a" || held[0].SSCC != "003400000000000017" {
+		t.Fatalf("StockHeld events = %+v", held)
+	}
+	if len(f.held.units) != 1 || f.held.units[0].Usable() != 0 {
+		t.Fatalf("held units = %d, want 1 with no usable quantity", len(f.held.units))
+	}
+}
+
+func TestInboundReceiptConsumer_DamagedLineRedeliveryIsHeldOnce(t *testing.T) {
+	msg := receiptCE(t, "ce-1", typeReceiptLineReceived, lineData("SKU-1", 4, "Damaged"))
+	f := newReceiptFixture(0, receiptMsg(0, msg), receiptMsg(1, msg))
+
+	f.runUntilCommitted(t, 2)
+
+	if len(f.held.units) != 1 || len(f.stock.heldEvents()) != 1 {
+		t.Fatalf("a redelivery held %d units and raised %d events, want 1 and 1", len(f.held.units), len(f.stock.heldEvents()))
+	}
+}
+
+// A Damaged carton content marks its LPN on the held line and books nothing:
+// the line event stays the sole quantity authority.
+func TestInboundReceiptConsumer_DamagedCartonContentMarksTheHeldLine(t *testing.T) {
+	carton := cartonPayload()
+	carton["contents"] = []map[string]any{{"line_no": 1, "sku": "SKU-1", "gtin": "24006381333935", "qty": 4, "condition": "Damaged"}}
+	f := newReceiptFixture(0,
+		receiptMsg(0, receiptCE(t, "ce-1", typeReceiptLineReceived, lineData("SKU-1", 4, "Damaged"))),
+		receiptMsg(1, receiptCE(t, "ce-carton-1", typeCartonForTest, carton)),
+		receiptMsg(2, receiptCE(t, "ce-carton-1", typeCartonForTest, carton)),
+	)
+
+	f.runUntilCommitted(t, 3)
+
+	if len(f.held.units) != 1 || len(f.stock.heldEvents()) != 1 {
+		t.Fatalf("the carton opened a second hold: %d units, %d events", len(f.held.units), len(f.stock.heldEvents()))
+	}
+	if got := f.held.marks; len(got) != 1 || got[0] != "rcpt-1/1/003400000000000017" {
+		t.Fatalf("carton marks = %v, want exactly one for the line (a redelivery is a no-op)", got)
 	}
 }
 

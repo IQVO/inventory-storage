@@ -77,7 +77,8 @@ info:
     line with `condition=Good` is booked as a staged receipt through the
     existing ReceiveStock use case (the same `StockReceived` as
     `POST /stock-receipts`, analytics topic; quantity staged, stow stays the RF
-    action); `Damaged` is not booked in v1. And it consumes
+    action); a `Damaged` line is booked as HELD stock (ADR 0052): never usable,
+    raising `StockHeld`, until a disposition settles it. And it consumes
     returns-processing's `ReturnLineStaged` from
     `warehouse.returns-processing.events` (channel below, ADR 0044): the
     RESTOCK disposition's handover is booked through the SAME ReceiveStock
@@ -170,7 +171,9 @@ channels:
       `ItemStowed` (ADR 0043 — byte-identical copies of the analytics
       feed, consumed by exception-management and returns-processing) and the
       container events `ContainerRegistered`, `ContainerStowed`, `CaseBroken`
-      and `ContainerEmptied` (keyed by LPN, ADR 0045/0046). The legacy
+      and `ContainerEmptied` (keyed by LPN, ADR 0045/0046) and the held-stock
+      events `StockHeld`, `StockReleased` and `StockDispositioned` (keyed by
+      held unit id, ADR 0052). The legacy
       `ProductClassified` was retired at product-master ADR 0003 stage E
       (2026-10-17). The primary downstream consumer is
       wes-work-planning, which dispatches on their full `type` strings and
@@ -194,6 +197,7 @@ channels:
           - $ref: "#/components/messages/ReservationRevoked"
           - $ref: "#/components/messages/TransferStockAllocated"
           - $ref: "#/components/messages/TransferStockAllocationRejected"
+          - $ref: "#/components/messages/TransferStockAllocationReleased"
           - $ref: "#/components/messages/TransferReceiptStaged"
           - $ref: "#/components/messages/TransferStockStowed"
           - $ref: "#/components/messages/StockRelocated"
@@ -205,6 +209,9 @@ channels:
           - $ref: "#/components/messages/ContainerStowed"
           - $ref: "#/components/messages/CaseBroken"
           - $ref: "#/components/messages/ContainerEmptied"
+          - $ref: "#/components/messages/StockHeld"
+          - $ref: "#/components/messages/StockReleased"
+          - $ref: "#/components/messages/StockDispositioned"
 
   warehouse.inventory.analytics:
     description: >
@@ -311,6 +318,35 @@ channels:
           - $ref: "#/components/messages/FacilityLayoutLocationSlotRegistered"
           - $ref: "#/components/messages/FacilityLayoutLocationSlotDecommissioned"
           - $ref: "#/components/messages/FacilityLayoutLocationSlotHandlingUnitDeclared"
+
+  warehouse.slotting-optimization.events:
+    description: |
+      slotting-optimization's integration topic. Consumed ONLY for
+      `SlotPlanApproved` (key and subject = the plan id); `SlotPlanGenerated`
+      and `SlotPlanRejected` are committed past (ADR 0050). The consumer always
+      runs, under the group `SLOT_PLAN_CONSUMER_GROUP` (default
+      `inventory-storage-slot-plan`), and replays the topic from the first
+      offset for a new group.
+    publish:
+      operationId: applySlotPlanApproved
+      summary: Apply slotting-optimization's approved forward-slot map to the local forward-face read model.
+      description: >
+        At-least-once, fixed group. The CloudEvents `id` is claimed in
+        `processed_events` in the SAME transaction as the replacement of the
+        site's `forward_pick_faces` (`assignments` is the FULL map of the site:
+        it replaces the site's previous map wholesale). A plan applies only
+        when its `approved_at` is later than the held plan's, or equal with a
+        higher `plan_id`; an older plan delivered late is ignored. A message
+        that is not a valid CloudEvent, has an undecodable payload, or lacks
+        the plan id, site, approval time, or a SKU or slot is logged and
+        committed past. Nothing is published in response. ReserveStock reads
+        the read model to draw a SKU's forward pick face before its reserve
+        bins.
+      tags:
+        - name: slotting-optimization
+          description: Consumed from the slotting-optimization bounded context.
+      message:
+        $ref: "#/components/messages/SlottingSlotPlanApproved"
 
   warehouse.fulfillment.events:
     description: >
@@ -443,9 +479,12 @@ channels:
         `StockReceived` through the outbox (analytics topic): the units are
         staged and not yet usable, and stow stays the RF action (item scan plus
         location scan). `POST /stock-receipts` is unchanged and keeps working
-        for ad-hoc receipts. `condition=Damaged` is NOT booked in v1
-        (quarantine is a later ADR): it is claimed, logged at INFO and counted
-        in `inventory.inbound_receipt_units{outcome=damaged_not_booked}`.
+        for ad-hoc receipts. `condition=Damaged` is booked as
+        HELD stock (ADR 0052), not dropped: in the same transaction it raises
+        `StockHeld` through the outbox and is counted in
+        `inventory.inbound_receipt_units{outcome=held}`. A held unit has no
+        usable quantity and can never be reserved until a disposition
+        (RELEASE, RETURN_TO_VENDOR, SCRAP, REWORK) settles it.
         A redelivered `id` is a no-op. A transient failure retries the same
         message with capped backoff; a message that is not a valid CloudEvent,
         has an undecodable payload, an empty `sku`, a non-positive `quantity` or an
@@ -504,36 +543,41 @@ channels:
       network-inventory-planning's integration topic, its Published Language
       for transfer commands (the `Topic` constant in
       `internal/adapters/inbound/kafka/transfer_consumer.go`). CONSUMED by
-      this service (ADR 0030), not published: key and `subject` = the
+      this service (ADR 0030, ADR 0050), not published: key and `subject` = the
       transfer line id, `source=/warehouse/network-inventory-planning`.
       Only
       `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested`
-      is acted on; every other CloudEvents `type` on the topic is ignored.
+      and
+      `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested`
+      (the cancel-after-allocation compensation command, ADR 0050) are acted
+      on; every other CloudEvents `type` on the topic is ignored.
       The consumer always runs (ADR 0042), under the stable group
       `TRANSFER_ALLOCATION_CONSUMER_GROUP` (mandatory, as are `DATABASE_URL`
       and `KAFKA_BROKERS`; chart default
       `inventory-storage-transfer-allocation`).
     publish:
-      operationId: allocateTransferStock
-      summary: Apply the transfer-allocation command and reply through the outbox.
+      operationId: applyTransferCommands
+      summary: Apply the transfer-allocation and transfer-release commands and reply through the outbox.
       description: >
         At-least-once, fixed group: FetchMessage, then CommitMessages only
         after the handler settles; a transient error retries the SAME message
         with capped backoff (200ms to 5s), so a failed handler can never drop
-        or skip a command. The CloudEvents `id` is claimed in
-        `processed_events` in the SAME transaction as AllocateTransferStock,
-        so a redelivery is a no-op. A payload that can never be applied (an
+        or skip a command. A payload that can never be applied (an
         undecodable payload, an invalid `origin_site_id`, an empty `sku`, a
-        non-positive `quantity`) is logged (WARN) and committed past; there
-        is no DLQ on this topic. The reply — TransferStockAllocated or
-        TransferStockAllocationRejected — is published on this service's own
-        integration topic through the transactional outbox, never back onto
-        the command topic.
+        non-positive `quantity`, a release naming a transfer line this
+        service never decided, or a release disagreeing with the allocation
+        ledger) is logged (WARN) and committed past; there is no DLQ on this
+        topic. The replies — TransferStockAllocated,
+        TransferStockAllocationRejected, or TransferStockAllocationReleased —
+        are published on this service's own integration topic through the
+        transactional outbox, never back onto the command topic.
       tags:
         - name: network-inventory-planning
           description: Consumed from the network-inventory-planning bounded context.
       message:
-        $ref: "#/components/messages/NetworkInventoryPlanningTransferAllocationRequested"
+        oneOf:
+          - $ref: "#/components/messages/NetworkInventoryPlanningTransferAllocationRequested"
+          - $ref: "#/components/messages/NetworkInventoryPlanningTransferAllocationReleaseRequested"
 
 components:
   messages:
@@ -710,6 +754,27 @@ components:
           description: Consumed from facility-layout.
       payload:
         $ref: "#/components/schemas/FacilityLayoutLocationSlotHandlingUnitDeclaredEvent"
+
+    SlottingSlotPlanApproved:
+      name: SlottingSlotPlanApproved
+      title: SlotPlanApproved (from slotting-optimization, consumed)
+      summary: A slot plan was approved; its FULL assignment map is the site's forward pick faces (ADR 0050).
+      description: >
+        CONSUMED, not produced. Pinned by slotting-optimization's
+        `apis/asyncapi.yaml` on develop: type
+        `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved`,
+        `source=/warehouse/slotting-optimization`, subject and Kafka key = the
+        plan id. Only `plan_id`, `site_id`, `approved_at` and
+        `assignments[].{sku, slot}` are read; `moves`, `supersedes_plan_id`,
+        `pick_unit` and `cases_capacity` are ignored. The consumer is
+        consumer-first safe: it only reads what slotting already publishes, so
+        no producer change is required.
+      contentType: application/cloudevents+json
+      tags:
+        - name: slotting-optimization
+          description: Consumed from slotting-optimization.
+      payload:
+        $ref: "#/components/schemas/SlottingSlotPlanApprovedEvent"
 
     ProductMasterProductClassified:
       name: ProductMasterProductClassified
@@ -907,6 +972,110 @@ components:
               site_id: WH1
               reason: BROKEN
               at: "2026-10-24T12:10:00Z"
+    StockHeld:
+      x-no-consumer-reason: "pending: held-stock fact (ADR 0052); no consumer declared in any fleet spec yet"
+      name: StockHeld
+      title: Stock Held
+      summary: A received quantity was held out of usable stock.
+      description: >-
+        Raised when a Damaged receipt line (inbound-receiving `ReceiptLineReceived`, condition DAMAGED) is booked as held stock instead of being dropped (ADR 0052). The unit has no usable quantity and can never be reserved. It is raised in the same transaction as the consumed message. Kafka key and `subject` are the held unit id.
+      contentType: application/cloudevents+json
+      tags:
+        - name: held-stock
+          description: Raised by the held-stock use cases (ADR 0052).
+      payload:
+        $ref: "#/components/schemas/StockHeldEvent"
+      examples:
+        - name: held
+          summary: A Damaged line was held.
+          payload:
+            specversion: "1.0"
+            id: 0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.StockHeld
+            subject: hu-1
+            time: "2026-08-21T22:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:StockHeld:v1
+            data:
+              held_unit_id: hu-1
+              sku: SKU-1
+              quantity: 4
+              reason: DAMAGED
+              receipt_id: R-1
+              asn_number: ASN-1
+              line_no: 2
+              owner_ref: seller-a
+              sscc: "003400000000000017"
+              held_at: "2026-08-21T22:00:00Z"
+    StockReleased:
+      x-no-consumer-reason: "pending: held-stock fact (ADR 0052); no consumer declared in any fleet spec yet"
+      name: StockReleased
+      title: Stock Released
+      summary: A held quantity was released back to usable stock.
+      description: >-
+        Raised by a RELEASE disposition (ADR 0052). The quantity re-enters usable stock through the staged-receipt path, so a `StockReceived` follows in the same transaction; it is usable once stowed. Kafka key and `subject` are the held unit id.
+      contentType: application/cloudevents+json
+      tags:
+        - name: held-stock
+          description: Raised by the held-stock use cases (ADR 0052).
+      payload:
+        $ref: "#/components/schemas/StockReleasedEvent"
+      examples:
+        - name: released
+          summary: A held unit was released.
+          payload:
+            specversion: "1.0"
+            id: 0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.StockReleased
+            subject: hu-1
+            time: "2026-08-21T22:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:StockReleased:v1
+            data:
+              held_unit_id: hu-1
+              sku: SKU-1
+              quantity: 4
+              receipt_id: R-1
+              asn_number: ASN-1
+              line_no: 2
+              released_at: "2026-08-21T22:00:00Z"
+    StockDispositioned:
+      x-no-consumer-reason: "pending: held-stock fact (ADR 0052); no consumer declared in any fleet spec yet"
+      name: StockDispositioned
+      title: Stock Dispositioned
+      summary: A disposition was decided for a held unit.
+      description: >-
+        Raised by every disposition decision (ADR 0052): RELEASE, RETURN_TO_VENDOR, SCRAP or REWORK. `reason` is the hold reason after the decision (a REWORK sets a new one). Kafka key and `subject` are the held unit id.
+      contentType: application/cloudevents+json
+      tags:
+        - name: held-stock
+          description: Raised by the held-stock use cases (ADR 0052).
+      payload:
+        $ref: "#/components/schemas/StockDispositionedEvent"
+      examples:
+        - name: rework
+          summary: A held unit was sent to rework.
+          payload:
+            specversion: "1.0"
+            id: 0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.StockDispositioned
+            subject: hu-1
+            time: "2026-08-21T22:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:StockDispositioned:v1
+            data:
+              held_unit_id: hu-1
+              sku: SKU-1
+              quantity: 4
+              disposition: REWORK
+              reason: SUSPECT
+              receipt_id: R-1
+              asn_number: ASN-1
+              line_no: 2
+              decided_at: "2026-08-21T22:00:00Z"
     InboundReceivingReceiptCartonReceived:
       name: InboundReceivingReceiptCartonReceived
       title: Receipt Carton Received (from inbound-receiving, consumed)
@@ -1213,7 +1382,7 @@ components:
               condition: Good
               received_at: "2026-10-09T08:10:00Z"
         - name: damagedLine
-          summary: 4 damaged units of SKU-1; recorded by inbound-receiving, not booked here.
+          summary: 4 damaged units of SKU-1; booked here as held stock (StockHeld), never usable.
           payload:
             specversion: "1.0"
             id: 5b7d9e11-2c4a-4f68-9d03-7a1e6c8b2f40
@@ -1316,6 +1485,53 @@ components:
               origin_site_id: ABE1
               sku: SKU-1
               quantity: 24
+
+    NetworkInventoryPlanningTransferAllocationReleaseRequested:
+      name: NetworkInventoryPlanningTransferAllocationReleaseRequested
+      title: Transfer Allocation Release Requested (from network-inventory-planning, consumed)
+      summary: network-inventory-planning cancelled a transfer AFTER allocation and asked this context to release the origin hold.
+      description: >
+        CONSUMED command, not produced (ADR 0050 — the compensation leg
+        that closes the saga's cancel-after-allocation gap). Pinned by
+        network-inventory-planning's `apis/asyncapi.yaml`: type
+        `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested`,
+        `source=/warehouse/network-inventory-planning`, subject and Kafka
+        key = the transfer line id. `data` is exactly seven fields — the
+        whole consumed contract; this service replies with
+        TransferStockAllocationReleased on its own integration topic.
+        Idempotent by transfer_line_id through the
+        `transfer_allocation_releases` ledger: a byte-identical replay
+        returns the original outcome untouched, a conflicting payload is
+        answered with the original outcome and reason IDEMPOTENCY_CONFLICT.
+        A command naming a line this service never decided, or disagreeing
+        with the allocation ledger, is a deterministic refusal — logged and
+        committed past, no event.
+      contentType: application/cloudevents+json
+      tags:
+        - name: network-inventory-planning
+          description: Consumed from network-inventory-planning.
+      payload:
+        $ref: "#/components/schemas/NetworkInventoryPlanningTransferAllocationReleaseRequestedEvent"
+      examples:
+        - name: releaseAllocatedLine
+          summary: Release the 24-unit hold on SKU-1 for a transfer cancelled after allocation.
+          payload:
+            specversion: "1.0"
+            id: c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f
+            source: /warehouse/network-inventory-planning
+            type: com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested
+            subject: tfr-77451:1
+            time: "2026-11-05T09:40:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:network-inventory-planning:events:TransferAllocationReleaseRequested:v1
+            data:
+              transfer_id: tfr-77451
+              transfer_line_id: tfr-77451:1
+              reservation_id: res-9f2c1
+              origin_site_id: ABE1
+              sku: SKU-1
+              quantity: 24
+              reason: superseded by a cheaper source
 
     StockReserved:
       name: StockReserved
@@ -1458,6 +1674,57 @@ components:
               sku: SKU-T2
               requested_quantity: 9
               reason: INSUFFICIENT_USABLE
+
+    TransferStockAllocationReleased:
+      name: TransferStockAllocationReleased
+      title: Transfer Stock Allocation Released
+      summary: A transfer cancelled after allocation had its origin hold resolved; the saga settles.
+      description: >
+        Raised by the ReleaseTransferAllocation use case (ADR 0051) when a
+        TransferAllocationReleaseRequested command was decided — the
+        compensation leg of the transfer saga, so a stuck or abandoned
+        ALLOCATED transfer never strands its origin reservation until lazy
+        expiry. `outcome` is a CLOSED set: RELEASED (the reservation still
+        held the stock; this revoked it and returned the quantity to
+        usable), ALREADY_RESOLVED (the reservation had already expired or
+        been confirmed — or the line's allocation was REJECTED, so no hold
+        ever existed; either way the hold is gone). BOTH outcomes settle
+        the saga as success. `reason` is the command's cancellation reason
+        carried through, or IDEMPOTENCY_CONFLICT on the answer to a
+        conflicting replay (the original ledger decision stands).
+
+
+        **Integration topic only** (no analytics variant). Kafka key and
+        CloudEvents `subject` are the transfer_line_id, mirroring
+        TransferStockAllocationRejected — the release settles the line, so
+        the line is the aggregate the fact is about.
+      contentType: application/cloudevents+json
+      tags:
+        - name: reservation
+          description: Fact reply on the transfer allocation release path.
+      payload:
+        $ref: "#/components/schemas/TransferStockAllocationReleasedEvent"
+      examples:
+        - name: releasedAfterCancel
+          summary: The hold on tl-77-1 was revoked and six units returned to usable.
+          payload:
+            specversion: "1.0"
+            id: 6b2f8d14-e5a9-4c71-d8e4-8f1c3a7b9d26
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased
+            subject: tl-77-1
+            time: "2026-11-05T09:41:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:TransferStockAllocationReleased:v1
+            data:
+              transfer_id: tr-77
+              transfer_line_id: tl-77-1
+              reservation_id: res-tr-1
+              origin_site_id: SITE-A
+              sku: SKU-T1
+              quantity: 6
+              outcome: RELEASED
+              reason: superseded by a cheaper source
 
     TransferReceiptStaged:
       name: TransferReceiptStaged
@@ -2184,6 +2451,61 @@ components:
             zoneId: { type: string }
             temperatureClass: { type: string }
             hazmat: { type: boolean }
+    SlottingSlotPlanApprovedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of slotting-optimization's SlotPlanApproved as consumed here
+        (not composed from CloudEventBase, whose `source` is this service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events).
+        source:
+          type: string
+          enum: ["/warehouse/slotting-optimization"]
+        type:
+          type: string
+          const: "com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved"
+        subject:
+          type: string
+          description: The plan id (also the Kafka key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:slotting-optimization:events:SlotPlanApproved:v1
+        data:
+          type: object
+          required: [plan_id, site_id, approved_at, assignments]
+          properties:
+            plan_id: { type: string }
+            site_id: { type: string }
+            approved_at: { type: string, format: date-time }
+            assignments:
+              type: array
+              description: The FULL assignment map of the plan; replaces the site's previous map.
+              items:
+                type: object
+                required: [sku, slot]
+                properties:
+                  sku: { type: string }
+                  slot: { type: string, description: The facility-layout location code of the forward pick face. }
     FacilityLayoutLocationSlotRegisteredEvent:
       type: object
       description: >
@@ -2579,7 +2901,7 @@ components:
             condition:
               type: string
               enum: [Good, Damaged]
-              description: Only Good is booked as stock (ADR 0037); Damaged is counted and ignored; any other value is logged and committed past.
+              description: Good is staged as stock (ADR 0037); Damaged is held out of usable stock until a disposition (ADR 0052); any other value is logged and committed past.
             received_at:
               type: string
               format: date-time
@@ -2803,6 +3125,172 @@ components:
                 at:
                   type: string
                   description: When the fact happened (the service clock).
+                  format: date-time
+
+    StockHeldEvent:
+      description: CloudEvents envelope for a StockHeld domain event (ADR 0052).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for StockHeld.
+              const: "com.warehouse.wms.inventory-storage.stock.StockHeld"
+            subject:
+              type: string
+              description: The held unit id (also the Kafka key).
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:StockHeld:v1
+              pattern: "^urn:warehouse:inventory-storage:events:StockHeld:v1$"
+            data:
+              type: object
+              required: [held_unit_id, sku, quantity, reason, receipt_id, asn_number, line_no, held_at]
+              properties:
+                held_unit_id:
+                  type: string
+                  description: The held unit id.
+                sku:
+                  type: string
+                  description: The SKU held.
+                quantity:
+                  type: integer
+                  description: Eaches held.
+                  minimum: 1
+                reason:
+                  type: string
+                  description: Why it is held.
+                  enum: [DAMAGED, QC_PENDING, SUSPECT, OTHER]
+                receipt_id:
+                  type: string
+                  description: The inbound receipt the quantity came from.
+                asn_number:
+                  type: string
+                  description: The ASN of the receipt.
+                line_no:
+                  type: integer
+                  description: The receipt line.
+                  minimum: 1
+                owner_ref:
+                  type: string
+                  description: Owner of the stock. Omitted for fleet-owned stock.
+                  maxLength: 64
+                sscc:
+                  type: string
+                  description: The carton SSCC of the line. Omitted when it had none.
+                held_at:
+                  type: string
+                  description: When the unit was held (the service clock).
+                  format: date-time
+
+    StockReleasedEvent:
+      description: CloudEvents envelope for a StockReleased domain event (ADR 0052).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for StockReleased.
+              const: "com.warehouse.wms.inventory-storage.stock.StockReleased"
+            subject:
+              type: string
+              description: The held unit id (also the Kafka key).
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:StockReleased:v1
+              pattern: "^urn:warehouse:inventory-storage:events:StockReleased:v1$"
+            data:
+              type: object
+              required: [held_unit_id, sku, quantity, receipt_id, asn_number, line_no, released_at]
+              properties:
+                held_unit_id:
+                  type: string
+                  description: The held unit id.
+                sku:
+                  type: string
+                  description: The SKU held.
+                quantity:
+                  type: integer
+                  description: Eaches held.
+                  minimum: 1
+                receipt_id:
+                  type: string
+                  description: The inbound receipt the quantity came from.
+                asn_number:
+                  type: string
+                  description: The ASN of the receipt.
+                line_no:
+                  type: integer
+                  description: The receipt line.
+                  minimum: 1
+                released_at:
+                  type: string
+                  description: When the unit was released (the service clock).
+                  format: date-time
+
+    StockDispositionedEvent:
+      description: CloudEvents envelope for a StockDispositioned domain event (ADR 0052).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for StockDispositioned.
+              const: "com.warehouse.wms.inventory-storage.stock.StockDispositioned"
+            subject:
+              type: string
+              description: The held unit id (also the Kafka key).
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:StockDispositioned:v1
+              pattern: "^urn:warehouse:inventory-storage:events:StockDispositioned:v1$"
+            data:
+              type: object
+              required: [held_unit_id, sku, quantity, disposition, reason, receipt_id, asn_number, line_no, decided_at]
+              properties:
+                held_unit_id:
+                  type: string
+                  description: The held unit id.
+                sku:
+                  type: string
+                  description: The SKU held.
+                quantity:
+                  type: integer
+                  description: Eaches held.
+                  minimum: 1
+                disposition:
+                  type: string
+                  description: The decision.
+                  enum: [RELEASE, RETURN_TO_VENDOR, SCRAP, REWORK]
+                reason:
+                  type: string
+                  description: The hold reason after the decision.
+                  enum: [DAMAGED, QC_PENDING, SUSPECT, OTHER]
+                receipt_id:
+                  type: string
+                  description: The inbound receipt the quantity came from.
+                asn_number:
+                  type: string
+                  description: The ASN of the receipt.
+                line_no:
+                  type: integer
+                  description: The receipt line.
+                  minimum: 1
+                decided_at:
+                  type: string
+                  description: When it was decided (the service clock).
                   format: date-time
 
     InboundReceivingReceiptCartonReceivedEvent:
@@ -3183,6 +3671,78 @@ components:
             quantity:
               type: integer
               minimum: 1
+
+    NetworkInventoryPlanningTransferAllocationReleaseRequestedEvent:
+      type: object
+      description: >
+        CloudEvents 1.0 envelope of network-inventory-planning's
+        TransferAllocationReleaseRequested command as consumed here (ADR
+        0050; not composed from CloudEventBase, whose `source` is this
+        service's own).
+      required:
+        - specversion
+        - id
+        - source
+        - type
+        - subject
+        - time
+        - datacontenttype
+        - data
+      properties:
+        specversion:
+          type: string
+          enum: ["1.0"]
+        id:
+          type: string
+          description: CloudEvents id; the dedupe key (claimed in processed_events).
+        source:
+          type: string
+          enum: ["/warehouse/network-inventory-planning"]
+        type:
+          type: string
+          const: "com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested"
+        subject:
+          type: string
+          description: The transfer line id (also the Kafka key and the reply-correlation key).
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          enum: ["application/json"]
+        dataschema:
+          type: string
+          description: urn:warehouse:network-inventory-planning:events:TransferAllocationReleaseRequested:v1
+        data:
+          type: object
+          description: Exactly seven fields — the whole consumed contract.
+          required:
+            - transfer_id
+            - transfer_line_id
+            - reservation_id
+            - origin_site_id
+            - sku
+            - quantity
+            - reason
+          properties:
+            transfer_id:
+              type: string
+            transfer_line_id:
+              type: string
+              description: "<transfer_id>:1 in v1's single-line saga; also the allocation-ledger, release-ledger and reply-correlation key."
+            reservation_id:
+              type: string
+              description: The reservation TransferStockAllocated named; validated against the allocation ledger.
+            origin_site_id:
+              type: string
+            sku:
+              type: string
+            quantity:
+              type: integer
+              minimum: 1
+            reason:
+              type: string
+              description: Why the transfer is being cancelled after allocation; carried through onto the released fact.
 
     StockReservedEvent:
       description: >
@@ -3632,6 +4192,68 @@ components:
                     holds the SKU but not enough usable quantity.
                     IDEMPOTENCY_CONFLICT: the line id was replayed with a
                     different payload; the original decision stands.
+
+    TransferStockAllocationReleasedEvent:
+      description: CloudEvents envelope for a TransferStockAllocationReleased domain event (ADR 0051).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for TransferStockAllocationReleased.
+              const: "com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased"
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:TransferStockAllocationReleased:v1
+              pattern: "^urn:warehouse:inventory-storage:events:TransferStockAllocationReleased:v1$"
+            data:
+              type: object
+              description: Business payload for TransferStockAllocationReleased.
+              required:
+                - transfer_id
+                - transfer_line_id
+                - reservation_id
+                - origin_site_id
+                - sku
+                - quantity
+                - outcome
+                - reason
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                reservation_id:
+                  type: string
+                  description: The reservation whose hold this release resolved (as named by the command and the allocation ledger).
+                origin_site_id:
+                  type: string
+                sku:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+                outcome:
+                  type: string
+                  enum:
+                    - RELEASED
+                    - ALREADY_RESOLVED
+                  description: >
+                    Closed outcome set; BOTH settle the saga as success.
+                    RELEASED: the reservation still held the stock and this
+                    revoked it (quantity back in usable). ALREADY_RESOLVED:
+                    the reservation had already expired or been confirmed —
+                    either way the hold is gone.
+                reason:
+                  type: string
+                  description: >
+                    The command's cancellation reason carried through, or
+                    IDEMPOTENCY_CONFLICT on the answer to a conflicting
+                    replay (the original ledger decision stands).
 
     TransferReceiptStagedEvent:
       description: CloudEvents envelope for a TransferReceiptStaged domain event (ADR 0033).

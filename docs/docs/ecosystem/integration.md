@@ -22,7 +22,8 @@ each edge behaves when the other side fails, as implemented here.
 | --- | --- | --- | --- |
 | facility-layout | Kafka `warehouse.facility.events` (`ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotHandlingUnitDeclared`, `LocationSlotDecommissioned`) → in-process location cache | `LOCATION_LOOKUP_MODE=kafka` | Startup blocks up to 60 s for the replay and fails if it does not finish; malformed facts go to `warehouse.facility.events.dlq`; an empty cache answers `Known=false` (stow allowed, fail-open). |
 | facility-layout | REST `GET /locations/{locationCode}/classification` | `LOCATION_LOOKUP_MODE=http` + `FACILITY_LAYOUT_BASE_URL` | 3 attempts per call inside a circuit breaker; an open breaker falls back to permissive (fail-open); a plain error blocks only hazmat / temperature-sensitive SKUs (`409 location-classification-unavailable`). |
-| product-master | Kafka `warehouse.product-master.events`, `ProductClassified` → `product_classifications` | `PRODUCT_MASTER_CONSUMER_GROUP` (mandatory) | Transient errors retry the same message without limit; poison is logged and skipped. While the consumer is behind, stows use the last local copy (or none). |
+| product-master | Kafka `warehouse.product-master.events`: `ProductClassified` → `product_classifications`; `ProductPackLevelDeclared` / `ProductPackLevelRetired` → `pack_levels` (the local packaging view, [ADR 0046](/docs/adr/0046)) | `PRODUCT_MASTER_CONSUMER_GROUP` (mandatory) | Transient errors retry the same message without limit; poison is logged and skipped. While the consumer is behind, stows use the last local copy (or none). |
+| slotting-optimization | Kafka `warehouse.slotting-optimization.events`, `SlotPlanApproved` → `forward_pick_face_plans` / `forward_pick_faces` (the forward-slot map `ReserveStock` draws from first, [ADR 0050](/docs/adr/0050)) | `SLOT_PLAN_CONSUMER_GROUP` (optional, default `inventory-storage-slot-plan`) | Same retry rule; a plan older than the held one is a no-op; no synchronous call to slotting-optimization at reservation time. Until the first plan is consumed no SKU has a forward face and the draw order falls back to smaller usable first, bin id, stock unit id. |
 | network-inventory-planning | Kafka `warehouse.network-inventory-planning.events`, `TransferAllocationRequested` (command) | `TRANSFER_ALLOCATION_CONSUMER_GROUP` (mandatory) | Same retry rule; replies (`TransferStockAllocated` / `...Rejected`) are only sent once the command is handled. |
 | inbound-receiving | Kafka `warehouse.inbound-receiving.events`, `ReceiptLineReceived` → `ReceiveStock` | `INBOUND_RECEIPT_CONSUMER_GROUP` (mandatory) | Same retry rule; dedupe through `processed_events`. |
 | fulfillment-execution | Kafka `warehouse.fulfillment.events`, `TaskCompleted` (PICK, `order_ref`, optional `line_no` → confirm picks; REPLENISH with `request_ref` → replenishment relocation, [ADR 0041](/docs/adr/0041)) | `TASK_COMPLETED_CONSUMER_GROUP` (mandatory) | 5 attempts, then `warehouse.fulfillment.events.dlq`; poison straight to the DLQ. A consumer that dies ends the process non-zero (ADR 0042). |
@@ -128,9 +129,14 @@ product-master owns SKU product classification. This service always consumes
 local copy in `product_classifications`: `ApplyProductClassification` claims
 the CloudEvents `id` in `processed_events` and upserts the row in one
 transaction, applying a message only when its `version` is greater than the
-stored one. Every other product-master type is committed past; a message that
-is not a valid CloudEvent, or breaks the classification invariants, is logged
-and committed past. The copy is what `StowStock` reads for its placement and
+stored one. The same consumer also reads two pack-level types from that topic,
+`com.warehouse.wms.product-master.product.ProductPackLevelDeclared` and
+`com.warehouse.wms.product-master.product.ProductPackLevelRetired`, into the local
+packaging view `pack_levels` (keyed by GTIN, version-guarded, retired levels stay
+resolvable; [ADR 0046](/docs/adr/0046)): `Declared` inserts or updates a level, `Retired` end-dates it
+(`effective_to`); each claims its CloudEvents `id` in `processed_events` in the same transaction. Every
+other product-master type is committed past; a message that is not a valid
+CloudEvent, or breaks the classification or pack-level invariants, is logged and committed past. The copy is what `StowStock` reads for its placement and
 DOT segregation rules. `PUT` and `GET /products/{sku}/classification` were
 removed at stage E (2026-10-17): the router registers neither, so both answer
 `404`. See [ADR 0034](/docs/adr/0034).
@@ -147,8 +153,9 @@ consumes (under the mandatory `INBOUND_RECEIPT_CONSUMER_GROUP`)
 line runs the existing `ReceiveStock` use case, in one transaction with the
 CloudEvents-id claim in `processed_events`: the same `StockReceived` as
 `POST /stock-receipts`, the quantity staged and not yet usable, stow still the RF
-action. A `Damaged` line is not booked in v1 (INFO log,
-`inventory.inbound_receipt_units{outcome=damaged_not_booked}`). Every other
+action. A `Damaged` line is booked as HELD stock in the same
+transaction ([ADR 0052](/docs/adr/0052)): `StockHeld`, never usable and never reservable until a
+disposition settles it (`inventory.inbound_receipt_units{outcome=held}`). Every other
 inbound-receiving type is committed past; a message that is not a valid
 CloudEvent, or carries an empty `sku`, a non-positive `quantity` or an unknown
 `condition`, is logged and committed past. `POST /stock-receipts` is unchanged.
@@ -157,6 +164,23 @@ See [ADR 0037](/docs/adr/0037).
 | Env var | Default | Purpose |
 | --- | --- | --- |
 | `INBOUND_RECEIPT_CONSUMER_GROUP` | *(none, required)* | Stable consumer group id (chart value `config.inboundReceiptConsumerGroup`). The consumer always runs; `StockReceived` leaves through the outbox like every other event. |
+
+**A fifth Kafka topic, slotting-optimization's approved slot plans ([ADR 0050](/docs/adr/0050)).**
+slotting-optimization owns the slot plan. This service always consumes
+`com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved` from
+`warehouse.slotting-optimization.events` (key = plan id; `SlotPlanGenerated` and `SlotPlanRejected` are committed
+past) under `SLOT_PLAN_CONSUMER_GROUP` and keeps a local read model of each site's forward pick faces:
+`forward_pick_face_plans` (the plan whose map is currently applied, with its `approved_at`) and
+`forward_pick_faces` (that plan's full `sku` → `bin_id` assignment map). `ApplySlotPlan` claims the CloudEvents `id`
+in `processed_events` and replaces the site's whole map in one transaction; a plan applies only if its `approved_at`
+is later than the held plan's, or equal with a higher `plan_id`, so a late older plan is ignored. A malformed plan is
+logged and committed past; a transient error retries the same message. `ReserveStock` reads only these local tables
+and draws a SKU's forward pick face before its reserve bins. A new group starts at the earliest offset, so the map is
+rebuilt from the approved plans' history. The consumer raises no domain event: nothing from it reaches the outbox.
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `SLOT_PLAN_CONSUMER_GROUP` | `inventory-storage-slot-plan` | Stable consumer group id. The consumer always runs; the default lets a deployment that predates it boot unchanged. |
 
 ## Configuration
 
@@ -234,7 +258,7 @@ sequenceDiagram
     participant W as wes-work-planning
 
     C->>I: POST /reservations {sku, quantity, demandRef}
-    I->>I: sum usable across StockUnits<br/>reserve first-fit, record Allocations
+    I->>I: sum usable across StockUnits<br/>reserve forward-first (ADR 0050), record Allocations
     I->>K: StockReserved {sku, quantity, demand_ref}
     I-->>C: 201 Created + Location
     K->>W: consume

@@ -99,7 +99,11 @@ integration topic only, for product-master's legacy importer (it was published
 on both topics per write from 2026-10-06 under [ADR 0031](/docs/adr/0031)).
 This service also **consumes** product-master's
 `com.warehouse.wms.product-master.product.ProductClassified` from
-`warehouse.product-master.events` into its local classification copy.
+`warehouse.product-master.events` into its local classification copy, and
+`com.warehouse.wms.product-master.product.ProductPackLevelDeclared` and `ProductPackLevelRetired` from the same topic into its local packaging view
+(`pack_levels`, [ADR 0046](/docs/adr/0046)), and slotting-optimization's
+`com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved` from
+`warehouse.slotting-optimization.events` into its local forward-slot map ([ADR 0050](/docs/adr/0050)).
 
 ### Reservation entity
 
@@ -109,6 +113,7 @@ This service also **consumes** product-master's
 | **ReservationRevoked** | `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | `sku`, `quantity`, `demand_ref` | `reservation_id`, `sku` |
 | **TransferStockAllocated** | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated` | `transfer_id`, `transfer_line_id`, `origin_site_id`, `reservation_id`, `sku`, `quantity`, `allocations[]`, `expires_at` (ADR-0030; key = reservation id) | — |
 | **TransferStockAllocationRejected** | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected` | `transfer_id`, `transfer_line_id`, `origin_site_id`, `sku`, `requested_quantity`, `reason` (closed set; key = transfer_line_id) | — |
+| **TransferStockAllocationReleased** | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased` | `transfer_id`, `transfer_line_id`, `reservation_id`, `origin_site_id`, `sku`, `quantity`, `outcome` (closed set `RELEASED` \| `ALREADY_RESOLVED`), `reason` (ADR-0050; key = transfer_line_id) | — |
 | **TransferReceiptStaged** | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | `transfer_id`, `transfer_line_id`, `destination_site_id`, `sku`, `expected_quantity`, `received_quantity`, `variance` (signed; ADR-0033; key = transfer_line_id) | — |
 | **TransferStockStowed** | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | `transfer_id`, `transfer_line_id`, `destination_site_id`, `sku`, `received_quantity`, `stowed_quantity`, `allocations[]` (ADR-0033; key = transfer_line id; the only event that raises destination usable) | — |
 | ReservationExpired | `com.warehouse.wms.inventory-storage.reservation.ReservationExpired` | — | `reservation_id`, `sku` (raised on lazy read, see [Domain Events](/docs/ddd/domain-events#lazy-expiry-no-sweeper-resolved-at-the-next-read)) |

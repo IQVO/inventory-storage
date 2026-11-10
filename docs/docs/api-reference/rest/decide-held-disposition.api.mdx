@@ -1,0 +1,72 @@
+---
+id: decide-held-disposition
+title: "Decide what happens to a held unit"
+description: "The disposition decision (ADR 0052). RELEASE returns the quantity to usable stock through the same staged-receipt seam as a fresh receipt (it is usable once stowed) and emits `StockReleased`; RETURN_TO_VENDOR and SCRAP remove the unit; REWORK keeps it HELD under a new `reason` (default OTHER). Every decision emits `StockDispositioned`. The decision, the unit's save and the events are one transaction. A unit that already has a final disposition is 409 `held-unit-closed`."
+sidebar_label: "Decide what happens to a held unit"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Decide what happens to a held unit"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/held-stock/{id}/dispositions"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The disposition decision (ADR 0052). RELEASE returns the quantity to usable stock through the same staged-receipt seam as a fresh receipt (it is usable once stowed) and emits `StockReleased`; RETURN_TO_VENDOR and SCRAP remove the unit; REWORK keeps it HELD under a new `reason` (default OTHER). Every decision emits `StockDispositioned`. The decision, the unit's save and the events are one transaction. A unit that already has a final disposition is 409 `held-unit-closed`.
+
+Behind the Idempotency-Key middleware like the other creating POSTs (ADR 0018).
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./decide-held-disposition.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./decide-held-disposition.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./decide-held-disposition.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

@@ -59,6 +59,7 @@ func buildTransferAllocationConsumer(
 	set adapterSet,
 ) transferConsumerHandle {
 	transfers := postgres.NewTransferAllocationRepo(set.pool)
+	releases := postgres.NewTransferReleaseRepo(set.pool)
 	clock := system.Clock{}
 	allocate := &usecases.AllocateTransferStock{
 		Stock:        set.stock,
@@ -69,8 +70,18 @@ func buildTransferAllocationConsumer(
 		UnitOfWork:   set.uow,
 		Levels:       set.levelEmitter(clock),
 	}
+	release := &usecases.ReleaseTransferAllocation{
+		Stock:        set.stock,
+		Reservations: set.reservations,
+		Transfers:    transfers,
+		Releases:     releases,
+		Events:       set.publisher,
+		Clock:        clock,
+		UnitOfWork:   set.uow,
+		Levels:       set.levelEmitter(clock),
+	}
 
-	consumer := inboundkafka.NewConsumer(cfg.kafkaBrokers, cfg.transferConsumerGroup, allocate, logger)
+	consumer := inboundkafka.NewConsumer(cfg.kafkaBrokers, cfg.transferConsumerGroup, allocate, release, logger)
 	logger.Info("transfer allocation command consumer configured",
 		"topic", inboundkafka.Topic, "consumer_group", cfg.transferConsumerGroup)
 

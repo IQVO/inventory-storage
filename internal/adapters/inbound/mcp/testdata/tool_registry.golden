@@ -2,4 +2,5 @@ check_availability	true	false
 get_bin_occupancy	true	false
 get_container	true	false
 get_relocation	true	false
+list_held_stock	true	false
 revoke_reservation	false	true

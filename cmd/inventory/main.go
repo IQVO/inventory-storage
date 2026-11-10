@@ -81,6 +81,12 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// inventory.held_units is shared by the inbound consumer (holds) and the
+	// disposition endpoint (releases), so it is created once (ADR 0052).
+	adapters.heldMetrics, err = telemetry.NewHeldStockMetrics()
+	if err != nil {
+		return err
+	}
 
 	// readiness gates GET /readyz (ADR-0020 §graceful shutdown): the drain
 	// gate (SetNotReady is called as the FIRST step of the shutdown
@@ -119,10 +125,14 @@ func run(ctx context.Context) error {
 	// product-master. Same lookupCtx, so shutdown drains it with the rest.
 	productMaster := buildProductMasterConsumer(lookupCtx, logger, cfg, adapters)
 
+	// Slot-plan consumer (ADR 0050): keeps the local forward-face read model
+	// ReserveStock draws its pick face from in step with slotting-optimization.
+	slotPlan := buildSlotPlanConsumer(lookupCtx, logger, cfg, adapters)
+
 	// TaskCompleted confirm-pick (ADR 0035) and inbound-receiving receipt
 	// (ADR 0037) consumers, on the same lookupCtx; see
 	// buildEventDrivenConsumers. It stops the consumers built above on error.
-	consumers, err := buildEventDrivenConsumers(lookupCtx, logger, cfg, adapters, combineConsumerHandles(transfer, productMaster))
+	consumers, err := buildEventDrivenConsumers(lookupCtx, logger, cfg, adapters, combineConsumerHandles(transfer, productMaster, slotPlan))
 	if err != nil {
 		stopLookup()
 		lookup.close()

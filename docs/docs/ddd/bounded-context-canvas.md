@@ -57,7 +57,7 @@ flowchart LR
         direction TB
         purpose["<b>Purpose</b><br/>The authoritative record of what is held where and how<br/>much of it is usable: bin-accurate location under chaotic<br/>stow, usable (not on-hand) quantity, and allocation as a<br/>revocable, expiring reservation."]:::card
         roles["<b>Domain roles</b><br/>- System of record (StockUnit, Bin, Reservation)<br/>- Open Host Service (REST + events)<br/>- Enforcer of every invariant on every write<br/>- Analytics data-product owner"]:::card
-        rules["<b>Business decisions it enforces</b><br/>- Chaotic stow: a stow needs both item and location scans<br/>- Reserve against usable, SKU-scoped, first-fit across bins<br/>- Reservations are revocable and expire (default 30 min),<br/>lazily<br/>- A retry of the same demandRef, sku, quantity returns the<br/>existing reservation<br/>- Cycle-count shortfall marks units Unlocated; overage is<br/>reported, never auto-reconciled<br/>- product-master owns classification; this context keeps a<br/>version-guarded local copy"]:::card
+        rules["<b>Business decisions it enforces</b><br/>- Chaotic stow: a stow needs both item and location scans<br/>- Reserve against usable, SKU-scoped, forward-first across bins (ADR 0050)<br/>- Reservations are revocable and expire (default 30 min),<br/>lazily<br/>- A retry of the same demandRef, sku, quantity returns the<br/>existing reservation<br/>- Cycle-count shortfall marks units Unlocated; overage is<br/>reported, never auto-reconciled<br/>- product-master owns classification; this context keeps a<br/>version-guarded local copy"]:::card
         purpose ~~~ roles ~~~ rules
     end
     in0 -->|"cmd - REST<br/>RegisterBin, ReceiveStock,<br/>StowStock, RunCycleCount,<br/>ConfirmPick"| BC
@@ -194,10 +194,12 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | `facility-layout` | LocationSlotDecommissioned | Event | Kafka `warehouse.facility.events`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | Conformist |
 | Inventory control (operator, `e2e-tests` simulator) | RegisterBin | Command | REST `PUT /bins/{binId}` | OHS |
 | Inbound dock (operator, simulator) | ReceiveStock | Command | REST `POST /stock-receipts` (header `Idempotency-Key`) | OHS |
-| inbound-receiving | ReceiptLineReceived (`Good` lines, ADR 0037) | Event | Kafka `warehouse.inbound-receiving.events` → `BookInboundReceiptLine` → `ReceiveStock` (`INBOUND_RECEIPT_CONSUMER_GROUP`, mandatory, always on); `Damaged` lines are not booked | Conformist (inbound-receiving's Published Language); the REST route above is unchanged |
+| inbound-receiving | ReceiptLineReceived (`Good` lines, ADR 0037; `Damaged` lines, ADR 0052) | Event | Kafka `warehouse.inbound-receiving.events` → `BookInboundReceiptLine` → `ReceiveStock` (`INBOUND_RECEIPT_CONSUMER_GROUP`, mandatory, always on); `Damaged` lines are booked as HELD stock (`HoldStock`, never usable until a disposition) | Conformist (inbound-receiving's Published Language); the REST route above is unchanged |
 | Inbound dock (operator, simulator) | StowStock | Command | REST `POST /stowages` | OHS |
 | Inventory control (operator, simulator) | RunCycleCount | Command | REST `POST /bins/{binId}/cycle-counts` | OHS |
 | product-master | ProductClassified (local copy, ADR 0034) | Event | Kafka `warehouse.product-master.events` → `ApplyProductClassification` | Conformist (product-master's Published Language) |
+| product-master | ProductPackLevelDeclared, ProductPackLevelRetired (local packaging view, ADR 0046) | Event | Kafka `warehouse.product-master.events` (same consumer and `PRODUCT_MASTER_CONSUMER_GROUP`) → `pack_levels` | Conformist (product-master's Published Language) |
+| slotting-optimization | SlotPlanApproved (local forward-slot map, ADR 0050) | Event | Kafka `warehouse.slotting-optimization.events` → `ApplySlotPlan` (`SLOT_PLAN_CONSUMER_GROUP`, default `inventory-storage-slot-plan`, always on) | Conformist (slotting-optimization's Published Language) |
 | Picking (operator, simulator) | ConfirmPick | Command | REST `POST /reservations/{id}/pick-confirmations` | OHS — no sibling context calls it; **decided 2026-10-06: event-driven** — production confirmation comes from fulfillment-execution's `TaskCompleted` (next row), consumed here ([ADR 0035](/docs/adr/0035)) |
 | fulfillment-execution | TaskCompleted (PICK, `order_ref`, `line_no`) | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` → `ConfirmPicksForOrder` → with `line_no`, `ConfirmPick` for exactly that line's ACTIVE reservation; without it, counts the order's picks and confirms on the order's last pick (`TASK_COMPLETED_CONSUMER_GROUP`, mandatory, always on) | Conformist (fulfillment-execution's Published Language); per-line confirm, counting fallback, short picks not modelled ([ADR 0036](/docs/adr/0036), [ADR 0035](/docs/adr/0035)) |
 | fulfillment-execution | TaskCompleted (RELOCATE, REPLENISH) | Event | Same topic and consumer group: `ApplyRelocationTask` (`relocation_ref`, [ADR 0039](/docs/adr/0039)) and `ApplyReplenishTask` (`request_ref`, [ADR 0041](/docs/adr/0041)) move stock between bins through `RelocateStock`; a deterministic rejection is dead-lettered | Conformist (fulfillment-execution's Published Language) |
@@ -246,7 +248,7 @@ The terms that carry the model:
 | Decision | Source |
 | --- | --- |
 | Chaotic (random) stow, no fixed slotting; a stow needs both scans. | ADR 0002, `stock.ErrStowRequiresItemAndLocation` |
-| Reserve against **usable**, SKU-scoped and first-fit across bins; never bin-scoped. | ADR 0003, `ReserveStock.allocate` |
+| Reserve against **usable**, SKU-scoped and forward-first across bins (pick face before reserve, then a total order); never bin-scoped. | ADR 0003, ADR 0050, `allocation.Order`, `ReserveStock.allocate` |
 | Reservations are revocable and expire after a timeout (default 30 min); expiry is lazy, on the next read. | ADR 0003, `DefaultReservationTimeout`, `expireIfDue` |
 | A retry for the same `(demandRef, sku, quantity)` returns the existing ACTIVE reservation. | `isReplayOf` |
 | Cycle-count shortfall marks whole units Unlocated; overage is reported, never auto-reconciled. | `RunCycleCount` |

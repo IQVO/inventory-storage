@@ -91,7 +91,7 @@ response is a DTO.
 ## Design notes
 
 - **Reservation is SKU-scoped, not bin-scoped.** `ReserveStock` draws from
-  whichever `StockUnit`s have usable quantity (first-fit across bins) and
+  whichever `StockUnit`s have usable quantity (forward pick face first, then reserve bins, in the deterministic order of [ADR 0050](docs/docs/adr/0050-deterministic-forward-first-allocation.md)) and
   records exactly which units/quantities it drew from as `Allocation`s on the
   `Reservation`. `RevokeReservation` returns quantity to those same units, but
   because a fresh `ReserveStock` call is free to draw from any unit with
@@ -400,6 +400,19 @@ of the site-scoped transfer allocation exchange (ADR-0030),
   ```
   `reason` is the closed set `ORIGIN_SITE_UNKNOWN | INSUFFICIENT_USABLE |
   IDEMPOTENCY_CONFLICT`.
+  The cancel-after-allocation compensation leg (ADR-0050) adds
+  `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased`
+  (key/subject = transfer_line_id) with `data`:
+  ```json
+  {
+    "transfer_id": "tr-77", "transfer_line_id": "tl-77-1",
+    "reservation_id": "res-tr-1", "origin_site_id": "SITE-A",
+    "sku": "SKU-T1", "quantity": 6,
+    "outcome": "RELEASED", "reason": "superseded by a cheaper source"
+  }
+  ```
+  `outcome` is the closed set `RELEASED | ALREADY_RESOLVED` — both settle
+  the saga as success.
   The legacy `com.warehouse.wms.inventory-storage.product.ProductClassified`
   is **no longer published**: ADR-0034 stage E (2026-10-17) removed the type,
   the `republish-product-classifications` backfill and both
@@ -461,7 +474,10 @@ reads for the ADR-0009/0010 placement rules (unchanged). It is fed by
 `com.warehouse.wms.product-master.product.ProductClassified` on
 `warehouse.product-master.events`; the CloudEvents `id` is claimed in
 `processed_events` in the same transaction as the upsert, and a message
-applies only when its `version` is newer than the stored one. Other
+applies only when its `version` is newer than the stored one. The same consumer
+also reads `com.warehouse.wms.product-master.product.ProductPackLevelDeclared` and
+`com.warehouse.wms.product-master.product.ProductPackLevelRetired` into the local packaging view
+`pack_levels` ([ADR-0046](docs/docs/adr/0046-containers-no-site-on-carton-local-packaging-view.md)). Other
 product-master event types are ignored.
 
 | Env var | Required | Meaning |
@@ -482,9 +498,12 @@ through the existing `ReceiveStock` use case, so the effect is the same as
 `POST /stock-receipts`: `StockReceived` on the analytics topic, the quantity
 **staged and not yet usable**, stow still the RF action (item scan plus location
 scan). The CloudEvents `id` is claimed in `processed_events` in the same
-transaction, so a redelivery books nothing twice. A `Damaged` line is **not
-booked** in v1 (INFO log and
-`inventory.inbound_receipt_units{outcome=damaged_not_booked}`); an invalid line
+transaction, so a redelivery books nothing twice. A `Damaged` line is **held,
+not dropped** ([ADR 0052](docs/docs/adr/0052-held-stock-and-disposition.md)): booked as
+HELD stock (`StockHeld`, never usable, never reservable) in the same transaction, counted in
+`inventory.inbound_receipt_units{outcome=held}`, and settled by a disposition
+(`POST /held-stock/{id}/dispositions`: RELEASE, RETURN_TO_VENDOR, SCRAP, REWORK;
+list with `GET /held-stock` or the MCP tool `list_held_stock`); an invalid line
 (empty `sku`, `quantity` <= 0, unknown `condition`, not a CloudEvent) is logged
 and skipped. Other inbound-receiving event types are ignored. `POST /stock-receipts`
 is unchanged and keeps serving ad-hoc receipts.
@@ -517,6 +536,19 @@ types are ignored.
 
 The one-shot `republish-product-classifications` backfill (product-master ADR
 0003 stage B) was retired with stage E: `cmd/inventory` has no subcommands.
+
+### Consumed: slotting-optimization's SlotPlanApproved → forward-slot map (ADR-0050)
+
+slotting-optimization owns the slot plan. On `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved`
+from `warehouse.slotting-optimization.events` (`SlotPlanGenerated` and `SlotPlanRejected` are ignored) this service
+replaces the site's forward-slot map in `forward_pick_face_plans` / `forward_pick_faces`, claiming the CloudEvents `id`
+in `processed_events` in the same transaction; a plan older than the held one is a no-op and a malformed plan is
+logged (WARN) and skipped. `ReserveStock` draws a SKU's forward pick face before its reserve bins from these local
+tables, with no call to a sibling at reservation time.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `SLOT_PLAN_CONSUMER_GROUP` | `inventory-storage-slot-plan` | Stable consumer group id. The consumer always runs; the default lets a deployment that predates it boot unchanged. |
 
 ### Consumed: fulfillment-execution's TaskCompleted → confirm exactly the picked line (ADR-0036; counting fallback ADR-0035)
 

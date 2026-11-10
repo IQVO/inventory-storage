@@ -95,6 +95,7 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked` | reservation id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated` | reservation id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected` | transfer line id |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased` (ADR 0051) | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.TransferStockStowed` | transfer line id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged` (ADR 0040) | `<bin>:<sku>` |
@@ -102,6 +103,9 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.ContainerStowed` (ADR 0046) | LPN |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.CaseBroken` (ADR 0046) | LPN |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.ContainerEmptied` (ADR 0046) | LPN |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.StockHeld` (ADR 0052) | held unit id |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.StockReleased` (ADR 0052) | held unit id |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.StockDispositioned` (ADR 0052) | held unit id |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.StockReceived` | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | SKU |
 | `warehouse.inventory.analytics` | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | stock unit id |

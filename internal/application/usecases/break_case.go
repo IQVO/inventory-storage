@@ -204,7 +204,7 @@ func (uc *BreakCase) looseUnit(ctx context.Context, bin shared.BinId, c *contain
 		return nil, err
 	}
 	for _, u := range units {
-		present := u.State() != stock.StateUnlocated && u.State() != stock.StateRemoved
+		present := u.State() != stock.StateUnlocated && u.State() != stock.StateRemoved && u.State() != stock.StateHeld
 		if present && u.SKU() == c.SKU() && u.ReservableBy(c.OwnerRef()) {
 			return u, nil
 		}

@@ -83,5 +83,5 @@ func encodeContainerEvent(event shared.DomainEvent) (data any, key, entity strin
 			LPN: e.LPN, SKU: e.SKU.String(), OwnerRef: e.OwnerRef.String(), SiteID: e.SiteID.String(), Reason: e.Reason, At: e.OccurredAt().UTC(),
 		}, e.LPN, containerEntity, nil
 	}
-	return nil, "", "", nil
+	return encodeHeldEvent(event)
 }

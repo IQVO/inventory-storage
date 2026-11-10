@@ -54,7 +54,8 @@ func hasType(s *jsonschema.Schema, typ string) bool {
 }
 
 // validInstanceFor builds a schema-shaped arguments object from a tool's
-// properties: strings become "probe", integers 1, numbers 1.5, booleans
+// properties: strings become "probe", integers 1, numbers 1.5 (float64, not
+// json.Number: the validator type-checks Go kinds), booleans
 // true, arrays and objects their empty forms. Good enough to prove the
 // schema accepts what it declares.
 func validInstanceFor(s *jsonschema.Schema) map[string]any {
@@ -64,9 +65,9 @@ func validInstanceFor(s *jsonschema.Schema) map[string]any {
 		case hasType(prop, "string"):
 			instance[name] = "probe"
 		case hasType(prop, "integer"):
-			instance[name] = json.Number("1")
+			instance[name] = float64(1)
 		case hasType(prop, "number"):
-			instance[name] = json.Number("1.5")
+			instance[name] = float64(1.5)
 		case hasType(prop, "boolean"):
 			instance[name] = true
 		case hasType(prop, "array"):

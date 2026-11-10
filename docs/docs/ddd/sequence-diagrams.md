@@ -155,7 +155,7 @@ sequenceDiagram
             H-->>C: 201 same reservation
         else no replay
             UC->>SR: FindBySKU(sku)
-            UC->>UC: allocate first-fit, StockUnit.Reserve per unit
+            UC->>UC: allocate forward-first (allocation.Order), StockUnit.Reserve per unit
             alt sum of usable below qty
                 H-->>C: 409 insufficient-usable
             else covered
