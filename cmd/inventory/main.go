@@ -81,6 +81,12 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// inventory.held_units is shared by the inbound consumer (holds) and the
+	// disposition endpoint (releases), so it is created once (ADR 0052).
+	adapters.heldMetrics, err = telemetry.NewHeldStockMetrics()
+	if err != nil {
+		return err
+	}
 
 	// readiness gates GET /readyz (ADR-0020 §graceful shutdown): the drain
 	// gate (SetNotReady is called as the FIRST step of the shutdown

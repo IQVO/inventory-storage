@@ -267,7 +267,7 @@ func TestDamagedAndFlatLinesRecordNoBooking(t *testing.T) {
 	w := newCW()
 	if out, err := w.Book.Execute(context.Background(), usecases.InboundReceiptLine{
 		EventID: "d", ReceiptID: "R-1", LineNo: 1, SKU: "SKU-1", Quantity: 5, Condition: "Damaged",
-	}); err != nil || out != usecases.LineDamagedNotBooked {
+	}); err != nil || out != usecases.LineHeld {
 		t.Fatalf("damaged = %s %v", out, err)
 	}
 	if out, err := w.Book.Execute(context.Background(), usecases.InboundReceiptLine{

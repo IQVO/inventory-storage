@@ -44,6 +44,11 @@ type Server struct {
 	RelocateStock *usecases.RelocateStock
 	// GetRelocation backs GET /relocations/{id}.
 	GetRelocation *usecases.GetRelocation
+	// ListHeldStock and DecideHeldDisposition back the held-stock endpoints
+	// (ADR 0052): the list read, and the disposition POST behind
+	// RequireIdempotencyKey.
+	ListHeldStock         *usecases.ListHeldStock
+	DecideHeldDisposition *usecases.DecideHeldDisposition
 	// StowContainer, BreakCase, GetContainer and ListBinContainers back the
 	// container endpoints (ADR 0045); ReserveFullCases serves POST
 	// /reservations when the body asks for whole cases.
@@ -182,6 +187,12 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	post.Post("/containers/{lpn:[A-Za-z0-9._-]+}/case-breaks", s.handleBreakCase)
 	r.Get("/containers/{lpn:[A-Za-z0-9._-]+}", s.handleGetContainer)
 	r.Get("/bins/{binId}/containers", s.handleListBinContainers)
+
+	// Held stock and disposition (ADR 0052): the Damaged units of an inbound
+	// receipt wait here, never usable, until a disposition settles them.
+	r.Get("/held-stock", s.handleListHeldStock)
+	r.Get("/held-stock/{id}", s.handleGetHeldUnit)
+	post.Post("/held-stock/{id}/dispositions", s.handlePostDisposition)
 
 	return r
 }

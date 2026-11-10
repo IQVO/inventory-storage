@@ -78,6 +78,9 @@ type LinkReceiptCarton struct {
 	ProcessedEvents ports.ProcessedEventRepo
 	Pending         ports.PendingLinkRepo
 	Linker          ContainerLinkSettler
+	// Held records the LPN of a Damaged content on the held stock of its line
+	// (ADR 0052). Optional: nil records nothing.
+	Held ports.HeldStockRepo
 	// UnitOfWork brackets the claim, the link and the settle. Optional: nil
 	// means "no transactional backing" (in-memory runs).
 	UnitOfWork ports.UnitOfWork
@@ -103,7 +106,7 @@ func (uc *LinkReceiptCarton) Execute(ctx context.Context, c ReceiptCarton) (Cart
 		}
 		if !eligible {
 			outcome = CartonNoContainer
-			return nil
+			return uc.markDamaged(ctx, c)
 		}
 		outcome = CartonRecorded
 		if err := uc.Pending.Add(ctx, link); err != nil {
@@ -116,6 +119,33 @@ func (uc *LinkReceiptCarton) Execute(ctx context.Context, c ReceiptCarton) (Cart
 		return "", SettleResult{}, err
 	}
 	return outcome, settled, nil
+}
+
+// markDamaged records the LPN of every Damaged content of c on the held line
+// it names. It books NO quantity: ReceiptLineReceived is the sole quantity
+// authority (ADR 0045), so opening a hold here would count the same units
+// twice. The mark is keyed (receipt, line, lpn), so it is idempotent and does
+// not depend on whether the line event arrived first.
+func (uc *LinkReceiptCarton) markDamaged(ctx context.Context, c ReceiptCarton) error {
+	if uc.Held == nil {
+		return nil
+	}
+	lpn := c.LPN
+	if lpn == "" {
+		lpn = c.SSCC
+	}
+	if lpn == "" {
+		return nil
+	}
+	for _, content := range c.Contents {
+		if content.Condition != InboundConditionDamaged || content.LineNo < 1 {
+			continue
+		}
+		if err := uc.Held.MarkCarton(ctx, c.ReceiptID, content.LineNo, lpn, c.SSCC); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // link validates the event and builds the pending link. eligible is false for

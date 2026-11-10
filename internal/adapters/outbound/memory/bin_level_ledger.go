@@ -42,7 +42,7 @@ func (l *BinLevelLedger) Advance(ctx context.Context, bin shared.BinId, sku shar
 	}
 	var level shared.BinLevel
 	for _, unit := range units {
-		if unit.SKU() != sku || unit.OwnerRef() != owner || unit.State() == stock.StateUnlocated || unit.State() == stock.StateRemoved {
+		if unit.SKU() != sku || unit.OwnerRef() != owner || unit.State() == stock.StateUnlocated || unit.State() == stock.StateRemoved || unit.State() == stock.StateHeld {
 			continue
 		}
 		level.OnHand = level.OnHand.Add(unit.Quantity())

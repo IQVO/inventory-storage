@@ -18,7 +18,8 @@ import (
 // receipt through the existing ReceiveStock use case (the same effect as
 // POST /stock-receipts), claiming each CloudEvents id in processed_events in
 // the SAME transaction as the StockReceived outbox row. Damaged lines are
-// counted, not booked.
+// booked as HELD stock (ADR 0052) in that same transaction: StockHeld through
+// the outbox, never usable, waiting for a disposition.
 //
 // The consumer ALWAYS runs: Postgres and Kafka are the only runtime (the
 // real-wiring ADR). loadConfig already refused a missing DATABASE_URL,
@@ -41,10 +42,14 @@ func buildInboundReceiptConsumer(
 	processed := postgres.NewProcessedEventRepo(set.pool)
 	linker := set.containerLinker(system.Clock{})
 	book := &usecases.BookInboundReceiptLine{
-		Receive:         &usecases.ReceiveStock{Events: set.publisher, Clock: system.Clock{}, UnitOfWork: set.uow},
+		Receive: &usecases.ReceiveStock{Events: set.publisher, Clock: system.Clock{}, UnitOfWork: set.uow},
+		// A Damaged line is held, not dropped (ADR 0052): same claim, same
+		// transaction, same outbox.
+		Hold:            set.holdStock(system.Clock{}),
 		ProcessedEvents: processed,
 		UnitOfWork:      set.uow,
 		Metrics:         metrics,
+		HeldMetrics:     set.heldMetrics,
 		// The line booking is the bound on containers (ADR 0045): it is stored
 		// and the cartons waiting for it are settled in the same transaction.
 		Bookings: set.bookings,
@@ -53,7 +58,7 @@ func buildInboundReceiptConsumer(
 	consumer := inboundkafka.NewInboundReceiptConsumer(cfg.kafkaBrokers, cfg.inboundReceiptConsumerGroup, book, logger)
 	// ReceiptCartonReceived rides the same consumer, group and topic: it
 	// creates or links Containers and never books a quantity (ADR 0045).
-	consumer.Carton = &usecases.LinkReceiptCarton{ProcessedEvents: processed, Pending: set.pendingLinks, Linker: linker, UnitOfWork: set.uow}
+	consumer.Carton = &usecases.LinkReceiptCarton{ProcessedEvents: processed, Pending: set.pendingLinks, Linker: linker, Held: set.held, UnitOfWork: set.uow}
 	logger.Info("inbound-receiving receipt consumer configured",
 		"topic", inboundkafka.InboundReceivingTopic, "consumer_group", cfg.inboundReceiptConsumerGroup)
 
