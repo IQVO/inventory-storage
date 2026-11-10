@@ -461,9 +461,10 @@ Turns a counted receipt line from inbound-receiving into staged stock. A
 `condition=Good` line runs the **existing `ReceiveStock`** (rules are not
 duplicated): `StockReceived` on the analytics topic, the quantity staged and
 not yet usable, stow still the RF action — the same effect as
-`POST /stock-receipts`. A `Damaged` line is claimed but **not booked** in v1
-(outcome `DAMAGED_NOT_BOOKED`, INFO log, counted in
-`inventory.inbound_receipt_units{outcome=damaged_not_booked}`); units are
+`POST /stock-receipts`. A `Damaged` line is **held, not dropped** (outcome `HELD`,
+[ADR 0052](/docs/adr/0052)): `HoldStock` books it as a HELD unit and raises `StockHeld` in the
+same transaction; it is counted in
+`inventory.inbound_receipt_units{outcome=held}`; units are
 counted only after the transaction commits, so a rolled-back attempt never
 inflates the counter.
 

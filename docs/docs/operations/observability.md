@@ -55,7 +55,8 @@ Meter `github.com/claudioed/inventory-storage`
 | --- | --- | --- | --- | --- | --- |
 | `inventory.reservations` | Int64 counter | `{reservation}` | `outcome` = `created` \| `revoked` | `cmd/inventory` (`ReserveStock`, `RevokeReservation`), `cmd/mcp` (`revoke_reservation`) | Reservations made against usable inventory and revoked. Source: `internal/adapters/outbound/telemetry/metrics.go`. |
 | `inventory.pick_confirmations` | Int64 counter | `{reservation}` | `outcome` = `confirmed` \| `expired` \| `already_picked` \| `revoked` | `cmd/inventory`, TaskCompleted consumer | Reservations settled by a completed PICK task. Source: `pick_metrics.go`. |
-| `inventory.inbound_receipt_units` | Int64 counter | `{unit}` | `outcome` = `booked` \| `damaged_not_booked` | `cmd/inventory`, inbound-receipt consumer | Units on `ReceiptLineReceived` lines, booked (Good) or counted but not booked (Damaged). Source: `inbound_receipt_metrics.go`. |
+| `inventory.inbound_receipt_units` | Int64 counter | `{unit}` | `outcome` = `booked` \| `held` | `cmd/inventory`, inbound-receipt consumer | Units on `ReceiptLineReceived` lines, booked (Good) or held out of usable stock (Damaged, [ADR 0052](/docs/adr/0052)). Source: `inbound_receipt_metrics.go`. |
+| `inventory.held_units` | Int64 up-down counter | `{unit}` | `reason` = `DAMAGED` \| `QC_PENDING` \| `SUSPECT` \| `OTHER` | `cmd/inventory`, inbound-receipt consumer and disposition endpoint | Units currently held out of usable stock: `+` on a hold, `-` when a RELEASE, RETURN_TO_VENDOR or SCRAP settles it (a REWORK moves units between reasons). Moved only after the transaction commits. Source: `held_stock_metrics.go`. |
 | `circuit_breaker.state` | Int64 gauge | `{state}` | `dependency` = `facility-layout` | `cmd/inventory` with `LOCATION_LOOKUP_MODE=http` | 0 closed, 1 half-open, 2 open; recorded on every state change. Source: `circuit_breaker_metrics.go`. |
 
 ### Library instruments
@@ -134,5 +135,6 @@ empty; use the Kong 5xx panel or the `http request` log lines with
 | Consumer lag | lag of groups `inventory-storage-confirm-pick`, `inventory-storage-transfer-allocation`, `inventory-analytics` and the configured product-master / inbound-receipt groups | Those consumers retry a failing message in place; lag is the only symptom. |
 | Analytics freshness | `GET /reports/flow-accuracy/freshness` → `lagSeconds` above an agreed bound | Projector down or behind. |
 | Pick confirmations expiring | rate of `inventory_pick_confirmations_total{outcome="expired"}` | Picks completing after their reservation expired; stock was already returned to usable. |
-| Damaged receipts | rate of `inventory_inbound_receipt_units_total{outcome="damaged_not_booked"}` | Inbound quality signal. |
+| Damaged receipts | rate of `inventory_inbound_receipt_units_total{outcome="held"}` | Inbound quality signal. |
+| Held stock ageing | `inventory_held_units` by `reason` staying above zero | Damaged or suspect units waiting for a disposition. |
 | HTTP latency | p95 of `http_server_request_duration_seconds` by `http_route` | Note: the OLTP pool's `statement_timeout` is 5 s. |

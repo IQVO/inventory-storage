@@ -153,8 +153,9 @@ consumes (under the mandatory `INBOUND_RECEIPT_CONSUMER_GROUP`)
 line runs the existing `ReceiveStock` use case, in one transaction with the
 CloudEvents-id claim in `processed_events`: the same `StockReceived` as
 `POST /stock-receipts`, the quantity staged and not yet usable, stow still the RF
-action. A `Damaged` line is not booked in v1 (INFO log,
-`inventory.inbound_receipt_units{outcome=damaged_not_booked}`). Every other
+action. A `Damaged` line is booked as HELD stock in the same
+transaction ([ADR 0052](/docs/adr/0052)): `StockHeld`, never usable and never reservable until a
+disposition settles it (`inventory.inbound_receipt_units{outcome=held}`). Every other
 inbound-receiving type is committed past; a message that is not a valid
 CloudEvent, or carries an empty `sku`, a non-positive `quantity` or an unknown
 `condition`, is logged and committed past. `POST /stock-receipts` is unchanged.

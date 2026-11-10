@@ -194,8 +194,9 @@ not the event stream.
   (consumer `inbound-receipt-line`) and runs the EXISTING `ReceiveStock` in ONE
   UnitOfWork: `Good` -> `StockReceived` through the outbox (analytics topic),
   staged and not yet usable, stow stays the RF action — the same effect as
-  `POST /stock-receipts`, which is unchanged. `Damaged` is claimed and NOT booked
-  in v1 (INFO log, `inventory.inbound_receipt_units{outcome=damaged_not_booked}`).
+  `POST /stock-receipts`, which is unchanged. `Damaged` is booked as HELD
+  stock in the same UnitOfWork (`StockHeld` through the outbox, never usable, ADR 0052;
+  `inventory.inbound_receipt_units{outcome=held}`).
   Receipt context is not stored on the stock event.
 - At-least-once checklist: `FetchMessage`, commit after the handler settles,
   capped-backoff retry of the SAME message on transient (DB) errors; not a

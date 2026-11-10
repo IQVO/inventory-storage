@@ -77,7 +77,8 @@ info:
     line with `condition=Good` is booked as a staged receipt through the
     existing ReceiveStock use case (the same `StockReceived` as
     `POST /stock-receipts`, analytics topic; quantity staged, stow stays the RF
-    action); `Damaged` is not booked in v1. And it consumes
+    action); a `Damaged` line is booked as HELD stock (ADR 0052): never usable,
+    raising `StockHeld`, until a disposition settles it. And it consumes
     returns-processing's `ReturnLineStaged` from
     `warehouse.returns-processing.events` (channel below, ADR 0044): the
     RESTOCK disposition's handover is booked through the SAME ReceiveStock
@@ -170,7 +171,9 @@ channels:
       `ItemStowed` (ADR 0043 — byte-identical copies of the analytics
       feed, consumed by exception-management and returns-processing) and the
       container events `ContainerRegistered`, `ContainerStowed`, `CaseBroken`
-      and `ContainerEmptied` (keyed by LPN, ADR 0045/0046). The legacy
+      and `ContainerEmptied` (keyed by LPN, ADR 0045/0046) and the held-stock
+      events `StockHeld`, `StockReleased` and `StockDispositioned` (keyed by
+      held unit id, ADR 0052). The legacy
       `ProductClassified` was retired at product-master ADR 0003 stage E
       (2026-10-17). The primary downstream consumer is
       wes-work-planning, which dispatches on their full `type` strings and
@@ -206,6 +209,9 @@ channels:
           - $ref: "#/components/messages/ContainerStowed"
           - $ref: "#/components/messages/CaseBroken"
           - $ref: "#/components/messages/ContainerEmptied"
+          - $ref: "#/components/messages/StockHeld"
+          - $ref: "#/components/messages/StockReleased"
+          - $ref: "#/components/messages/StockDispositioned"
 
   warehouse.inventory.analytics:
     description: >
@@ -473,9 +479,12 @@ channels:
         `StockReceived` through the outbox (analytics topic): the units are
         staged and not yet usable, and stow stays the RF action (item scan plus
         location scan). `POST /stock-receipts` is unchanged and keeps working
-        for ad-hoc receipts. `condition=Damaged` is NOT booked in v1
-        (quarantine is a later ADR): it is claimed, logged at INFO and counted
-        in `inventory.inbound_receipt_units{outcome=damaged_not_booked}`.
+        for ad-hoc receipts. `condition=Damaged` is booked as
+        HELD stock (ADR 0052), not dropped: in the same transaction it raises
+        `StockHeld` through the outbox and is counted in
+        `inventory.inbound_receipt_units{outcome=held}`. A held unit has no
+        usable quantity and can never be reserved until a disposition
+        (RELEASE, RETURN_TO_VENDOR, SCRAP, REWORK) settles it.
         A redelivered `id` is a no-op. A transient failure retries the same
         message with capped backoff; a message that is not a valid CloudEvent,
         has an undecodable payload, an empty `sku`, a non-positive `quantity` or an
@@ -963,6 +972,110 @@ components:
               site_id: WH1
               reason: BROKEN
               at: "2026-10-24T12:10:00Z"
+    StockHeld:
+      x-no-consumer-reason: "pending: held-stock fact (ADR 0052); no consumer declared in any fleet spec yet"
+      name: StockHeld
+      title: Stock Held
+      summary: A received quantity was held out of usable stock.
+      description: >-
+        Raised when a Damaged receipt line (inbound-receiving `ReceiptLineReceived`, condition DAMAGED) is booked as held stock instead of being dropped (ADR 0052). The unit has no usable quantity and can never be reserved. It is raised in the same transaction as the consumed message. Kafka key and `subject` are the held unit id.
+      contentType: application/cloudevents+json
+      tags:
+        - name: held-stock
+          description: Raised by the held-stock use cases (ADR 0052).
+      payload:
+        $ref: "#/components/schemas/StockHeldEvent"
+      examples:
+        - name: held
+          summary: A Damaged line was held.
+          payload:
+            specversion: "1.0"
+            id: 0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.StockHeld
+            subject: hu-1
+            time: "2026-08-21T22:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:StockHeld:v1
+            data:
+              held_unit_id: hu-1
+              sku: SKU-1
+              quantity: 4
+              reason: DAMAGED
+              receipt_id: R-1
+              asn_number: ASN-1
+              line_no: 2
+              owner_ref: seller-a
+              sscc: "003400000000000017"
+              held_at: "2026-08-21T22:00:00Z"
+    StockReleased:
+      x-no-consumer-reason: "pending: held-stock fact (ADR 0052); no consumer declared in any fleet spec yet"
+      name: StockReleased
+      title: Stock Released
+      summary: A held quantity was released back to usable stock.
+      description: >-
+        Raised by a RELEASE disposition (ADR 0052). The quantity re-enters usable stock through the staged-receipt path, so a `StockReceived` follows in the same transaction; it is usable once stowed. Kafka key and `subject` are the held unit id.
+      contentType: application/cloudevents+json
+      tags:
+        - name: held-stock
+          description: Raised by the held-stock use cases (ADR 0052).
+      payload:
+        $ref: "#/components/schemas/StockReleasedEvent"
+      examples:
+        - name: released
+          summary: A held unit was released.
+          payload:
+            specversion: "1.0"
+            id: 0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.StockReleased
+            subject: hu-1
+            time: "2026-08-21T22:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:StockReleased:v1
+            data:
+              held_unit_id: hu-1
+              sku: SKU-1
+              quantity: 4
+              receipt_id: R-1
+              asn_number: ASN-1
+              line_no: 2
+              released_at: "2026-08-21T22:00:00Z"
+    StockDispositioned:
+      x-no-consumer-reason: "pending: held-stock fact (ADR 0052); no consumer declared in any fleet spec yet"
+      name: StockDispositioned
+      title: Stock Dispositioned
+      summary: A disposition was decided for a held unit.
+      description: >-
+        Raised by every disposition decision (ADR 0052): RELEASE, RETURN_TO_VENDOR, SCRAP or REWORK. `reason` is the hold reason after the decision (a REWORK sets a new one). Kafka key and `subject` are the held unit id.
+      contentType: application/cloudevents+json
+      tags:
+        - name: held-stock
+          description: Raised by the held-stock use cases (ADR 0052).
+      payload:
+        $ref: "#/components/schemas/StockDispositionedEvent"
+      examples:
+        - name: rework
+          summary: A held unit was sent to rework.
+          payload:
+            specversion: "1.0"
+            id: 0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.stock.StockDispositioned
+            subject: hu-1
+            time: "2026-08-21T22:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:StockDispositioned:v1
+            data:
+              held_unit_id: hu-1
+              sku: SKU-1
+              quantity: 4
+              disposition: REWORK
+              reason: SUSPECT
+              receipt_id: R-1
+              asn_number: ASN-1
+              line_no: 2
+              decided_at: "2026-08-21T22:00:00Z"
     InboundReceivingReceiptCartonReceived:
       name: InboundReceivingReceiptCartonReceived
       title: Receipt Carton Received (from inbound-receiving, consumed)
@@ -1269,7 +1382,7 @@ components:
               condition: Good
               received_at: "2026-10-09T08:10:00Z"
         - name: damagedLine
-          summary: 4 damaged units of SKU-1; recorded by inbound-receiving, not booked here.
+          summary: 4 damaged units of SKU-1; booked here as held stock (StockHeld), never usable.
           payload:
             specversion: "1.0"
             id: 5b7d9e11-2c4a-4f68-9d03-7a1e6c8b2f40
@@ -2788,7 +2901,7 @@ components:
             condition:
               type: string
               enum: [Good, Damaged]
-              description: Only Good is booked as stock (ADR 0037); Damaged is counted and ignored; any other value is logged and committed past.
+              description: Good is staged as stock (ADR 0037); Damaged is held out of usable stock until a disposition (ADR 0052); any other value is logged and committed past.
             received_at:
               type: string
               format: date-time
@@ -3012,6 +3125,172 @@ components:
                 at:
                   type: string
                   description: When the fact happened (the service clock).
+                  format: date-time
+
+    StockHeldEvent:
+      description: CloudEvents envelope for a StockHeld domain event (ADR 0052).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for StockHeld.
+              const: "com.warehouse.wms.inventory-storage.stock.StockHeld"
+            subject:
+              type: string
+              description: The held unit id (also the Kafka key).
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:StockHeld:v1
+              pattern: "^urn:warehouse:inventory-storage:events:StockHeld:v1$"
+            data:
+              type: object
+              required: [held_unit_id, sku, quantity, reason, receipt_id, asn_number, line_no, held_at]
+              properties:
+                held_unit_id:
+                  type: string
+                  description: The held unit id.
+                sku:
+                  type: string
+                  description: The SKU held.
+                quantity:
+                  type: integer
+                  description: Eaches held.
+                  minimum: 1
+                reason:
+                  type: string
+                  description: Why it is held.
+                  enum: [DAMAGED, QC_PENDING, SUSPECT, OTHER]
+                receipt_id:
+                  type: string
+                  description: The inbound receipt the quantity came from.
+                asn_number:
+                  type: string
+                  description: The ASN of the receipt.
+                line_no:
+                  type: integer
+                  description: The receipt line.
+                  minimum: 1
+                owner_ref:
+                  type: string
+                  description: Owner of the stock. Omitted for fleet-owned stock.
+                  maxLength: 64
+                sscc:
+                  type: string
+                  description: The carton SSCC of the line. Omitted when it had none.
+                held_at:
+                  type: string
+                  description: When the unit was held (the service clock).
+                  format: date-time
+
+    StockReleasedEvent:
+      description: CloudEvents envelope for a StockReleased domain event (ADR 0052).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for StockReleased.
+              const: "com.warehouse.wms.inventory-storage.stock.StockReleased"
+            subject:
+              type: string
+              description: The held unit id (also the Kafka key).
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:StockReleased:v1
+              pattern: "^urn:warehouse:inventory-storage:events:StockReleased:v1$"
+            data:
+              type: object
+              required: [held_unit_id, sku, quantity, receipt_id, asn_number, line_no, released_at]
+              properties:
+                held_unit_id:
+                  type: string
+                  description: The held unit id.
+                sku:
+                  type: string
+                  description: The SKU held.
+                quantity:
+                  type: integer
+                  description: Eaches held.
+                  minimum: 1
+                receipt_id:
+                  type: string
+                  description: The inbound receipt the quantity came from.
+                asn_number:
+                  type: string
+                  description: The ASN of the receipt.
+                line_no:
+                  type: integer
+                  description: The receipt line.
+                  minimum: 1
+                released_at:
+                  type: string
+                  description: When the unit was released (the service clock).
+                  format: date-time
+
+    StockDispositionedEvent:
+      description: CloudEvents envelope for a StockDispositioned domain event (ADR 0052).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for StockDispositioned.
+              const: "com.warehouse.wms.inventory-storage.stock.StockDispositioned"
+            subject:
+              type: string
+              description: The held unit id (also the Kafka key).
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:StockDispositioned:v1
+              pattern: "^urn:warehouse:inventory-storage:events:StockDispositioned:v1$"
+            data:
+              type: object
+              required: [held_unit_id, sku, quantity, disposition, reason, receipt_id, asn_number, line_no, decided_at]
+              properties:
+                held_unit_id:
+                  type: string
+                  description: The held unit id.
+                sku:
+                  type: string
+                  description: The SKU held.
+                quantity:
+                  type: integer
+                  description: Eaches held.
+                  minimum: 1
+                disposition:
+                  type: string
+                  description: The decision.
+                  enum: [RELEASE, RETURN_TO_VENDOR, SCRAP, REWORK]
+                reason:
+                  type: string
+                  description: The hold reason after the decision.
+                  enum: [DAMAGED, QC_PENDING, SUSPECT, OTHER]
+                receipt_id:
+                  type: string
+                  description: The inbound receipt the quantity came from.
+                asn_number:
+                  type: string
+                  description: The ASN of the receipt.
+                line_no:
+                  type: integer
+                  description: The receipt line.
+                  minimum: 1
+                decided_at:
+                  type: string
+                  description: When it was decided (the service clock).
                   format: date-time
 
     InboundReceivingReceiptCartonReceivedEvent:
