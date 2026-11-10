@@ -192,6 +192,8 @@ func TestListHeldStock_RejectsBadQueries(t *testing.T) {
 	hs := newHeldServer()
 	for path, slug := range map[string]string{
 		"/held-stock?reason=BROKEN":                 "invalid-hold-reason",
+		"/held-stock?reason=":                       "invalid-hold-reason",
+		"/held-stock?olderThanHours=":               "invalid-older-than-hours",
 		"/held-stock?olderThanHours=-1":             "invalid-older-than-hours",
 		"/held-stock?olderThanHours=abc":            "invalid-older-than-hours",
 		"/held-stock?limit=0":                       "invalid-limit",

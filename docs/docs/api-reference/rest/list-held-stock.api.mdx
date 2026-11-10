@@ -1,0 +1,70 @@
+---
+id: list-held-stock
+title: "List the units held out of usable stock"
+description: "The units still HELD (ADR 0052), oldest first (ties by id), filtered by `reason`, `sku` and age (`olderThanHours`: held for MORE than that many hours). A removed unit (released, returned, scrapped) is not listed; read it by id for its audit trail. Keyset-paginated (REST guideline section 3): `{items, nextCursor}`, `limit` (1-500, default 100) and the opaque `cursor`. Any other query parameter is 400 `unknown-query-parameter`. Side-effect-free."
+sidebar_label: "List the units held out of usable stock"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"List the units held out of usable stock"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/held-stock"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The units still HELD (ADR 0052), oldest first (ties by id), filtered by `reason`, `sku` and age (`olderThanHours`: held for MORE than that many hours). A removed unit (released, returned, scrapped) is not listed; read it by id for its audit trail. Keyset-paginated (REST guideline section 3): `{items, nextCursor}`, `limit` (1-500, default 100) and the opaque `cursor`. Any other query parameter is 400 `unknown-query-parameter`. Side-effect-free.
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./list-held-stock.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./list-held-stock.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./list-held-stock.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

@@ -42,6 +42,34 @@ const sidebar: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "HeldStock",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/held-stock",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/list-held-stock",
+          label: "List the units held out of usable stock",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/get-held-unit",
+          label: "Read one held unit",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/decide-held-disposition",
+          label: "Decide what happens to a held unit",
+          className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
       label: "Containers",
       link: {
         type: "doc",
