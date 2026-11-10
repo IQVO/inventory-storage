@@ -43,6 +43,18 @@ func TestNewHeldUnit_IsHeldWithSourceAndReason(t *testing.T) {
 	}
 }
 
+func TestNewHeldUnit_AcceptsTheFirstLineAndASingleUnit(t *testing.T) {
+	src := heldSource(t, 1)
+	src.LineNo = 1
+	h, err := NewHeldUnit("hu-edge", src, ReasonDamaged, heldAt)
+	if err != nil {
+		t.Fatalf("line 1 with quantity 1 is the smallest valid source: %v", err)
+	}
+	if h.LineNo() != 1 || h.Quantity().Int() != 1 {
+		t.Fatalf("line %d quantity %d", h.LineNo(), h.Quantity().Int())
+	}
+}
+
 func TestNewHeldUnit_RejectsInvalidInput(t *testing.T) {
 	cases := map[string]func(s *HeldSource) HoldReason{
 		"no sku":      func(s *HeldSource) HoldReason { s.SKU = ""; return ReasonDamaged },
