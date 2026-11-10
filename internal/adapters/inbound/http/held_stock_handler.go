@@ -83,15 +83,19 @@ func heldAfter(pos *page.Position) (*stock.HeldPageAfter, error) {
 // heldQuery reads the reason, sku and olderThanHours filters. On a bad value
 // it has already written the 400 problem and reports ok == false.
 func heldQuery(w http.ResponseWriter, r *http.Request) (q usecases.ListHeldStockQuery, ok bool) {
-	if v := r.URL.Query().Get("reason"); v != "" {
-		reason, err := stock.ParseHoldReason(v)
+	query := r.URL.Query()
+	// reason is an enum and olderThanHours an integer: a parameter that is present
+	// but empty violates the schema and is a 400, not "absent". sku is a free
+	// string, so an empty sku stays "no filter".
+	if query.Has("reason") {
+		reason, err := stock.ParseHoldReason(query.Get("reason"))
 		if err != nil {
 			writeProblem(w, http.StatusBadRequest, problemInvalidHoldReasonFilter, err.Error(), r.URL.Path)
 			return q, false
 		}
 		q.Reason = reason
 	}
-	if v := r.URL.Query().Get("sku"); v != "" {
+	if v := query.Get("sku"); v != "" {
 		sku, err := shared.NewSKU(v)
 		if err != nil {
 			writeError(w, r, err)
@@ -99,7 +103,8 @@ func heldQuery(w http.ResponseWriter, r *http.Request) (q usecases.ListHeldStock
 		}
 		q.SKU = sku
 	}
-	if v := r.URL.Query().Get("olderThanHours"); v != "" {
+	if query.Has("olderThanHours") {
+		v := query.Get("olderThanHours")
 		hours, err := strconv.Atoi(v)
 		if err != nil || hours < 0 {
 			writeProblem(w, http.StatusBadRequest, problemInvalidOlderThanHours, "olderThanHours is not a non-negative integer: "+v, r.URL.Path)
