@@ -103,7 +103,7 @@ func locatableUnits(units []*stock.StockUnit) (shared.Quantity, []*stock.StockUn
 	systemQty := shared.Quantity(0)
 	var locatable []*stock.StockUnit
 	for _, unit := range units {
-		if unit.State() == stock.StateUnlocated || unit.State() == stock.StateRemoved {
+		if unit.State() == stock.StateUnlocated || unit.State() == stock.StateRemoved || unit.State() == stock.StateHeld {
 			continue
 		}
 		systemQty = systemQty.Add(unit.Quantity())

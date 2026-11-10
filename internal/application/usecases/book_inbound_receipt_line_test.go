@@ -63,24 +63,6 @@ func TestBookInboundReceiptLine_GoodLineIsBookedAsStagedReceipt(t *testing.T) {
 	}
 }
 
-func TestBookInboundReceiptLine_DamagedLineIsNotBooked(t *testing.T) {
-	e := newEnv()
-	uc, _, metrics := newBook(e)
-	l := goodLine("ce-1", 4)
-	l.Condition = "Damaged"
-
-	outcome, err := uc.Execute(context.Background(), l)
-	if err != nil || outcome != usecases.LineDamagedNotBooked {
-		t.Fatalf("outcome=%s err=%v, want DAMAGED_NOT_BOOKED", outcome, err)
-	}
-	if n := stockReceivedCount(e); n != 0 {
-		t.Fatalf("StockReceived events = %d, want 0 (Damaged is never booked)", n)
-	}
-	if metrics.units[ports.InboundReceiptOutcomeDamaged] != 4 || metrics.units[ports.InboundReceiptOutcomeBooked] != 0 {
-		t.Fatalf("metric = %v, want damaged_not_booked=4", metrics.units)
-	}
-}
-
 func TestBookInboundReceiptLine_DuplicateEventIDAppliesOnce(t *testing.T) {
 	e := newEnv()
 	uc, _, metrics := newBook(e)
@@ -100,30 +82,17 @@ func TestBookInboundReceiptLine_DuplicateEventIDAppliesOnce(t *testing.T) {
 	}
 }
 
-func TestBookInboundReceiptLine_DuplicateDamagedIsCountedOnce(t *testing.T) {
-	e := newEnv()
-	uc, _, metrics := newBook(e)
-	l := goodLine("ce-1", 4)
-	l.Condition = "Damaged"
-	for range 2 {
-		if _, err := uc.Execute(context.Background(), l); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if metrics.units[ports.InboundReceiptOutcomeDamaged] != 4 {
-		t.Fatalf("metric = %v, want damaged_not_booked=4 (counted once)", metrics.units)
-	}
-}
-
 func TestBookInboundReceiptLine_MalformedLinesAreDeterministic(t *testing.T) {
 	cases := map[string]func(l *usecases.InboundReceiptLine){
-		"empty event id":    func(l *usecases.InboundReceiptLine) { l.EventID = "" },
-		"empty sku":         func(l *usecases.InboundReceiptLine) { l.SKU = "" },
-		"zero quantity":     func(l *usecases.InboundReceiptLine) { l.Quantity = 0 },
-		"negative quantity": func(l *usecases.InboundReceiptLine) { l.Quantity = -3 },
-		"unknown condition": func(l *usecases.InboundReceiptLine) { l.Condition = "Quarantined" },
-		"empty condition":   func(l *usecases.InboundReceiptLine) { l.Condition = "" },
-		"lower-case good":   func(l *usecases.InboundReceiptLine) { l.Condition = "good" },
+		"empty event id":     func(l *usecases.InboundReceiptLine) { l.EventID = "" },
+		"empty sku":          func(l *usecases.InboundReceiptLine) { l.SKU = "" },
+		"zero quantity":      func(l *usecases.InboundReceiptLine) { l.Quantity = 0 },
+		"negative quantity":  func(l *usecases.InboundReceiptLine) { l.Quantity = -3 },
+		"unknown condition":  func(l *usecases.InboundReceiptLine) { l.Condition = "Quarantined" },
+		"empty condition":    func(l *usecases.InboundReceiptLine) { l.Condition = "" },
+		"lower-case good":    func(l *usecases.InboundReceiptLine) { l.Condition = "good" },
+		"damaged no line":    func(l *usecases.InboundReceiptLine) { l.Condition = "Damaged"; l.LineNo = 0 },
+		"damaged no receipt": func(l *usecases.InboundReceiptLine) { l.Condition = "Damaged"; l.ReceiptID = "" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

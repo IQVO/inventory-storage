@@ -63,6 +63,12 @@ tags:
       (item-scan + location-scan), which is the only way a StockUnit
       aggregate comes into existence. RelocateStock moves usable stock of
       one SKU between two bins of the same site (ADR 0039).
+  - name: HeldStock
+    description: >
+      Stock held out of usable quantity (ADR 0052): the Damaged lines of an
+      inbound receipt, which are booked as HELD units instead of being
+      dropped. A held unit has no usable quantity and can never be reserved;
+      a disposition (RELEASE, RETURN_TO_VENDOR, SCRAP, REWORK) settles it.
   - name: Containers
     description: >
       Sealed cases with an identity (ADR 0045, 0046). A Container is a case
@@ -2269,6 +2275,250 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /held-stock:
+    get:
+      operationId: listHeldStock
+      summary: List the units held out of usable stock
+      description: >-
+        The units still HELD (ADR 0052), oldest first (ties by id), filtered by
+        `reason`, `sku` and age (`olderThanHours`: held for MORE than that
+        many hours). A removed unit (released, returned, scrapped) is not
+        listed; read it by id for its audit trail. Keyset-paginated (REST
+        guideline section 3): `{items, nextCursor}`, `limit` (1-500, default
+        100) and the opaque `cursor`. Any other query parameter is 400
+        `unknown-query-parameter`. Side-effect-free.
+      tags: [HeldStock]
+      parameters:
+        - name: reason
+          in: query
+          required: false
+          description: Only units held for this reason.
+          schema:
+            type: string
+            enum: [DAMAGED, QC_PENDING, SUSPECT, OTHER]
+        - name: sku
+          in: query
+          required: false
+          description: Only units of this SKU.
+          schema:
+            type: string
+            example: SKU-1
+        - name: olderThanHours
+          in: query
+          required: false
+          description: Only units held for more than this many hours (the ageing filter).
+          schema:
+            type: integer
+            minimum: 0
+            example: 24
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of held units (possibly none), oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeldUnitPage"
+              example:
+                items:
+                  - id: hu-3f6c1b0e-7a52-4d11-8c3e-0a9d5b7e2f64
+                    sku: SKU-1
+                    quantity: 4
+                    reason: DAMAGED
+                    state: HELD
+                    receiptId: rcpt-1
+                    asnNumber: ASN-1
+                    lineNo: 2
+                    ownerRef: seller-a
+                    sscc: "003400000000000017"
+                    lpns: ["003400000000000017"]
+                    heldAt: "2026-11-09T07:00:00Z"
+                    reworkCount: 0
+        "400":
+          description: >-
+            `reason` is not a hold reason (invalid-hold-reason),
+            `olderThanHours` is not a non-negative integer
+            (invalid-older-than-hours), `limit` or `cursor` is invalid
+            (invalid-limit, invalid-cursor), or an undeclared query parameter
+            was sent (unknown-query-parameter).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/invalid-hold-reason
+                title: reason must be DAMAGED, QC_PENDING, SUSPECT or OTHER
+                status: 400
+                detail: "unknown hold reason: BROKEN"
+                instance: /held-stock
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /held-stock/{id}:
+    get:
+      operationId: getHeldUnit
+      summary: Read one held unit
+      description: >-
+        A held unit with its receipt line, owner, carton marks and, once
+        decided, its disposition. A unit that was released, returned or
+        scrapped stays readable here as the audit trail. Side-effect-free.
+      tags: [HeldStock]
+      parameters:
+        - $ref: "#/components/parameters/HeldUnitId"
+      responses:
+        "200":
+          description: The held unit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeldUnit"
+              example:
+                id: hu-3f6c1b0e-7a52-4d11-8c3e-0a9d5b7e2f64
+                sku: SKU-1
+                quantity: 4
+                reason: DAMAGED
+                state: HELD
+                receiptId: rcpt-1
+                asnNumber: ASN-1
+                lineNo: 2
+                ownerRef: seller-a
+                lpns: []
+                heldAt: "2026-11-09T07:00:00Z"
+                reworkCount: 0
+        "404":
+          description: No held unit has this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/held-unit-not-found
+                title: Held unit not found
+                status: 404
+                detail: held unit not found
+                instance: /held-stock/hu-missing
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /held-stock/{id}/dispositions:
+    post:
+      operationId: decideHeldDisposition
+      summary: Decide what happens to a held unit
+      description: >-
+        The disposition decision (ADR 0052). RELEASE returns the quantity to
+        usable stock through the same staged-receipt seam as a fresh receipt
+        (it is usable once stowed) and emits `StockReleased`;
+        RETURN_TO_VENDOR and SCRAP remove the unit; REWORK keeps it HELD under
+        a new `reason` (default OTHER). Every decision emits
+        `StockDispositioned`. The decision, the unit's save and the events are
+        one transaction. A unit that already has a final disposition is 409
+        `held-unit-closed`.
+
+
+        Behind the Idempotency-Key middleware like the other creating POSTs
+        (ADR 0018).
+      tags: [HeldStock]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/HeldUnitId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [disposition]
+              properties:
+                disposition:
+                  type: string
+                  enum: [RELEASE, RETURN_TO_VENDOR, SCRAP, REWORK]
+                reason:
+                  type: string
+                  enum: [DAMAGED, QC_PENDING, SUSPECT, OTHER]
+                  description: The new hold reason; read only for REWORK.
+            example:
+              disposition: RETURN_TO_VENDOR
+      responses:
+        "200":
+          description: The unit after the decision (REMOVED, or still HELD for REWORK).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeldUnit"
+              example:
+                id: hu-3f6c1b0e-7a52-4d11-8c3e-0a9d5b7e2f64
+                sku: SKU-1
+                quantity: 4
+                reason: DAMAGED
+                state: REMOVED
+                receiptId: rcpt-1
+                asnNumber: ASN-1
+                lineNo: 2
+                ownerRef: seller-a
+                lpns: []
+                heldAt: "2026-11-09T07:00:00Z"
+                disposition: RETURN_TO_VENDOR
+                decidedAt: "2026-11-09T12:00:00Z"
+                reworkCount: 0
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+        "400":
+          description: Malformed body, or the Idempotency-Key header absent.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/idempotency-key-required
+                title: Idempotency-Key header is required
+                status: 400
+                detail: This endpoint changes state and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                instance: /held-stock/hu-3f6c1b0e-7a52-4d11-8c3e-0a9d5b7e2f64/dispositions
+        "404":
+          description: No held unit has this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/held-unit-not-found
+                title: Held unit not found
+                status: 404
+                detail: held unit not found
+                instance: /held-stock/hu-missing/dispositions
+        "409":
+          description: >-
+            The unit already has a final disposition (held-unit-closed), or a
+            concurrent writer changed it (concurrent-modification). The same
+            Idempotency-Key reused with a different method, path or body is
+            also a 409 (idempotency-key-reused).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/held-unit-closed
+                title: Held unit already has a final disposition
+                status: 409
+                detail: held unit already has a final disposition
+                instance: /held-stock/hu-3f6c1b0e-7a52-4d11-8c3e-0a9d5b7e2f64/dispositions
+        "422":
+          description: The disposition is not one of the four (invalid-disposition), or the REWORK reason is not a hold reason (invalid-hold-reason).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/invalid-disposition
+                title: Disposition must be RELEASE, RETURN_TO_VENDOR, SCRAP or REWORK
+                status: 422
+                detail: invalid disposition
+                instance: /held-stock/hu-3f6c1b0e-7a52-4d11-8c3e-0a9d5b7e2f64/dispositions
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /reports/flow-accuracy:
     get:
       operationId: getFlowAccuracyReport
@@ -2493,6 +2743,14 @@ components:
         value this API did not issue is 400 `invalid-cursor`.
       schema:
         type: string
+    HeldUnitId:
+      name: id
+      in: path
+      required: true
+      description: The held unit's id (`hu-<uuid>`).
+      schema:
+        type: string
+        example: hu-3f6c1b0e-7a52-4d11-8c3e-0a9d5b7e2f64
     BinId:
       name: binId
       in: path
@@ -2641,6 +2899,82 @@ components:
           description: >
             Opaque cursor of the next page, to be passed back unchanged as
             `cursor`. Absent on the last page.
+
+    HeldUnitPage:
+      type: object
+      required: [items]
+      description: >
+        One keyset page of held units (REST guideline section 3.3), oldest
+        first.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/HeldUnit"
+        nextCursor:
+          type: string
+          description: >
+            Opaque cursor of the next page, to be passed back unchanged as
+            `cursor`. Absent on the last page.
+
+    HeldUnit:
+      type: object
+      required: [id, sku, quantity, reason, state, receiptId, lineNo, lpns, heldAt, reworkCount]
+      description: >-
+        A quantity held out of usable stock (ADR 0052). It has no bin and no
+        usable quantity, and can never be reserved.
+      properties:
+        id:
+          type: string
+          example: hu-3f6c1b0e-7a52-4d11-8c3e-0a9d5b7e2f64
+        sku:
+          type: string
+          example: SKU-1
+        quantity:
+          type: integer
+          minimum: 1
+          description: Eaches held.
+        reason:
+          type: string
+          enum: [DAMAGED, QC_PENDING, SUSPECT, OTHER]
+        state:
+          type: string
+          enum: [HELD, REMOVED]
+          description: HELD while waiting for a decision; REMOVED once a final disposition settled it.
+        receiptId:
+          type: string
+          description: The inbound receipt the quantity came from.
+        asnNumber:
+          type: string
+        lineNo:
+          type: integer
+          minimum: 1
+          description: The receipt line.
+        ownerRef:
+          type: string
+          description: Owner of the stock; absent for fleet-owned stock.
+        sscc:
+          type: string
+          description: The carton SSCC of the line, when it had one.
+        lpns:
+          type: array
+          items:
+            type: string
+          description: License plates of the Damaged cartons of the line (marks only; they carry no quantity).
+        heldAt:
+          type: string
+          format: date-time
+        disposition:
+          type: string
+          enum: [RELEASE, RETURN_TO_VENDOR, SCRAP, REWORK]
+          description: The last decision, once there is one.
+        decidedAt:
+          type: string
+          format: date-time
+        reworkCount:
+          type: integer
+          minimum: 0
+          description: How many times the unit was sent to REWORK.
 
     ReceiveStockRequest:
       type: object

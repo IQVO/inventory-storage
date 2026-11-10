@@ -82,6 +82,10 @@ type world struct {
 
 	// containers holds the container-slice wiring (features_containers_test.go).
 	containers containerState
+
+	// held is the held-stock repository behind GET /held-stock and the
+	// disposition POST (features_held_test.go).
+	held *memory.HeldStockRepo
 }
 
 // start builds the composition root the way cmd/inventory does, but with the
@@ -731,5 +735,6 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 
 	w.registerWave2Steps(sc)
 	w.registerContainerSteps(sc)
+	w.registerHeldSteps(sc)
 	w.registerTransferSagaSteps(sc)
 }

@@ -60,6 +60,26 @@ type adapterSet struct {
 	pendingLinks ports.PendingLinkRepo
 	bookings     ports.ReceiptBookingRepo
 	packaging    *postgres.PackagingViewRepo
+	// held backs the held-stock aggregate and the carton marks (ADR 0052);
+	// heldMetrics moves inventory.held_units. It is set by run() once the
+	// process's meter exists.
+	held        ports.HeldStockRepo
+	heldMetrics ports.HeldStockMetrics
+}
+
+// holdStock builds the use case that holds a received quantity out of usable
+// stock, over the FINAL publisher (ADR 0052). Call it only after buildAdapters.
+func (a adapterSet) holdStock(clock ports.Clock) *usecases.HoldStock {
+	return &usecases.HoldStock{Held: a.held, Events: a.publisher, Clock: clock, UnitOfWork: a.uow}
+}
+
+// decideHeldDisposition builds the disposition use case: RELEASE goes through
+// the same ReceiveStock seam as a fresh receipt (ADR 0052).
+func (a adapterSet) decideHeldDisposition(clock ports.Clock) *usecases.DecideHeldDisposition {
+	return &usecases.DecideHeldDisposition{
+		Held: a.held, Receive: &usecases.ReceiveStock{Events: a.publisher, Clock: clock, UnitOfWork: a.uow},
+		Events: a.publisher, Clock: clock, UnitOfWork: a.uow, Metrics: a.heldMetrics,
+	}
 }
 
 // containerLinker builds the linker that turns pending cartons into
@@ -117,6 +137,7 @@ func buildRepos(ctx context.Context, databaseURL, migrationsDatabaseURL, migrati
 		pendingLinks:        postgres.NewPendingLinkRepo(pool),
 		bookings:            postgres.NewReceiptBookingRepo(pool),
 		packaging:           postgres.NewPackagingViewRepo(pool),
+		held:                postgres.NewHeldStockRepo(pool),
 		// UnitOfWork brackets every use case's Save(s) + Publish(es) in
 		// one Postgres transaction (ADR 0017).
 		uow:   postgres.NewUnitOfWork(pool),

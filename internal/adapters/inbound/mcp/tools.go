@@ -45,6 +45,10 @@ type Deps struct {
 	// use case as GET /containers/{lpn}. The tool is always advertised; nil
 	// makes it answer a clean "not configured" tool error.
 	GetContainer *usecases.GetContainer
+	// ListHeldStock backs the read-only list_held_stock tool (ADR 0052): the
+	// same use case as GET /held-stock. The tool is always advertised; nil
+	// makes it answer a clean "not configured" tool error.
+	ListHeldStock *usecases.ListHeldStock
 }
 
 // --- check_availability -------------------------------------------------------
@@ -136,6 +140,8 @@ func (d Deps) registerTools(server *mcp.Server) {
 
 	// Read-only relocation lookup (ADR 0039).
 	d.registerRelocationTool(server)
+	// Read-only held-stock list (ADR 0052). No write tool: dispositions are REST.
+	d.registerHeldStockTool(server)
 
 	// Read-only container lookup (ADR 0045).
 	d.registerContainerTool(server)

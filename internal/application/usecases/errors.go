@@ -12,6 +12,9 @@ var (
 	ErrContainerNotFound  = errors.New("container not found")
 	ErrInsufficientUsable = errors.New("requested quantity exceeds usable inventory")
 
+	// ErrHeldUnitNotFound: no held unit has this id (ADR 0052).
+	ErrHeldUnitNotFound = errors.New("held unit not found")
+
 	// ErrProductClassificationNotFound is returned when a GetProductClassification
 	// (or similar) lookup finds no registered classification for the SKU.
 	ErrProductClassificationNotFound = errors.New("product classification not found")

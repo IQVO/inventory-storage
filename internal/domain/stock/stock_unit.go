@@ -188,7 +188,7 @@ func (u *StockUnit) Version() int { return u.version }
 // Usable is the portion of this unit's on-hand quantity not already reserved.
 // Unlocated or fully removed units contribute no usable quantity.
 func (u *StockUnit) Usable() shared.Quantity {
-	if u.state == StateUnlocated || u.state == StateRemoved {
+	if u.unavailable() {
 		return 0
 	}
 	usable, err := u.quantity.Sub(u.reserved)
@@ -198,12 +198,27 @@ func (u *StockUnit) Usable() shared.Quantity {
 	return usable
 }
 
+// unavailable reports a state whose quantity is never usable: unlocated,
+// removed or held (ADR 0052).
+func (u *StockUnit) unavailable() bool {
+	return u.state == StateUnlocated || u.state == StateRemoved || u.state == StateHeld
+}
+
+// unavailableErr is the error a mutation of an unavailable unit fails with:
+// ErrUnitHeld for a held unit, ErrUnitUnlocated otherwise.
+func (u *StockUnit) unavailableErr() error {
+	if u.state == StateHeld {
+		return ErrUnitHeld
+	}
+	return ErrUnitUnlocated
+}
+
 // Reserve binds qty of this unit's usable quantity to demand. It never
 // allows reserved quantity to exceed on-hand quantity (no negative usable,
 // no double-consume).
 func (u *StockUnit) Reserve(qty shared.Quantity) error {
-	if u.state == StateUnlocated || u.state == StateRemoved {
-		return ErrUnitUnlocated
+	if u.unavailable() {
+		return u.unavailableErr()
 	}
 	if qty.GreaterThan(u.Usable()) {
 		return ErrInsufficientUsable
@@ -247,8 +262,8 @@ func (u *StockUnit) AddQuantity(qty shared.Quantity) error {
 	if qty.Int() <= 0 {
 		return shared.ErrZeroQuantity
 	}
-	if u.state == StateUnlocated || u.state == StateRemoved {
-		return ErrUnitUnlocated
+	if u.unavailable() {
+		return u.unavailableErr()
 	}
 	u.quantity = u.quantity.Add(qty)
 	return nil
@@ -261,8 +276,8 @@ func (u *StockUnit) MoveTo(binID shared.BinId, siteID shared.SiteID) error {
 	if u.reserved.Int() > 0 {
 		return ErrInsufficientUsable
 	}
-	if u.state == StateUnlocated || u.state == StateRemoved {
-		return ErrUnitUnlocated
+	if u.unavailable() {
+		return u.unavailableErr()
 	}
 	u.binID = binID
 	u.siteID = siteID
@@ -315,8 +330,8 @@ func (u *StockUnit) RelocateOut(qty shared.Quantity) error {
 	if qty.Int() <= 0 {
 		return shared.ErrZeroQuantity
 	}
-	if u.state == StateUnlocated || u.state == StateRemoved {
-		return ErrUnitUnlocated
+	if u.unavailable() {
+		return u.unavailableErr()
 	}
 	if qty.GreaterThan(u.Usable()) {
 		return ErrInsufficientUsable

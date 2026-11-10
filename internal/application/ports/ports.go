@@ -113,9 +113,10 @@ type PickConfirmationMetrics interface {
 const (
 	// InboundReceiptOutcomeBooked: a Good line was booked as a staged receipt.
 	InboundReceiptOutcomeBooked = "booked"
-	// InboundReceiptOutcomeDamaged: a Damaged line was NOT booked (v1 books
-	// Good units only; quarantine is a later ADR).
-	InboundReceiptOutcomeDamaged = "damaged_not_booked"
+	// InboundReceiptOutcomeHeld: a Damaged line was booked as HELD stock
+	// (ADR 0052): counted, owned, never usable. It replaces the former
+	// damaged_not_booked outcome, since a Damaged line is no longer dropped.
+	InboundReceiptOutcomeHeld = "held"
 )
 
 // InboundReceiptMetrics records, in units, what the inbound-receiving

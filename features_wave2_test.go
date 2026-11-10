@@ -61,6 +61,13 @@ func (w *world) wireWave2(s *inboundhttp.Server, reservations *memory.Reservatio
 	receipts := memory.NewTransferReceiptRepo()
 	slots := &fakeSlotLookup{slots: map[shared.BinId]product.SlotAttributes{}}
 
+	w.held = memory.NewHeldStockRepo()
+	holdStock := &usecases.HoldStock{Held: w.held, Events: w.publisher, Clock: w.clock}
+	s.ListHeldStock = &usecases.ListHeldStock{Held: w.held, Clock: w.clock}
+	s.DecideHeldDisposition = &usecases.DecideHeldDisposition{
+		Held: w.held, Receive: &usecases.ReceiveStock{Events: w.publisher, Clock: w.clock}, Events: w.publisher, Clock: w.clock,
+	}
+
 	s.StowStock.Classifications = w.classifications
 	s.StowStock.LocationLookup = slots
 	s.StageTransferReceipt = &usecases.StageTransferReceipt{
@@ -75,6 +82,7 @@ func (w *world) wireWave2(s *inboundhttp.Server, reservations *memory.Reservatio
 		slots: slots,
 		bookInbound: &usecases.BookInboundReceiptLine{
 			Receive:         &usecases.ReceiveStock{Events: w.publisher, Clock: w.clock},
+			Hold:            holdStock,
 			ProcessedEvents: memory.NewProcessedEventRepo(),
 		},
 		confirmPicks: &usecases.ConfirmPicksForOrder{

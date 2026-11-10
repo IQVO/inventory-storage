@@ -259,7 +259,7 @@ func (p *AnalyticsPublisher) binOrUnlocatedEvent(e shared.DomainEvent) (analytic
 	default:
 		// LocationRecorded and any future event outside the analytics
 		// contract are acknowledged by the caller but not published.
-		return analyticsEvent{}, false
+		return heldAnalyticsEvent(e)
 	}
 }
 

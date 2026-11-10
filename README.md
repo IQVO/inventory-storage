@@ -498,9 +498,12 @@ through the existing `ReceiveStock` use case, so the effect is the same as
 `POST /stock-receipts`: `StockReceived` on the analytics topic, the quantity
 **staged and not yet usable**, stow still the RF action (item scan plus location
 scan). The CloudEvents `id` is claimed in `processed_events` in the same
-transaction, so a redelivery books nothing twice. A `Damaged` line is **not
-booked** in v1 (INFO log and
-`inventory.inbound_receipt_units{outcome=damaged_not_booked}`); an invalid line
+transaction, so a redelivery books nothing twice. A `Damaged` line is **held,
+not dropped** ([ADR 0052](docs/docs/adr/0052-held-stock-and-disposition.md)): booked as
+HELD stock (`StockHeld`, never usable, never reservable) in the same transaction, counted in
+`inventory.inbound_receipt_units{outcome=held}`, and settled by a disposition
+(`POST /held-stock/{id}/dispositions`: RELEASE, RETURN_TO_VENDOR, SCRAP, REWORK;
+list with `GET /held-stock` or the MCP tool `list_held_stock`); an invalid line
 (empty `sku`, `quantity` <= 0, unknown `condition`, not a CloudEvent) is logged
 and skipped. Other inbound-receiving event types are ignored. `POST /stock-receipts`
 is unchanged and keeps serving ad-hoc receipts.

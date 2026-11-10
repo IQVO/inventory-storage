@@ -67,9 +67,12 @@ func buildServer(
 			UnitOfWork: uow,
 			Levels:     levels,
 		},
-		RelocateStock:   newRelocateStock(a, clock),
-		GetRelocation:   &usecases.GetRelocation{Relocations: a.relocations},
-		Classifications: classificationRepo,
+		RelocateStock: newRelocateStock(a, clock),
+		GetRelocation: &usecases.GetRelocation{Relocations: a.relocations},
+		// Held stock (ADR 0052): the list read and the disposition decision.
+		ListHeldStock:         &usecases.ListHeldStock{Held: a.held, Clock: clock},
+		DecideHeldDisposition: a.decideHeldDisposition(clock),
+		Classifications:       classificationRepo,
 		// IdempotencyPool wires RequireIdempotencyKey onto every POST
 		// route (see inboundhttp.NewRouter). nil (in-memory/no-DATABASE_URL
 		// configuration) leaves those routes unprotected, mirroring

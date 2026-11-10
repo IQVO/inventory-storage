@@ -196,6 +196,7 @@ func TestIdempotency_EveryPostRouteRequiresAValidKey(t *testing.T) {
 	want := []string{
 		"/stock-receipts", "/stowages", "/reservations", "/reservations/x/pick-confirmations", "/bins/x/cycle-counts",
 		"/transfers/x/receipt", "/transfers/x/stowages", "/relocations", "/containers/x/stowages", "/containers/x/case-breaks",
+		"/held-stock/x/dispositions",
 	}
 	if len(posts) != len(want) {
 		t.Fatalf("POST routes = %v, want exactly %v", posts, want)
