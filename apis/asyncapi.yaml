@@ -863,7 +863,6 @@ components:
               line_no: 1
               at: "2026-10-24T12:00:00Z"
     ContainerStowed:
-      x-no-consumer-reason: "pending: container fact (ADR 0045); no consumer declared in any fleet spec yet"
       name: ContainerStowed
       title: Container Stowed
       summary: A sealed case was stowed into a case bin; its site is the bin's site.
