@@ -34,16 +34,19 @@ info:
     `com.warehouse.wms.inventory-storage.reservation.ReservationRevoked`.
 
 
-    **Aggregates and entity groupings.** Three aggregates raise every event
-    documented here. The **StockUnit** aggregate (entity segment `stock`)
+    **Aggregates and entity groupings.** The StockUnit, Reservation and
+    cycle-count events are grouped below; the transfer, relocation, bin-level,
+    container and held-stock events are described on their own messages. The
+    **StockUnit** aggregate (entity segment `stock`)
     raises `StockReceived`, `ItemStowed`, `LocationRecorded` and
     `ItemUnlocated`. The **Reservation** aggregate (entity segment
     `reservation`) raises `StockReserved`, `ReservationExpired`,
     `ReservationRevoked` and `StockPicked` — `StockPicked` is grouped with the
     reservation because it is emitted by ConfirmPick when a reservation is
     consumed, and reservation id is the only identity it carries. The
-    **Bin/Location** aggregate (entity segment `bin`) raises
-    `CycleCountCompleted` and `DiscrepancyDetected`.
+    entity segment `bin` groups `CycleCountCompleted` and
+    `DiscrepancyDetected`: the RunCycleCount use case publishes both directly
+    while it changes StockUnits, and no Bin aggregate is loaded.
 
 
     **What reaches Kafka.** This document is the complete domain-event
@@ -119,8 +122,9 @@ tags:
       quantity to demand, its timeout, its revocation, and its consumption.
   - name: bin
     description: >
-      Events raised by the Bin/Location aggregate: cycle counts verifying a
-      bin's contents and the discrepancies they reveal.
+      Events published by the RunCycleCount use case (no Bin aggregate is
+      loaded): cycle counts verifying a bin's contents and the discrepancies
+      they reveal.
   - name: product
     description: >
       Events about SKU-level handling master data (hazmat, fragile,
@@ -169,7 +173,8 @@ channels:
       `BinStockLevelChanged` (keyed by `<bin>:<sku>`, ADR 0040) and the
       promoted exception facts `DiscrepancyDetected`, `ItemUnlocated` and
       `ItemStowed` (ADR 0043 — byte-identical copies of the analytics
-      feed, consumed by exception-management and returns-processing) and the
+      feed, consumed by exception-management; `ItemStowed` has no consumer
+      yet) and the
       container events `ContainerRegistered`, `ContainerStowed`, `CaseBroken`
       and `ContainerEmptied` (keyed by LPN, ADR 0045/0046) and the held-stock
       events `StockHeld`, `StockReleased` and `StockDispositioned` (keyed by
@@ -629,8 +634,8 @@ components:
 
 
         **Published to both topics** (promoted to the integration topic
-        2026-10-21, ADR 0043, so returns-processing can close its restock
-        loop on it). Subject = Kafka key = SKU on both topics; `data` is
+        2026-10-21, ADR 0043, for returns-processing's restock loop, which
+        does not consume it yet). Subject = Kafka key = SKU on both topics; `data` is
         byte-identical: `{sku, bin_id, quantity}`. Only the `dataschema`
         stream differs (`...:events:` vs `...:analytics:`).
       contentType: application/cloudevents+json
@@ -2169,7 +2174,7 @@ components:
       contentType: application/cloudevents+json
       tags:
         - name: bin
-          description: Raised by the Bin/Location aggregate.
+          description: Published by the RunCycleCount use case (no Bin aggregate is loaded).
       payload:
         $ref: "#/components/schemas/CycleCountCompletedEvent"
       examples:
@@ -2208,7 +2213,7 @@ components:
       contentType: application/cloudevents+json
       tags:
         - name: bin
-          description: Raised by the Bin/Location aggregate.
+          description: Published by the RunCycleCount use case (no Bin aggregate is loaded).
       payload:
         $ref: "#/components/schemas/DiscrepancyDetectedEvent"
       examples:
