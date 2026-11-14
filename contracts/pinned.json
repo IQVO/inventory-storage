@@ -1,0 +1,65 @@
+{
+  "_doc": "Every contract copy this repo pins from a producer, and the producer branch it must equal. scripts/harness/pinned_contract_gate.py fails when a copy differs from the producer's develop. Refresh = copy the file, never edit it.",
+  "pins": [
+    {
+      "local": "internal/adapters/outbound/facilitylayout/testdata/facility-layout.openapi.yaml",
+      "repo": "IQVO/facility-layout",
+      "path": "apis/openapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/outbound/facilitycache/testdata/facility-layout.asyncapi.yaml",
+      "repo": "IQVO/facility-layout",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/fulfillment-execution.asyncapi.yaml",
+      "repo": "IQVO/fulfillment-execution",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/inbound-receiving.asyncapi.yaml",
+      "repo": "IQVO/inbound-receiving",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/network-inventory-planning.asyncapi.yaml",
+      "repo": "IQVO/network-inventory-planning",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/product-master.asyncapi.yaml",
+      "repo": "IQVO/product-master",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/returns-processing.asyncapi.yaml",
+      "repo": "IQVO/returns-processing",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/slotting-optimization.asyncapi.yaml",
+      "repo": "IQVO/slotting-optimization",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/inventory-storage.asyncapi.yaml",
+      "repo": "IQVO/inventory-storage",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/mcp/testdata/inventory-storage.openapi.yaml",
+      "repo": "IQVO/inventory-storage",
+      "path": "apis/openapi.yaml",
+      "ref": "develop"
+    }
+  ]
+}
