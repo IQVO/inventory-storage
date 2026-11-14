@@ -1,0 +1,1080 @@
+asyncapi: 2.6.0
+
+info:
+  title: returns-processing Domain Events
+  version: "1.0.0"
+  contact:
+    name: returns-processing maintainers
+    url: https://github.com/IQVO/returns-processing
+    email: returns-processing@iqvo.example.com
+  license:
+    name: UNLICENSED
+  description: |
+    Event catalog for the **returns-processing** bounded context (WMS
+    subdomain): the reverse flow of goods — authorize a return against a
+    shipped order line (RMA), receive and grade it (ReturnReceipt), decide
+    what happens to it (Disposition) and hand restockable units back to
+    inventory-storage as a staged line (ADR 0001, ADR 0002).
+
+    **Published.** Three aggregates define seven event types (six are raised
+    by a use case today; `ReturnAuthorizationRejected` is declared and
+    encodable but no use case raises it), published to
+    `warehouse.returns-processing.events` through a **transactional outbox**:
+    the aggregate row and its already-encoded events are written in ONE
+    database transaction and a relay drains them to Kafka (at-least-once; the
+    CloudEvents `id` is stored with the outbox row, so a retry republishes the
+    same `id`). `ReturnLineStaged` is the only type that asks a sibling to do
+    something: inventory-storage consumes it into its staged-receipt use case
+    (same shape as its `ReceiptLineReceived` plus `rma_id`, `disposition_id`,
+    `site_id`); `UnexpectedReturnReceived` is what exception-management turns
+    into a problem-solve case. Every one of the seven types is ALSO mirrored
+    on `warehouse.returns-processing.analytics` (dataschema
+    `urn:warehouse:returns-processing:analytics:<EventName>:v1`), the stream
+    this service's own projector consumes (ADR 0007).
+
+    **Consumed (ADR 0003).** `ProductClassified` from product-master, the
+    allocated order lines (`OrderAllocated` / `OrderPartiallyAllocated`) from
+    order-management and `PackageManifested` (the shipped fact per work unit,
+    `order_ref` = `{order_id}-line-{line_no}`) from fulfillment-execution.
+    Each feeds a durable local copy; no sibling is ever called live. A message
+    that is not a valid CloudEvents 1.0 event is skipped with a WARN log (its
+    offset is committed); a valid event of an unlisted `type` is ignored; a
+    payload that can never be applied (undecodable `data`, blank ids, a
+    `order_ref` that is not `{order_id}-line-{line_no}`) is dead-lettered to
+    `<consumed topic>.dlq` without retry; any other handler error is retried
+    and dead-lettered after 5 attempts. Consumer groups come from `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`,
+    `ORDER_LINES_CONSUMER_GROUP` and `MANIFEST_CONSUMER_GROUP`. The consumed
+    messages below are the producers' own contracts, restated here and never
+    imported.
+
+    **Envelope (mandatory).** CloudEvents 1.0, structured content mode, Kafka
+    header `content-type: application/cloudevents+json; charset=UTF-8`.
+    The relay sets that one header only: no W3C trace-context headers
+    (`traceparent` / `tracestate`) are written. `specversion`, `id`, `source` (`/warehouse/returns-processing`), `type`,
+    `subject`, `time`, `datacontenttype` (`application/json`) and `dataschema`
+    (`urn:warehouse:returns-processing:<events|analytics>:<EventName>:v1`) are
+    all required. Kafka key = the subject. Type =
+    `com.warehouse.wms.returns-processing.<entity>.<EventName>`. A breaking
+    payload change is a new `.v2` type, never a mutation.
+
+servers:
+  production:
+    url: "{brokers}"
+    protocol: kafka
+    description: Fleet-shared Kafka broker (host supplied by the deployment environment).
+    variables:
+      brokers:
+        default: "kafka.warehouse-systems.internal:9092"
+
+defaultContentType: application/cloudevents+json
+
+tags:
+  - name: returns-processing
+    description: The returns-processing bounded context (WMS subdomain).
+  - name: returnauthorization
+    description: Events raised by the ReturnAuthorization (RMA) aggregate.
+  - name: returnreceipt
+    description: Events raised by the ReturnReceipt aggregate.
+  - name: disposition
+    description: Events raised by the Disposition aggregate.
+  - name: analytics
+    description: This service's own analytics stream and read side (ADR 0007).
+  - name: consumed
+    description: Events produced by sibling contexts that this service consumes (ADR 0003).
+
+channels:
+  warehouse.returns-processing.events:
+    description: |
+      This service's integration topic. Written by the outbox relay; key = the
+      event's subject; every message carries the CloudEvents content-type
+      header. An outbox row that can never be encoded (malformed payload, an
+      event the service does not publish, an empty aggregate id) is written
+      verbatim to `warehouse.returns-processing.events.dlq` (headers
+      `content-type: application/json` and `dlq-reason`) instead.
+      Dispatch on the full `type`, ignore unknown types, dedupe on `id`.
+    subscribe:
+      operationId: receiveReturnsProcessingEvents
+      summary: Receive RMA, receipt and disposition events.
+      description: |
+        Subscribe to the reverse flow of goods: authorizations and their
+        rejections, arrivals and inspection grades, the policy decision per
+        inspected line and, only for a RESTOCK outcome, the staged line
+        handed to inventory-storage. Route on the full `type`
+        (`com.warehouse.wms.returns-processing.<entity>.<EventName>`).
+      tags:
+        - name: returns-processing
+      message:
+        oneOf:
+          - $ref: "#/components/messages/ReturnAuthorized"
+          - $ref: "#/components/messages/ReturnAuthorizationRejected"
+          - $ref: "#/components/messages/ReturnReceiptOpened"
+          - $ref: "#/components/messages/ReturnLineInspected"
+          - $ref: "#/components/messages/UnexpectedReturnReceived"
+          - $ref: "#/components/messages/DispositionDecided"
+          - $ref: "#/components/messages/ReturnLineStaged"
+
+  warehouse.returns-processing.analytics:
+    description: |
+      This service's own analytics stream (ADR 0007), written by the SAME
+      transactional outbox pass as the integration topic: every domain event
+      appears here too, under the SAME CloudEvents id, `type`, `subject` and
+      key and with a byte-identical payload; only the `dataschema` stream
+      segment differs
+      (urn:warehouse:returns-processing:analytics:<EventName>:v1). It is NOT
+      an integration contract: the only consumer is this service's
+      cmd/returns-projector (fixed group from `ANALYTICS_CONSUMER_GROUP`),
+      which folds five of the seven types into the analytical database (the
+      two authorization twins are acknowledged and ignored); its
+      deterministic poison goes to
+      warehouse.returns-processing.analytics.dlq. Other contexts keep reading
+      warehouse.returns-processing.events.
+    subscribe:
+      operationId: receiveReturnsProcessingAnalytics
+      summary: Receive the analytics twin of every domain event.
+      description: |
+        Payloads are byte-for-byte the integration payloads (ADR 0007);
+        only the dataschema names the analytics stream. The projector folds
+        `ReturnReceiptOpened`, `UnexpectedReturnReceived`,
+        `ReturnLineInspected`, `DispositionDecided` and `ReturnLineStaged`
+        into the analytical facts; `ReturnAuthorized` and
+        `ReturnAuthorizationRejected` answer no report and are ignored.
+      tags:
+        - name: analytics
+      message:
+        oneOf:
+          - $ref: "#/components/messages/ReturnAuthorizedAnalytics"
+          - $ref: "#/components/messages/ReturnAuthorizationRejectedAnalytics"
+          - $ref: "#/components/messages/ReturnReceiptOpenedAnalytics"
+          - $ref: "#/components/messages/ReturnLineInspectedAnalytics"
+          - $ref: "#/components/messages/UnexpectedReturnReceivedAnalytics"
+          - $ref: "#/components/messages/DispositionDecidedAnalytics"
+          - $ref: "#/components/messages/ReturnLineStagedAnalytics"
+
+  warehouse.product-master.events:
+    description: |
+      product-master's integration topic. This service consumes ONLY
+      `ProductClassified` (subject and key = the SKU) under a stable consumer
+      group read from env `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`. Every other
+      type on the topic is ignored.
+    publish:
+      operationId: consumeProductMasterEvents
+      summary: Consume the product classification of each SKU.
+      description: |
+        `ProductClassified` feeds the `product_classifications` local copy: the
+        hazmat flag, DOT hazard class and temperature class that the
+        disposition policy keys on. A message is applied only when its
+        `version` is greater than the stored one for the SKU (grades stay
+        fail-open; RESTOCK of a hazmat SKU without a DOT rating stays
+        fail-closed). The CloudEvents `id` claim and the effect commit in one
+        transaction; the offset is committed afterwards (ADR 0003).
+      tags:
+        - name: consumed
+      message:
+        $ref: "#/components/messages/ProductClassified"
+
+  warehouse.order-management.events:
+    description: |
+      order-management's integration topic. This service consumes
+      `OrderAllocated` and `OrderPartiallyAllocated` (subject and key = the
+      order id) under a stable consumer group read from env
+      `ORDER_LINES_CONSUMER_GROUP`. Every other type on the topic is ignored.
+    publish:
+      operationId: consumeOrderManagementEvents
+      summary: Consume the allocated order lines.
+      description: |
+        The lines of both types feed the `allocated_order_lines` local copy:
+        one row per (order_id, line_no) with its SKU, refreshed on every
+        allocation event. The lines carry NO quantity; v1 therefore caps the
+        authorized quantity by `DispositionPolicy.max_units_per_line` and the
+        shipped-quantity check stays planned (ADR 0003). The CloudEvents `id`
+        claim and the effect commit in one transaction.
+      tags:
+        - name: consumed
+      message:
+        oneOf:
+          - $ref: "#/components/messages/OrderAllocated"
+          - $ref: "#/components/messages/OrderPartiallyAllocated"
+
+  warehouse.fulfillment.events:
+    description: |
+      fulfillment-execution's integration topic. This service consumes ONLY
+      `PackageManifested` (subject and key = the package id) under a stable
+      consumer group read from env `MANIFEST_CONSUMER_GROUP`. Every other type
+      on the topic is ignored.
+    publish:
+      operationId: consumeFulfillmentEvents
+      summary: Consume the manifested work units (the shipped fact).
+      description: |
+        `PackageManifested` feeds the `manifested_work_units` local copy after
+        reversing `order_ref` (a WES work unit id `{order_id}-line-{line_no}`)
+        into (order_id, line_no). A return is authorizable only against a line
+        whose work unit appears in this copy (ADR 0002, invariant 2). The
+        CloudEvents `id` claim and the effect commit in one transaction.
+      tags:
+        - name: consumed
+      message:
+        $ref: "#/components/messages/PackageManifested"
+
+components:
+  messages:
+    ReturnAuthorized:
+      x-no-consumer-reason: "returns ledger fact with no fleet consumer; its analytics twin is read only by this service's own projector (ADR 0007); consumed on demand"
+      name: ReturnAuthorized
+      title: Return authorized
+      summary: An RMA was opened for a shipped order line inside the return window.
+      description: |
+        `type` = `com.warehouse.wms.returns-processing.returnauthorization.ReturnAuthorized`;
+        subject and key = the rmaId. `window_ends_at` is the policy window's
+        end (authorized_at + return window days); the goods must arrive before
+        it. `quantity` is capped by `DispositionPolicy.max_units_per_line`
+        (the shipped-quantity check is planned, ADR 0003).
+      contentType: application/cloudevents+json
+      tags:
+        - name: returnauthorization
+      payload:
+        $ref: "#/components/schemas/ReturnAuthorizedEvent"
+      examples:
+        - name: authorized
+          summary: 2 units of SKU-1 from line 1 of order ord-7c9e may come back to WH1.
+          payload:
+            specversion: "1.0"
+            id: "9f2c1d3e-5a4b-4c6d-8e7f-1a2b3c4d5e6f"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.returnauthorization.ReturnAuthorized"
+            subject: "rma-4d5e6f7a-8b9c-4d0e-a1f2-3b4c5d6e7f80"
+            time: "2026-10-21T09:30:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:events:ReturnAuthorized:v1"
+            data:
+              rma_id: "rma-4d5e6f7a-8b9c-4d0e-a1f2-3b4c5d6e7f80"
+              order_id: "ord-7c9e2f1a"
+              line_no: 1
+              sku: "SKU-1"
+              quantity: 2
+              site_id: "WH1"
+              reason_code: "DAMAGED"
+              window_ends_at: "2026-11-20T09:30:00Z"
+              authorized_at: "2026-10-21T09:30:00Z"
+
+    ReturnAuthorizationRejected:
+      x-no-consumer-reason: "returns ledger fact with no fleet consumer; its analytics twin is read only by this service's own projector (ADR 0007); consumed on demand"
+      name: ReturnAuthorizationRejected
+      title: Return authorization rejected
+      summary: "An RMA request was refused: the line never shipped, the window closed or another RMA is open."
+      description: |
+        `type` = `com.warehouse.wms.returns-processing.returnauthorization.ReturnAuthorizationRejected`;
+        subject and key = the rmaId. `rejection_code` is `LINE_NOT_MANIFESTED`,
+        `RETURN_WINDOW_EXPIRED`, `OPEN_RMA_EXISTS` or
+        `QUANTITY_EXCEEDS_POLICY`. **Not raised today:** the domain, the
+        outbox payload mapping and the encoder support it, but no use case
+        calls the rejecting transition; `POST /returns` answers a refusal
+        with 409 and persists and publishes nothing. Declared for the day a
+        RejectReturn use case exists.
+      contentType: application/cloudevents+json
+      tags:
+        - name: returnauthorization
+      payload:
+        $ref: "#/components/schemas/ReturnAuthorizationRejectedEvent"
+      examples:
+        - name: rejected
+          summary: The order line has no manifested work unit, so nothing provably shipped.
+          payload:
+            specversion: "1.0"
+            id: "1e3f5a7c-9b1d-4f2a-8c3e-5d6f7a8b9c0d"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.returnauthorization.ReturnAuthorizationRejected"
+            subject: "rma-6f7a8b9c-0d1e-4f2a-9b3c-4d5e6f7a8b90"
+            time: "2026-10-21T09:31:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:events:ReturnAuthorizationRejected:v1"
+            data:
+              rma_id: "rma-6f7a8b9c-0d1e-4f2a-9b3c-4d5e6f7a8b90"
+              order_id: "ord-7c9e2f1a"
+              line_no: 2
+              sku: "SKU-2"
+              quantity: 1
+              rejection_code: "LINE_NOT_MANIFESTED"
+              rejected_at: "2026-10-21T09:31:00Z"
+
+    ReturnReceiptOpened:
+      x-no-consumer-reason: "returns ledger fact with no fleet consumer; its analytics twin is read only by this service's own projector (ADR 0007); consumed on demand"
+      name: ReturnReceiptOpened
+      title: Return receipt opened
+      summary: Returned goods arrived; each line matches an RMA line or is explicitly unexpected.
+      description: |
+        `type` = `com.warehouse.wms.returns-processing.returnreceipt.ReturnReceiptOpened`;
+        subject and key = the receiptId. `rma_id` is null when the whole
+        parcel was unexpected. Every line carries its own nullable `rma_id`: a
+        non-null value is a matched line, null means the line is UNEXPECTED
+        (there is no silent third state). UNEXPECTED lines additionally raise
+        `UnexpectedReturnReceived` for exception-management.
+      contentType: application/cloudevents+json
+      tags:
+        - name: returnreceipt
+      payload:
+        $ref: "#/components/schemas/ReturnReceiptOpenedEvent"
+      examples:
+        - name: opened
+          summary: A parcel against one RMA with one matched line and one unexpected line.
+          payload:
+            specversion: "1.0"
+            id: "2f4a6b8c-0d2e-4a3b-9c4d-6e7f8a9b0c1d"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.returnreceipt.ReturnReceiptOpened"
+            subject: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+            time: "2026-10-22T14:05:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:events:ReturnReceiptOpened:v1"
+            data:
+              receipt_id: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+              rma_id: "rma-4d5e6f7a-8b9c-4d0e-a1f2-3b4c5d6e7f80"
+              site_id: "WH1"
+              opened_at: "2026-10-22T14:05:00Z"
+              lines:
+                - { line_no: 1, sku: "SKU-1", quantity: 2, rma_id: "rma-4d5e6f7a-8b9c-4d0e-a1f2-3b4c5d6e7f80" }
+                - { line_no: 2, sku: "SKU-9", quantity: 1, rma_id: null }
+
+    ReturnLineInspected:
+      x-no-consumer-reason: "returns ledger fact with no fleet consumer; its analytics twin is read only by this service's own projector (ADR 0007); consumed on demand"
+      name: ReturnLineInspected
+      title: Return line inspected
+      summary: A receipt line was graded A, B, C or SCRAP with its reason codes.
+      description: |
+        `type` = `com.warehouse.wms.returns-processing.returnreceipt.ReturnLineInspected`;
+        subject and key = the receiptId. `quantity` is the inspected quantity,
+        never more than the received quantity of the line; a line is inspected
+        exactly once. The disposition is decided in the same transaction and
+        raises its own `DispositionDecided`.
+      contentType: application/cloudevents+json
+      tags:
+        - name: returnreceipt
+      payload:
+        $ref: "#/components/schemas/ReturnLineInspectedEvent"
+      examples:
+        - name: inspected
+          summary: Line 1 graded B for customer damage.
+          payload:
+            specversion: "1.0"
+            id: "3a5b7c9d-1e2f-4b3c-8d4e-7f8a9b0c1d2e"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.returnreceipt.ReturnLineInspected"
+            subject: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+            time: "2026-10-22T15:10:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:events:ReturnLineInspected:v1"
+            data:
+              receipt_id: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+              line_no: 1
+              sku: "SKU-1"
+              quantity: 2
+              grade: "B"
+              reason_codes: ["CUSTOMER_DAMAGE"]
+              inspected_at: "2026-10-22T15:10:00Z"
+
+    UnexpectedReturnReceived:
+      name: UnexpectedReturnReceived
+      title: Unexpected return received
+      summary: A received line has no matching RMA; exception-management opens a case.
+      description: |
+        `type` = `com.warehouse.wms.returns-processing.returnreceipt.UnexpectedReturnReceived`;
+        subject and key = the receiptId. Raised per UNEXPECTED receipt line
+        (the receipt-level fact is `ReturnReceiptOpened`).
+      contentType: application/cloudevents+json
+      tags:
+        - name: returnreceipt
+      payload:
+        $ref: "#/components/schemas/UnexpectedReturnReceivedEvent"
+      examples:
+        - name: unexpected
+          summary: One unit of SKU-9 arrived with no RMA.
+          payload:
+            specversion: "1.0"
+            id: "4b6c8d9e-2f3a-4c4d-9e5f-8a9b0c1d2e3f"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.returnreceipt.UnexpectedReturnReceived"
+            subject: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+            time: "2026-10-22T14:05:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:events:UnexpectedReturnReceived:v1"
+            data:
+              receipt_id: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+              line_no: 2
+              sku: "SKU-9"
+              quantity: 1
+              site_id: "WH1"
+              received_at: "2026-10-22T14:05:00Z"
+
+    DispositionDecided:
+      x-no-consumer-reason: "returns ledger fact with no fleet consumer; its analytics twin is read only by this service's own projector (ADR 0007); consumed on demand"
+      name: DispositionDecided
+      title: Disposition decided
+      summary: "The policy outcome for one inspected line: RESTOCK, REFURBISH, LIQUIDATE, DISPOSE or RTV."
+      description: |
+        `type` = `com.warehouse.wms.returns-processing.disposition.DispositionDecided`;
+        subject and key = the dispositionId. The decision is the pure function
+        `Decide(grade, classification, policy)` and records the
+        `policy_version` it used. An operator override is a NEW Disposition
+        whose `supersedes` names the original and whose `reason` is mandatory;
+        both fields are null on a policy decision.
+      contentType: application/cloudevents+json
+      tags:
+        - name: disposition
+      payload:
+        $ref: "#/components/schemas/DispositionDecidedEvent"
+      examples:
+        - name: decided
+          summary: Grade B of a standard SKU restocks (policy v3).
+          payload:
+            specversion: "1.0"
+            id: "5c7d9e0f-3a4b-4d5e-8f6a-9b0c1d2e3f4a"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.disposition.DispositionDecided"
+            subject: "disp-0c1d2e3f-4a5b-4e6f-9a7b-8c9d0e1f2a3b"
+            time: "2026-10-22T15:10:01Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:events:DispositionDecided:v1"
+            data:
+              disposition_id: "disp-0c1d2e3f-4a5b-4e6f-9a7b-8c9d0e1f2a3b"
+              receipt_id: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+              line_no: 1
+              sku: "SKU-1"
+              quantity: 2
+              grade: "B"
+              outcome: "RESTOCK"
+              policy_version: 3
+              supersedes: null
+              reason: null
+              decided_at: "2026-10-22T15:10:01Z"
+
+    ReturnLineStaged:
+      name: ReturnLineStaged
+      title: Return line staged
+      summary: A RESTOCK disposition hands the goods to inventory-storage as a staged receipt line.
+      description: |
+        `type` = `com.warehouse.wms.returns-processing.disposition.ReturnLineStaged`;
+        subject and key = the dispositionId. `data` is inbound-receiving's
+        `ReceiptLineReceived` shape (`receipt_id`, `line_no`, `sku`,
+        `quantity`, `condition`, `received_at`) plus `rma_id`,
+        `disposition_id` and `site_id`; inventory-storage consumes it into its
+        staged-receipt use case and the stow stays an RF action there. Raised
+        exactly once per RESTOCK disposition (idempotent on `disposition_id`);
+        no other outcome touches any sibling.
+      contentType: application/cloudevents+json
+      tags:
+        - name: disposition
+      payload:
+        $ref: "#/components/schemas/ReturnLineStagedEvent"
+      examples:
+        - name: staged
+          summary: The 2 restockable units are staged at WH1.
+          payload:
+            specversion: "1.0"
+            id: "6d8e0f1a-4b5c-4e6f-9a7b-8c9d0e1f2a3c"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.disposition.ReturnLineStaged"
+            subject: "disp-0c1d2e3f-4a5b-4e6f-9a7b-8c9d0e1f2a3b"
+            time: "2026-10-22T15:10:02Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:events:ReturnLineStaged:v1"
+            data:
+              receipt_id: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+              line_no: 1
+              sku: "SKU-1"
+              quantity: 2
+              condition: "Good"
+              received_at: "2026-10-22T14:05:00Z"
+              rma_id: "rma-4d5e6f7a-8b9c-4d0e-a1f2-3b4c5d6e7f80"
+              disposition_id: "disp-0c1d2e3f-4a5b-4e6f-9a7b-8c9d0e1f2a3b"
+              site_id: "WH1"
+
+    ReturnAuthorizedAnalytics:
+      name: ReturnAuthorized
+      title: Return authorized (analytics twin)
+      summary: The analytics-stream twin of ReturnAuthorized (ADR 0007).
+      description: "Same `type`, `id`, `subject`, key and payload as the integration message; `dataschema` = `urn:warehouse:returns-processing:analytics:ReturnAuthorized:v1`. Consumed only by cmd/returns-projector, which ignores it (no report answers the authorization funnel today)."
+      contentType: application/cloudevents+json
+      tags:
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/ReturnAuthorizedEvent"
+      examples:
+        - name: authorized
+          summary: The analytics twin of the authorized example above.
+          payload:
+            specversion: "1.0"
+            id: "9f2c1d3e-5a4b-4c6d-8e7f-1a2b3c4d5e6f"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.returnauthorization.ReturnAuthorized"
+            subject: "rma-4d5e6f7a-8b9c-4d0e-a1f2-3b4c5d6e7f80"
+            time: "2026-10-21T09:30:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:analytics:ReturnAuthorized:v1"
+            data:
+              rma_id: "rma-4d5e6f7a-8b9c-4d0e-a1f2-3b4c5d6e7f80"
+              order_id: "ord-7c9e2f1a"
+              line_no: 1
+              sku: "SKU-1"
+              quantity: 2
+              site_id: "WH1"
+              reason_code: "DAMAGED"
+              window_ends_at: "2026-11-20T09:30:00Z"
+              authorized_at: "2026-10-21T09:30:00Z"
+
+    ReturnAuthorizationRejectedAnalytics:
+      name: ReturnAuthorizationRejected
+      title: Return authorization rejected (analytics twin)
+      summary: The analytics-stream twin of ReturnAuthorizationRejected (ADR 0007).
+      description: "Same `type`, `id`, `subject`, key and payload as the integration message; `dataschema` = `urn:warehouse:returns-processing:analytics:ReturnAuthorizationRejected:v1`. Consumed only by cmd/returns-projector, which ignores it."
+      contentType: application/cloudevents+json
+      tags:
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/ReturnAuthorizationRejectedEvent"
+      examples:
+        - name: rejected
+          summary: The analytics twin of the rejected example above.
+          payload:
+            specversion: "1.0"
+            id: "1e3f5a7c-9b1d-4f2a-8c3e-5d6f7a8b9c0d"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.returnauthorization.ReturnAuthorizationRejected"
+            subject: "rma-6f7a8b9c-0d1e-4f2a-9b3c-4d5e6f7a8b90"
+            time: "2026-10-21T09:31:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:analytics:ReturnAuthorizationRejected:v1"
+            data:
+              rma_id: "rma-6f7a8b9c-0d1e-4f2a-9b3c-4d5e6f7a8b90"
+              order_id: "ord-7c9e2f1a"
+              line_no: 2
+              sku: "SKU-2"
+              quantity: 1
+              rejection_code: "LINE_NOT_MANIFESTED"
+              rejected_at: "2026-10-21T09:31:00Z"
+
+    ReturnReceiptOpenedAnalytics:
+      name: ReturnReceiptOpened
+      title: Return receipt opened (analytics twin)
+      summary: The analytics-stream twin of ReturnReceiptOpened (ADR 0007).
+      description: "Same `type`, `id`, `subject`, key and payload as the integration message; `dataschema` = `urn:warehouse:returns-processing:analytics:ReturnReceiptOpened:v1`. The projector folds every carried line into its return_line_facts (the opened milestone)."
+      contentType: application/cloudevents+json
+      tags:
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/ReturnReceiptOpenedEvent"
+      examples:
+        - name: opened
+          summary: The analytics twin of the opened example above.
+          payload:
+            specversion: "1.0"
+            id: "2f4a6b8c-0d2e-4a3b-9c4d-6e7f8a9b0c1d"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.returnreceipt.ReturnReceiptOpened"
+            subject: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+            time: "2026-10-22T14:05:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:analytics:ReturnReceiptOpened:v1"
+            data:
+              receipt_id: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+              rma_id: "rma-4d5e6f7a-8b9c-4d0e-a1f2-3b4c5d6e7f80"
+              site_id: "WH1"
+              opened_at: "2026-10-22T14:05:00Z"
+              lines:
+                - { line_no: 1, sku: "SKU-1", quantity: 2, rma_id: "rma-4d5e6f7a-8b9c-4d0e-a1f2-3b4c5d6e7f80" }
+                - { line_no: 2, sku: "SKU-9", quantity: 1, rma_id: null }
+
+    ReturnLineInspectedAnalytics:
+      name: ReturnLineInspected
+      title: Return line inspected (analytics twin)
+      summary: The analytics-stream twin of ReturnLineInspected (ADR 0007).
+      description: "Same `type`, `id`, `subject`, key and payload as the integration message; `dataschema` = `urn:warehouse:returns-processing:analytics:ReturnLineInspected:v1`. The projector records the inspected milestone of the receipt line."
+      contentType: application/cloudevents+json
+      tags:
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/ReturnLineInspectedEvent"
+      examples:
+        - name: inspected
+          summary: The analytics twin of the inspected example above.
+          payload:
+            specversion: "1.0"
+            id: "3a5b7c9d-1e2f-4b3c-8d4e-7f8a9b0c1d2e"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.returnreceipt.ReturnLineInspected"
+            subject: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+            time: "2026-10-22T15:10:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:analytics:ReturnLineInspected:v1"
+            data:
+              receipt_id: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+              line_no: 1
+              sku: "SKU-1"
+              quantity: 2
+              grade: "B"
+              reason_codes: ["CUSTOMER_DAMAGE"]
+              inspected_at: "2026-10-22T15:10:00Z"
+
+    UnexpectedReturnReceivedAnalytics:
+      name: UnexpectedReturnReceived
+      title: Unexpected return received (analytics twin)
+      summary: The analytics-stream twin of UnexpectedReturnReceived (ADR 0007).
+      description: "Same `type`, `id`, `subject`, key and payload as the integration message; `dataschema` = `urn:warehouse:returns-processing:analytics:UnexpectedReturnReceived:v1`. The projector opens a return-line fact for the unexpected line (the opened milestone)."
+      contentType: application/cloudevents+json
+      tags:
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/UnexpectedReturnReceivedEvent"
+      examples:
+        - name: unexpected
+          summary: The analytics twin of the unexpected example above.
+          payload:
+            specversion: "1.0"
+            id: "4b6c8d9e-2f3a-4c4d-9e5f-8a9b0c1d2e3f"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.returnreceipt.UnexpectedReturnReceived"
+            subject: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+            time: "2026-10-22T14:05:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:analytics:UnexpectedReturnReceived:v1"
+            data:
+              receipt_id: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+              line_no: 2
+              sku: "SKU-9"
+              quantity: 1
+              site_id: "WH1"
+              received_at: "2026-10-22T14:05:00Z"
+
+    DispositionDecidedAnalytics:
+      name: DispositionDecided
+      title: Disposition decided (analytics twin)
+      summary: The analytics-stream twin of DispositionDecided (ADR 0007).
+      description: "Same `type`, `id`, `subject`, key and payload as the integration message; `dataschema` = `urn:warehouse:returns-processing:analytics:DispositionDecided:v1`. The projector records one disposition_facts row (the disposition-mix report's cell) and the decided milestone of the receipt line."
+      contentType: application/cloudevents+json
+      tags:
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/DispositionDecidedEvent"
+      examples:
+        - name: decided
+          summary: The analytics twin of the decided example above.
+          payload:
+            specversion: "1.0"
+            id: "5c7d9e0f-3a4b-4d5e-8f6a-9b0c1d2e3f4a"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.disposition.DispositionDecided"
+            subject: "disp-0c1d2e3f-4a5b-4e6f-9a7b-8c9d0e1f2a3b"
+            time: "2026-10-22T15:10:01Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:analytics:DispositionDecided:v1"
+            data:
+              disposition_id: "disp-0c1d2e3f-4a5b-4e6f-9a7b-8c9d0e1f2a3b"
+              receipt_id: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+              line_no: 1
+              sku: "SKU-1"
+              quantity: 2
+              grade: "B"
+              outcome: "RESTOCK"
+              policy_version: 3
+              supersedes: null
+              reason: null
+              decided_at: "2026-10-22T15:10:01Z"
+
+    ReturnLineStagedAnalytics:
+      name: ReturnLineStaged
+      title: Return line staged (analytics twin)
+      summary: The analytics-stream twin of ReturnLineStaged (ADR 0007).
+      description: "Same `type`, `id`, `subject`, key and payload as the integration message; `dataschema` = `urn:warehouse:returns-processing:analytics:ReturnLineStaged:v1`. The projector records the staged milestone (the value-recovery and return-cycle-time reports' basis)."
+      contentType: application/cloudevents+json
+      tags:
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/ReturnLineStagedEvent"
+      examples:
+        - name: staged
+          summary: The analytics twin of the staged example above.
+          payload:
+            specversion: "1.0"
+            id: "6d8e0f1a-4b5c-4e6f-9a7b-8c9d0e1f2a3c"
+            source: "/warehouse/returns-processing"
+            type: "com.warehouse.wms.returns-processing.disposition.ReturnLineStaged"
+            subject: "disp-0c1d2e3f-4a5b-4e6f-9a7b-8c9d0e1f2a3b"
+            time: "2026-10-22T15:10:02Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:returns-processing:analytics:ReturnLineStaged:v1"
+            data:
+              receipt_id: "rcpt-8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d"
+              line_no: 1
+              sku: "SKU-1"
+              quantity: 2
+              condition: "Good"
+              received_at: "2026-10-22T14:05:00Z"
+              rma_id: "rma-4d5e6f7a-8b9c-4d0e-a1f2-3b4c5d6e7f80"
+              disposition_id: "disp-0c1d2e3f-4a5b-4e6f-9a7b-8c9d0e1f2a3b"
+              site_id: "WH1"
+
+    ProductClassified:
+      name: ProductClassified
+      title: ProductClassified (consumed, product-master)
+      summary: The handling classification of a SKU, with a monotonically increasing version.
+      description: |
+        `type` = `com.warehouse.wms.product-master.product.ProductClassified`,
+        source `/warehouse/product-master`, dataschema
+        `urn:warehouse:product-master:events:ProductClassified:v1`. Subject and
+        Kafka key = the SKU. `handling_tags` can carry `Hazmat` and
+        `TemperatureSensitive`; `dot_hazard_class` is 0 when the SKU carries
+        no rating; `classification_source` is `native` or `imported`. Apply
+        only when `version` is greater than the stored one for the SKU. This
+        service reads `sku`, `handling_tags`, `temperature_class`,
+        `dot_hazard_class` and `version` and ignores `classification_source`;
+        `handling_tags` are stored verbatim (a `dot:<n>` tag is appended for a
+        non-zero `dot_hazard_class`). Restated from product-master's contract,
+        never imported.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/ProductClassifiedEvent"
+      examples:
+        - name: hazmatFrozen
+          summary: SKU-1 is hazmat, temperature-sensitive and frozen, DOT class 3.
+          payload:
+            specversion: "1.0"
+            id: "7e9f1a2b-5c6d-4f7a-8b8c-9d0e1f2a3b4c"
+            source: "/warehouse/product-master"
+            type: "com.warehouse.wms.product-master.product.ProductClassified"
+            subject: "SKU-1"
+            time: "2026-10-18T08:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:product-master:events:ProductClassified:v1"
+            data:
+              sku: "SKU-1"
+              handling_tags: ["Hazmat", "TemperatureSensitive"]
+              temperature_class: "Frozen"
+              dot_hazard_class: 3
+              classification_source: "native"
+              version: 3
+
+    OrderAllocated:
+      name: OrderAllocated
+      title: OrderAllocated (consumed, order-management)
+      summary: Every line of an order was allocated; the lines carry no quantity.
+      description: |
+        `type` = `com.warehouse.wes.order-management.order.OrderAllocated`,
+        source `/warehouse/order-management`, dataschema
+        `urn:warehouse:order-management:events:OrderAllocated:v1`. Subject and
+        Kafka key = the order id. The `lines` carry `line_no`, `sku`, `path_id`,
+        `gift_wrap` and `fulfillment_class` but NO quantity; this service
+        reads only `order_id` and each line's `line_no` and `sku`. Restated
+        from order-management's contract, never imported.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/OrderAllocatedEvent"
+      examples:
+        - name: allocated
+          summary: A one-line order allocated to the pick path.
+          payload:
+            specversion: "1.0"
+            id: "8f0a2b3c-6d7e-4a8b-9c9d-0e1f2a3b4c5d"
+            source: "/warehouse/order-management"
+            type: "com.warehouse.wes.order-management.order.OrderAllocated"
+            subject: "ord-7c9e2f1a"
+            time: "2026-10-19T10:01:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:order-management:events:OrderAllocated:v1"
+            data:
+              order_id: "ord-7c9e2f1a"
+              promise_date: "2026-09-09T10:01:00Z"
+              lines:
+                - { line_no: 1, sku: "SKU-BOOK-0001", path_id: "pick", gift_wrap: false, fulfillment_class: "SAME_SKU_MULTI" }
+
+    OrderPartiallyAllocated:
+      name: OrderPartiallyAllocated
+      title: OrderPartiallyAllocated (consumed, order-management)
+      summary: Some lines of an order were allocated; the same line shape as OrderAllocated.
+      description: |
+        `type` = `com.warehouse.wes.order-management.order.OrderPartiallyAllocated`,
+        source `/warehouse/order-management`, dataschema
+        `urn:warehouse:order-management:events:OrderPartiallyAllocated:v1`.
+        Subject and Kafka key = the order id. `lines` holds ONLY the allocated
+        lines, in the same shape as `OrderAllocated` (no quantity). Restated
+        from order-management's contract, never imported.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/OrderPartiallyAllocatedEvent"
+      examples:
+        - name: partiallyAllocated
+          summary: Line 1 of the order allocated, line 2 not yet.
+          payload:
+            specversion: "1.0"
+            id: "9a1b3c4d-7e8f-4b9c-8d0e-1f2a3b4c5d6e"
+            source: "/warehouse/order-management"
+            type: "com.warehouse.wes.order-management.order.OrderPartiallyAllocated"
+            subject: "ord-7c9e2f1a"
+            time: "2026-10-19T10:03:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:order-management:events:OrderPartiallyAllocated:v1"
+            data:
+              order_id: "ord-7c9e2f1a"
+              promise_date: "2026-09-09T10:01:00Z"
+              lines:
+                - { line_no: 1, sku: "SKU-BOOK-0001", path_id: "pick", gift_wrap: false, fulfillment_class: "SAME_SKU_MULTI" }
+
+    PackageManifested:
+      name: PackageManifested
+      title: PackageManifested (consumed, fulfillment-execution)
+      summary: "A package was manifested for a work unit: the shipped fact returns v1 authorizes against."
+      description: |
+        `type` = `com.warehouse.wes.fulfillment-execution.package.PackageManifested`,
+        source `/warehouse/fulfillment-execution`, dataschema
+        `urn:warehouse:fulfillment-execution:events:PackageManifested:v1`.
+        Subject and Kafka key = the package id. `order_ref` is the WES work
+        unit id `{order_id}-line-{line_no}`; this service reverses it into
+        (order_id, line_no) to build its `manifested_work_units` copy.
+        This service reads `package_id`, `order_ref` and the CloudEvents
+        `time` (the manifest instant). Restated from fulfillment-execution's
+        contract, never imported.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/PackageManifestedEvent"
+      examples:
+        - name: manifested
+          summary: Package pkg-1029 manifested for work unit ord-7c9e2f1a-line-1.
+          payload:
+            specversion: "1.0"
+            id: "0b2c4d5e-8f9a-4c0d-9e1f-2a3b4c5d6e7f"
+            source: "/warehouse/fulfillment-execution"
+            type: "com.warehouse.wes.fulfillment-execution.package.PackageManifested"
+            subject: "pkg-1029"
+            time: "2026-10-20T11:20:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:fulfillment-execution:events:PackageManifested:v1"
+            data:
+              package_id: "pkg-1029"
+              order_ref: "ord-7c9e2f1a-line-1"
+
+  schemas:
+    CloudEventEnvelope:
+      type: object
+      required: [specversion, id, source, type, subject, time, datacontenttype, dataschema, data]
+      properties:
+        specversion: { type: string, const: "1.0" }
+        id: { type: string, format: uuid }
+        source: { type: string }
+        type: { type: string }
+        subject: { type: string, description: The aggregate instance id (rmaId, receiptId or dispositionId for this service's events). }
+        time: { type: string, format: date-time }
+        datacontenttype: { type: string, const: application/json }
+        dataschema: { type: string }
+
+    ReturnAuthorizedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [rma_id, order_id, line_no, sku, quantity, site_id, reason_code, window_ends_at, authorized_at]
+              properties:
+                rma_id: { type: string }
+                order_id: { type: string }
+                line_no: { type: integer, minimum: 1 }
+                sku: { type: string }
+                quantity: { type: integer, minimum: 1, description: Capped by the policy's max_units_per_line; the shipped-quantity check is planned. }
+                site_id: { type: string }
+                reason_code: { type: string, description: "The operator's return reason, e.g. DAMAGED, WRONG_ITEM, NOT_NEEDED." }
+                window_ends_at: { type: string, format: date-time, description: The last instant the goods may arrive. }
+                authorized_at: { type: string, format: date-time }
+
+    ReturnAuthorizationRejectedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [rma_id, order_id, line_no, sku, quantity, rejection_code, rejected_at]
+              properties:
+                rma_id: { type: string }
+                order_id: { type: string }
+                line_no: { type: integer, minimum: 1 }
+                sku: { type: string }
+                quantity: { type: integer, minimum: 1 }
+                rejection_code: { type: string, enum: [LINE_NOT_MANIFESTED, RETURN_WINDOW_EXPIRED, OPEN_RMA_EXISTS, QUANTITY_EXCEEDS_POLICY] }
+                rejected_at: { type: string, format: date-time }
+
+    ReceiptLineData:
+      type: object
+      required: [line_no, sku, quantity, rma_id]
+      properties:
+        line_no: { type: integer, minimum: 1 }
+        sku: { type: string }
+        quantity: { type: integer, minimum: 1 }
+        rma_id: { type: string, nullable: true, description: The RMA this line matches; null means the line is UNEXPECTED. }
+
+    ReturnReceiptOpenedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [receipt_id, rma_id, site_id, opened_at, lines]
+              properties:
+                receipt_id: { type: string }
+                rma_id: { type: string, nullable: true, description: The RMA the parcel was opened against; null when the whole parcel is unexpected. }
+                site_id: { type: string }
+                opened_at: { type: string, format: date-time }
+                lines:
+                  type: array
+                  minItems: 1
+                  items: { $ref: "#/components/schemas/ReceiptLineData" }
+
+    ReturnLineInspectedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [receipt_id, line_no, sku, quantity, grade, reason_codes, inspected_at]
+              properties:
+                receipt_id: { type: string }
+                line_no: { type: integer, minimum: 1 }
+                sku: { type: string }
+                quantity: { type: integer, minimum: 1, description: The inspected quantity; never more than the received quantity of the line. }
+                grade: { type: string, enum: [A, B, C, SCRAP] }
+                reason_codes: { type: array, nullable: true, items: { type: string }, description: "Why the grade; e.g. CUSTOMER_DAMAGE, OPENED_BOX, MISSING_PARTS. null when the inspection request sent no reasonCodes." }
+                inspected_at: { type: string, format: date-time }
+
+    UnexpectedReturnReceivedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [receipt_id, line_no, sku, quantity, site_id, received_at]
+              properties:
+                receipt_id: { type: string }
+                line_no: { type: integer, minimum: 1 }
+                sku: { type: string }
+                quantity: { type: integer, minimum: 1 }
+                site_id: { type: string }
+                received_at: { type: string, format: date-time }
+
+    DispositionDecidedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [disposition_id, receipt_id, line_no, sku, quantity, grade, outcome, policy_version, supersedes, reason, decided_at]
+              properties:
+                disposition_id: { type: string }
+                receipt_id: { type: string }
+                line_no: { type: integer, minimum: 1 }
+                sku: { type: string }
+                quantity: { type: integer, minimum: 1 }
+                grade: { type: string, enum: [A, B, C, SCRAP] }
+                outcome: { type: string, enum: [RESTOCK, REFURBISH, LIQUIDATE, DISPOSE, RTV] }
+                policy_version: { type: integer, minimum: 1 }
+                supersedes: { type: string, nullable: true, description: The disposition this override supersedes; null on a policy decision. }
+                reason: { type: string, nullable: true, description: Mandatory on an override; null on a policy decision. }
+                decided_at: { type: string, format: date-time }
+
+    ReturnLineStagedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [receipt_id, line_no, sku, quantity, condition, received_at, rma_id, disposition_id, site_id]
+              properties:
+                receipt_id: { type: string }
+                line_no: { type: integer, minimum: 1 }
+                sku: { type: string }
+                quantity: { type: integer, minimum: 1 }
+                condition: { type: string, const: "Good", description: inbound-receiving's ReceiptLineReceived carries this field; a staged return line is always Good. }
+                received_at: { type: string, format: date-time, description: When the line arrived on the receipt. }
+                rma_id: { type: string, description: The RMA the line was authorized against. }
+                disposition_id: { type: string, description: The RESTOCK disposition this staging belongs to; the idempotency key downstream. }
+                site_id: { type: string }
+
+    ProductClassifiedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [sku, handling_tags, temperature_class, dot_hazard_class, classification_source, version]
+              properties:
+                sku: { type: string }
+                handling_tags: { type: array, items: { type: string }, description: "e.g. Hazmat, TemperatureSensitive; empty for an untagged SKU." }
+                temperature_class: { type: string, description: "Ambient, Chilled, Frozen or the producer's empty default." }
+                dot_hazard_class: { type: integer, minimum: 0, description: The DOT hazard class; 0 means the SKU carries no rating. }
+                classification_source: { type: string, description: native or imported. }
+                version: { type: integer, minimum: 1, description: Per-SKU monotonically increasing; apply only when greater than the stored one. }
+
+    AllocatedLine:
+      type: object
+      required: [line_no, sku, path_id, gift_wrap, fulfillment_class]
+      description: An allocated order line. There is NO quantity on it.
+      properties:
+        line_no: { type: integer, minimum: 1 }
+        sku: { type: string }
+        path_id: { type: string }
+        gift_wrap: { type: boolean }
+        fulfillment_class: { type: string }
+
+    OrderAllocatedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [order_id, promise_date, lines]
+              properties:
+                order_id: { type: string }
+                promise_date: { type: string, format: date-time }
+                lines:
+                  type: array
+                  minItems: 1
+                  items: { $ref: "#/components/schemas/AllocatedLine" }
+
+    OrderPartiallyAllocatedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [order_id, promise_date, lines]
+              properties:
+                order_id: { type: string }
+                promise_date: { type: string, format: date-time }
+                lines:
+                  type: array
+                  minItems: 1
+                  description: ONLY the allocated lines, in the same shape as OrderAllocated.
+                  items: { $ref: "#/components/schemas/AllocatedLine" }
+
+    PackageManifestedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [package_id, order_ref]
+              properties:
+                package_id: { type: string }
+                order_ref: { type: string, description: "The WES work unit id {order_id}-line-{line_no}." }
