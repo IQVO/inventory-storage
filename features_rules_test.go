@@ -394,7 +394,7 @@ func (w *world) theMoveCompletionIsIgnored() error {
 
 func (w *world) theMoveCompletionIsRefusedAsMalformed() error {
 	if !errors.Is(w.rules.taskErr, usecases.ErrMalformedRelocationTask) {
-		return fmt.Errorf("expected a malformed relocation task refusal, got %v", w.rules.taskErr)
+		return fmt.Errorf("expected a malformed relocation task refusal, got %w", w.rules.taskErr)
 	}
 	return nil
 }
@@ -419,7 +419,7 @@ func (w *world) fulfillmentReportsPick(ctx context.Context, eventID, orderRef, l
 
 func (w *world) thePickCompletionIsRefusedAsMalformed() error {
 	if !errors.Is(w.rules.pickErr, usecases.ErrMalformedPickCompletion) {
-		return fmt.Errorf("expected a malformed pick completion refusal, got %v", w.rules.pickErr)
+		return fmt.Errorf("expected a malformed pick completion refusal, got %w", w.rules.pickErr)
 	}
 	return nil
 }
@@ -442,7 +442,7 @@ func (w *world) inboundReportsRawLine(ctx context.Context, eventID, sku string, 
 
 func (w *world) theInboundLineIsRefusedAsMalformed() error {
 	if !errors.Is(w.rules.inboundErr, usecases.ErrMalformedInboundReceiptLine) {
-		return fmt.Errorf("expected a malformed inbound receipt line refusal, got %v", w.rules.inboundErr)
+		return fmt.Errorf("expected a malformed inbound receipt line refusal, got %w", w.rules.inboundErr)
 	}
 	return nil
 }
@@ -476,7 +476,7 @@ func (w *world) theClassificationUpdateIs(outcome string) error {
 
 func (w *world) theClassificationUpdateIsRefusedAsMalformed() error {
 	if !errors.Is(w.rules.classErr, usecases.ErrMalformedProductClassification) {
-		return fmt.Errorf("expected a malformed classification refusal, got %v", w.rules.classErr)
+		return fmt.Errorf("expected a malformed classification refusal, got %w", w.rules.classErr)
 	}
 	return nil
 }

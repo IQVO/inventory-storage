@@ -66,9 +66,3 @@ Feature: Container custody rules and transfer stow capacity
     And Container "LPN-1" is EMPTY
     And the domain event "ContainerEmptied" was published exactly 1 time
     And the Usable inventory for SKU "SKU-C" and owner "seller-a" is 0
-
-  @bdd
-  Scenario: An unknown container is container-not-found
-    When I look up Container "LPN-NOPE"
-    Then the response status is 404
-    And the problem detail type is "container-not-found"

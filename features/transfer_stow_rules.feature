@@ -3,8 +3,11 @@
 # Derived from use-cases.md #16: bins must belong to the receipt's destination
 # site and the quantities must sum exactly to received_quantity; "bin occupancy
 # is taken ... all in ONE unit of work", so a leg that overflows its bin
-# refuses the whole stow (bin-full) and the receipt stays STAGED, receivable
-# again by a correct stow; a bin filled EXACTLY to capacity is fine.
+# refuses the stow (bin-full) and the receipt stays STAGED, receivable again by
+# a correct stow; a bin filled EXACTLY to its capacity is fine.
+# (The harness has no UnitOfWork, so the overflowing leg is placed first: the
+# rollback of EARLIER legs is Postgres transaction behaviour, covered by the
+# integration suite, not reachable here.)
 
 Feature: A transfer stow that overflows a destination bin
   The destination's stock becomes usable once and only once, in whole.
@@ -18,7 +21,7 @@ Feature: A transfer stow that overflows a destination bin
     And the destination Site "SITE-DEST" scans 5 units of SKU "SKU-S1" for transfer "tr-1" line "tl-1"
 
   @bdd
-  Scenario: A leg larger than its bin refuses the whole stow and leaves the receipt STAGED
+  Scenario: A leg larger than its bin refuses the stow and leaves the receipt STAGED, a leg that exactly fills its bin is accepted
     When the receipt for line "tl-1" is stowed into "BIN-SMALL=3,BIN-D1=2"
     Then the response status is 409
     And the problem detail type is "bin-full"
@@ -26,9 +29,6 @@ Feature: A transfer stow that overflows a destination bin
     And Bin "BIN-SMALL" reports 0 occupied
     And exactly 0 "TransferStockStowed" domain events are published
     And the Usable inventory for SKU "SKU-S1" is 5
-
-  @bdd
-  Scenario: A bin filled exactly to its capacity accepts its leg
     When the receipt for line "tl-1" is stowed into "BIN-D1=3,BIN-SMALL=2"
     Then the response status is 200
     And the transfer receipt response is not a replay

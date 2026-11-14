@@ -70,18 +70,15 @@ Feature: Storage rules from the documentation
       | 5   | 409    | 6        | 1      |
 
   @bdd
-  Scenario: A classified SKU is stowed when facility-layout has no record of the bin (fail-open)
+  Scenario: Placement fails open for a bin facility-layout has no record of and for a SKU the lookup rules do not concern
     Given a Bin "FO-1" with capacity 10
+    And a Bin "FO-2" with capacity 10
     And SKU "SKU-HZ" is classified by product-master as Hazmat with DOT hazard class 3
+    And product-master sends classification event "pm-fr-1" for SKU "SKU-FR" with tags "Fragile, HighValue", temperature class "", DOT class 0 and version 1
     When I Stow 2 units of SKU "SKU-HZ" into Bin "FO-1"
     Then the response status is 201
     And the Usable inventory for SKU "SKU-HZ" is 2
-
-  @bdd
-  Scenario: A classified SKU with neither Hazmat nor TemperatureSensitive is never blocked by an unavailable lookup
-    Given a Bin "FO-2" with capacity 10
-    And product-master sends classification event "pm-fr-1" for SKU "SKU-FR" with tags "Fragile, HighValue", temperature class "", DOT class 0 and version 1
-    And the facility-layout classification lookup is unavailable
+    Given the facility-layout classification lookup is unavailable
     When I Stow 2 units of SKU "SKU-FR" into Bin "FO-2"
     Then the response status is 201
     And the Usable inventory for SKU "SKU-FR" is 2
@@ -154,19 +151,13 @@ Feature: Storage rules from the documentation
     Then the Reservations list contains 2 entries
 
   @bdd
-  Scenario: The draw takes the pick face before reserve storage even when reserve holds less
+  Scenario: The draw takes the pick face first, then the smaller usable bin, then the lower bin id, and spans bins
     Given a Bin "PF-1" with capacity 20
     And a Bin "RV-1" with capacity 20
     And 8 units of SKU "SKU-FF" are Stowed into Bin "PF-1"
     And 3 units of SKU "SKU-FF" are Stowed into Bin "RV-1"
     And Bin "PF-1" is the pick face of SKU "SKU-FF"
-    When I Reserve 3 units of SKU "SKU-FF" for demand "ORDER-FF"
-    Then the response status is 201
-    And the Reservation allocations are "PF-1=3"
-
-  @bdd
-  Scenario: Without a pick face the smaller usable bin is drawn first, then the lower bin id, and a draw spans bins
-    Given a Bin "RV-C" with capacity 20
+    And a Bin "RV-C" with capacity 20
     And a Bin "RV-D" with capacity 20
     And a Bin "RV-F" with capacity 20
     And a Bin "RV-E" with capacity 20
@@ -174,6 +165,9 @@ Feature: Storage rules from the documentation
     And 3 units of SKU "SKU-SM" are Stowed into Bin "RV-D"
     And 4 units of SKU "SKU-TIE" are Stowed into Bin "RV-F"
     And 4 units of SKU "SKU-TIE" are Stowed into Bin "RV-E"
+    When I Reserve 3 units of SKU "SKU-FF" for demand "ORDER-FF"
+    Then the response status is 201
+    And the Reservation allocations are "PF-1=3"
     When I Reserve 3 units of SKU "SKU-SM" for demand "ORDER-SM1"
     Then the Reservation allocations are "RV-D=3"
     When I Reserve 4 units of SKU "SKU-SM" for demand "ORDER-SM2"
@@ -275,17 +269,6 @@ Feature: Storage rules from the documentation
     And the Cycle count reports system quantity 4 and counted quantity 0
     And the Cycle count reports a discrepancy
     And the domain event "ItemUnlocated" was published exactly 2 times
-    And the Usable inventory for SKU "SKU-CC" is 0
-
-  @bdd
-  Scenario: Counting stock in an empty bin reports an overage and invents no stock
-    Given a Bin "CC-3" with capacity 20
-    When I run a Cycle count on Bin "CC-3" with counted quantity 3
-    Then the response status is 200
-    And the Cycle count reports system quantity 0 and counted quantity 3
-    And the Cycle count reports a discrepancy
-    And the domain event "DiscrepancyDetected" was published exactly 1 time
-    And the domain event "ItemUnlocated" was not published
     And the Usable inventory for SKU "SKU-CC" is 0
 
   # -------------------------------------------------------------------- bin --

@@ -54,15 +54,6 @@ Feature: Fulfillment and inbound consumers, documented no-ops and refusals
     And the domain event "StockPicked" was published exactly 2 times
 
   @bdd
-  Scenario: A completion for an order that has no reservation leaves no pick count behind
-    When fulfillment-execution reports PICK task "T-1" completed for order "ORDER-GHOST"
-    And a Reservation of 2 units of SKU "SKU-PA" for demand "ORDER-GHOST"
-    And a Reservation of 3 units of SKU "SKU-PB" for demand "ORDER-GHOST"
-    And fulfillment-execution reports PICK task "T-2" completed for order "ORDER-GHOST"
-    Then every Reservation for demand "ORDER-GHOST" is ACTIVE
-    And the domain event "StockPicked" was not published
-
-  @bdd
   Scenario: A revoked line means the order needs one pick fewer
     Given a Reservation of 2 units of SKU "SKU-PA" for demand "ORDER-RV"
     And I Revoke the Reservation

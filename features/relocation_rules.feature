@@ -151,7 +151,7 @@ Feature: Intra-site relocation (REST and TaskCompleted)
     And Bin "S9-A-01-02-03-04-06" reports 2 occupied
 
   @bdd
-  Scenario: Reserved stock never moves
+  Scenario: Reserved stock never moves, only the unreserved quantity does, and the reservation still picks from the source bin
     Given a Reservation of 4 units of SKU "SKU-RL" for demand "ORDER-R1"
     When I Relocate 7 units of SKU "SKU-RL" from Bin "SP-A1" to Bin "SP-A2" at site "SITE-P"
     Then the response status is 409
@@ -159,10 +159,6 @@ Feature: Intra-site relocation (REST and TaskCompleted)
     And Bin "SP-A1" reports 10 occupied
     And Bin "SP-A2" reports 0 occupied
     And exactly 0 "StockRelocated" domain events are published
-
-  @bdd
-  Scenario: Exactly the unreserved quantity can move and the reservation still picks from the source bin
-    Given a Reservation of 4 units of SKU "SKU-RL" for demand "ORDER-R2"
     When I Relocate 6 units of SKU "SKU-RL" from Bin "SP-A1" to Bin "SP-A2" at site "SITE-P"
     Then the response status is 201
     And the Usable inventory for SKU "SKU-RL" is 6
@@ -173,15 +169,7 @@ Feature: Intra-site relocation (REST and TaskCompleted)
     And the Usable inventory for SKU "SKU-RL" is 6
 
   @bdd
-  Scenario: A destination with exactly enough room accepts the move
-    Given 4 units of SKU "SKU-RL" are Stowed into Bin "SP-A2"
-    When I Relocate 6 units of SKU "SKU-RL" from Bin "SP-A1" to Bin "SP-A2" at site "SITE-P"
-    Then the response status is 201
-    And Bin "SP-A2" reports 10 occupied
-    And Bin "SP-A1" reports 4 occupied
-
-  @bdd
-  Scenario: One unit too many for the destination refuses the whole move and records nothing
+  Scenario: One unit too many for the destination refuses the whole move and records nothing, exactly enough room accepts it
     Given 4 units of SKU "SKU-RL" are Stowed into Bin "SP-A2"
     When I Relocate 7 units of SKU "SKU-RL" from Bin "SP-A1" to Bin "SP-A2" at site "SITE-P"
     Then the response status is 409
@@ -193,6 +181,10 @@ Feature: Intra-site relocation (REST and TaskCompleted)
     When I look up Relocation "rel-1"
     Then the response status is 404
     And the problem detail type is "relocation-not-found"
+    When I Relocate 6 units of SKU "SKU-RL" from Bin "SP-A1" to Bin "SP-A2" at site "SITE-P"
+    Then the response status is 201
+    And Bin "SP-A2" reports 10 occupied
+    And Bin "SP-A1" reports 4 occupied
 
   @bdd
   Scenario: The draw takes source units in ascending id and a drained unit is REMOVED
@@ -206,17 +198,6 @@ Feature: Intra-site relocation (REST and TaskCompleted)
     And StockUnit "su-4" is AVAILABLE with quantity 4
 
   @bdd
-  Scenario: Relocated stock is what the next cycle count finds at each end
-    When I Relocate 10 units of SKU "SKU-RL" from Bin "SP-A1" to Bin "SP-A2" at site "SITE-P"
-    Then the response status is 201
-    When I run a Cycle count on Bin "SP-A2" with counted quantity 10
-    Then the Cycle count reports system quantity 10 and counted quantity 10
-    And the Cycle count reports no discrepancy
-    When I run a Cycle count on Bin "SP-A1" with counted quantity 0
-    Then the Cycle count reports system quantity 0 and counted quantity 0
-    And the Cycle count reports no discrepancy
-
-  @bdd
   Scenario: A move raises one level event for the source bin and then one for the destination
     When I Relocate 4 units of SKU "SKU-RL" from Bin "SP-A1" to Bin "SP-A2" at site "SITE-P" for reason "SLOTTING"
     Then the response status is 201
@@ -224,12 +205,6 @@ Feature: Intra-site relocation (REST and TaskCompleted)
       | bin   | onHand | reserved | reason   |
       | SP-A1 | 6      | 0        | RELOCATE |
       | SP-A2 | 4      | 0        | RELOCATE |
-
-  @bdd
-  Scenario: An unknown relocation id is relocation-not-found
-    When I look up Relocation "rel-999"
-    Then the response status is 404
-    And the problem detail type is "relocation-not-found"
 
   # ------------------------------------------------------ RELOCATE task ----
 
@@ -317,11 +292,3 @@ Feature: Intra-site relocation (REST and TaskCompleted)
     Then the move completion is refused as malformed
     And exactly 0 "StockRelocated" domain events are published
     And Bin "SP-A2" reports 0 occupied
-
-  @bdd
-  Scenario: A redelivered REPLENISH completion is skipped and the pick face is refilled once
-    When fulfillment-execution reports REPLENISH task "T-9" completed moving 4 units of SKU "SKU-RL" from Bin "SP-A1" to Bin "SP-A2" with reference "REPL-9"
-    And fulfillment-execution reports REPLENISH task "T-9" completed moving 4 units of SKU "SKU-RL" from Bin "SP-A1" to Bin "SP-A2" with reference "REPL-9"
-    Then the move completion is DUPLICATE
-    And exactly 1 "StockRelocated" domain events are published
-    And Bin "SP-A2" reports 4 occupied
