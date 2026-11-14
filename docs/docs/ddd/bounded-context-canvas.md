@@ -119,7 +119,7 @@ flowchart LR
     BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>StockRelocated"| out2
     BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>BinStockLevelChanged,<br/>StockRelocated"| out6
     BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>DiscrepancyDetected,<br/>ItemUnlocated (ADR 0043)"| out7
-    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>ItemStowed (ADR 0043)"| out8
+    BC ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>ItemStowed (ADR 0043,<br/>no consumer yet)"| out8
     BC -.->|"qry - REST (http mode)<br/>location classification"| out3
     BC ==>|"evt - Kafka<br/>warehouse.inventory.analytics<br/>StockReceived, ItemStowed,<br/>ItemUnlocated, StockReserved,<br/>StockPicked,<br/>ReservationExpired,<br/>ReservationRevoked,<br/>CycleCountCompleted,<br/>DiscrepancyDetected"| out4
     BC ==>|"evt - Kafka<br/>warehouse.facility.events.dlq<br/>invalid facility message"| out5
@@ -206,6 +206,9 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | Operator, `inventory-mfe` | GetBin, GetUsable | Query | REST `GET /bins/{binId}`, `GET /inventory/{sku}/usable` | OHS |
 | Kubernetes | liveness / readiness | Query | REST `GET /healthz`, `GET /readyz` | — |
 | network-inventory-planning | TransferAllocationRequested | Command | Kafka `warehouse.network-inventory-planning.events`, `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` → `transfer_consumer.go` (`TRANSFER_ALLOCATION_CONSUMER_GROUP`, mandatory, always on; [ADR 0030](/docs/adr/0030)) | Conformist to NIP's Published Language; reply by event |
+| network-inventory-planning | TransferAllocationReleaseRequested | Command | Kafka `warehouse.network-inventory-planning.events`, `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested` → `ReleaseTransferAllocation` (same consumer and `TRANSFER_ALLOCATION_CONSUMER_GROUP`; [ADR 0051](/docs/adr/0051)); the reply is `TransferStockAllocationReleased` | Conformist |
+| inbound-receiving | ReceiptCartonReceived (Containers, ADR 0045, ADR 0046) | Event | Kafka `warehouse.inbound-receiving.events` → `LinkReceiptCarton` (same consumer and `INBOUND_RECEIPT_CONSUMER_GROUP`); creates or links Containers, books no quantity | Conformist |
+| returns-processing | ReturnLineStaged (RESTOCK handover, ADR 0044) | Event | Kafka `warehouse.returns-processing.events` → `BookReturnLine` → `ReceiveStock` (`RETURN_LINE_CONSUMER_GROUP`, mandatory, always on) | Conformist (returns-processing's Published Language) |
 
 ## Outbound Communication
 
@@ -217,7 +220,7 @@ placement and DOT segregation rules ([ADR 0034](/docs/adr/0034)).
 | `slotting-optimization` | StockRelocated | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.stock.StockRelocated` ([ADR 0039](/docs/adr/0039)) | OHS/PL; downstream Conformist |
 | `pick-face-replenishment` | BinStockLevelChanged, StockRelocated | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.stock.BinStockLevelChanged` ([ADR 0040](/docs/adr/0040)) / `...stock.StockRelocated` | OHS/PL; downstream Conformist |
 | `exception-management` | DiscrepancyDetected, ItemUnlocated | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.bin.DiscrepancyDetected` / `...stock.ItemUnlocated` — byte-identical copies of the analytics feed ([ADR 0043](/docs/adr/0043)) | OHS/PL; downstream Conformist |
-| `returns-processing` | ItemStowed | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.stock.ItemStowed` — byte-identical copy of the analytics feed ([ADR 0043](/docs/adr/0043)) | OHS/PL; downstream Conformist |
+| `returns-processing` | ItemStowed | Event | Kafka `warehouse.inventory.events`, `com.warehouse.wms.inventory-storage.stock.ItemStowed` — byte-identical copy of the analytics feed ([ADR 0043](/docs/adr/0043)); returns-processing has no consumer for it yet | OHS/PL; downstream Conformist once it consumes it |
 | own projector (`cmd/inventory-projector`) | StockReceived, ItemStowed, ItemUnlocated, StockReserved, StockPicked, ReservationExpired, ReservationRevoked, CycleCountCompleted, DiscrepancyDetected | Event | Kafka `warehouse.inventory.analytics`, `com.warehouse.wms.inventory-storage.<stock, reservation or bin>.<EventName>` (nothing emits `ProductClassified` there since ADR 0034) | internal |
 | `facility-layout` | location classification | Query | REST `GET /locations/{locationCode}/classification` — only with `LOCATION_LOOKUP_MODE=http`, behind a circuit breaker | ACL; wired but unused (rollback) |
 | `facility-layout` (DLQ) | invalid facility message | Event | Kafka `warehouse.facility.events.dlq` (raw payload + `x-dlq-*` headers) | — |

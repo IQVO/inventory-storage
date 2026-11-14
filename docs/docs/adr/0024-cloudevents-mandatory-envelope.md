@@ -224,3 +224,9 @@ com.warehouse.wes.work-planning.workpool.PathCapacityChanged                -> o
   unit + testcontainers integration, analytics projector unit).
 - `publisher_integration_test.go` reads the CloudEvents back from a real
   (testcontainers) broker.
+
+## Addendum 2026-11-13: current state
+
+The catalogue row for `ItemStowed` on both topics names returns-processing as the reason for the
+promotion ([ADR 0043](/docs/adr/0043)). returns-processing has no `ItemStowed` consumer today (its Kafka
+consumers are `allocated_lines`, `manifests` and `product_classes`); the row records the contract, not a live consumer.
