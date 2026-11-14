@@ -1,0 +1,1394 @@
+asyncapi: 3.0.0
+info:
+  title: network-inventory-planning events
+  version: 1.0.0
+  contact:
+    name: warehouse-systems
+    url: https://github.com/IQVO/network-inventory-planning
+    email: warehouse-systems@warehouse-systems.internal
+  license:
+    name: MIT
+  tags:
+    - name: consumed-facts
+      description: Sibling-context facts projected into local read models.
+    - name: consumed-replies
+      description: inventory-storage's transfer-allocation replies driving the saga.
+    - name: published
+      description: This context's published transfer saga events and commands.
+    - name: published-analytics
+      description: This context's saga-health analytics occurrences (ADR 0007, observe-only).
+  description: |
+    Event contract of the network-inventory-planning bounded context.
+
+    **Phase 1** declares the three CONSUMED facts (projected into local
+    read models):
+
+    - `com.warehouse.wms.facility-layout.site.SiteCapabilityChanged`
+      (facility-layout, `warehouse.facility.events`) → local
+      `site_capability` read model (keyed site_id, LWW on
+      capability_revision).
+    - `com.warehouse.wes.order-management.siteskudemand.SiteSkuDemandChanged`
+      (order-management, `warehouse.order-management.events`) → local
+      `site_sku_demand` read model (keyed source_order_id+line_no, state
+      ACTIVE/REMOVED).
+    - `com.warehouse.wes.warehouse-planning.capacityplan.CapacityPlanPublished`
+      (warehouse-planning, `warehouse.warehouse-planning.events`) → local
+      `published_capacity_plan` read model (keyed plan_id, LWW on the
+      CloudEvents time. The payload is warehouse-planning's existing v1
+      payload plus the additive `site_id`; a legacy event WITHOUT `site_id`
+      is EXCLUDED (the site is never inferred from warehouse_id).
+
+    **Phase 2 (ADR 0003, the transfer saga)** adds the PUBLISHED stream on
+    `warehouse.network-inventory-planning.events` — emitted through the
+    transactional outbox in the same transaction as the saga state change —
+    and the two CONSUMED inventory-storage replies on
+    `warehouse.inventory.events`:
+
+    - `com.warehouse.wes.network-inventory-planning.transfer.TransferPlanApproved`
+      (published, subject/key transfer_id): an operator approved an
+      advisory proposal into a transfer plan.
+    - `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested`
+      (published COMMAND, subject/key `transfer_line_id` = `<transfer_id>:1`
+      for the v1 single-line saga): inventory-storage allocates origin
+      stock against `transfer_line_id` and replies on
+      `warehouse.inventory.events`.
+    - `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated`
+      (consumed reply, subject/key reservation_id): the saga moves
+      ALLOCATING → ALLOCATED, persisting reservation_id, allocations[] and
+      expires_at.
+    - `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected`
+      (consumed reply, subject/key transfer_line_id): the saga moves
+      ALLOCATING → UNFULFILLABLE with the closed reason
+      ORIGIN_SITE_UNKNOWN|INSUFFICIENT_USABLE|IDEMPOTENCY_CONFLICT.
+
+    **Phase 4 (ADR 0007, observability + scheduled runs)** adds this
+    context's analytics stream on
+    `warehouse.network-inventory-planning.analytics`: the saga-health
+    occurrences `TransferStateAdvanced` (every state transition, same
+    outbox transaction), `TransferStuckDetected` (a bounded observe-only
+    ticker; NIP_HEALTH_CHECK_INTERVAL / NIP_STUCK_THRESHOLDS) and
+    `RebalanceRunCompleted` (each scheduled rebalance pass; observe-only
+    — no approval, no allocation command). W3C trace context
+    (`traceparent`) propagates on every produced and consumed message.
+
+    **Cancel-after-allocation (ADR 0022, the compensation leg)** closes
+    ADR 0003's documented gap — a transfer cancelled AFTER allocation gets
+    its origin hold resolved instead of stranding the reservation until
+    lazy expiry:
+
+    - `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested`
+      (published COMMAND, subject/key `transfer_line_id`): an ALLOCATED
+      transfer's operator cancel; inventory-storage resolves the origin
+      reservation and replies on `warehouse.inventory.events`.
+    - `com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased`
+      (consumed reply, subject/key `transfer_line_id`, outcome RELEASED |
+      ALREADY_RESOLVED — both settle): the saga moves RELEASING →
+      CANCELLED.
+
+    **Phase 3 (ADR 0005, work-demand release + fact-driven transitions)**
+    adds the released work demands on the PUBLISHED stream, the three
+    CONSUMED fulfillment-execution transfer facts on
+    `warehouse.fulfillment.events`, and the two CONSUMED
+    inventory-storage destination facts on `warehouse.inventory.events`:
+
+    - `com.warehouse.wes.network-inventory-planning.workdemand.WorkDemandReleased`
+      (published COMMAND, subject/key `demand_id`): one leg of an approved
+      transfer released for warehouse work. WES (wes-work-planning) is the
+      consumer; the payload below mirrors ITS consumed contract exactly.
+    - `com.warehouse.wes.fulfillment-execution.transfer.TransferPicked`
+      (consumed fact, subject/key task_id): ALLOCATED → PICKED, the
+      picked quantity recorded (a short pick is recorded, not refused),
+      and the dispatch WorkDemandReleased released with the PICKED
+      quantity.
+    - `com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched`
+      (consumed fact, subject/key task_id): PICKED → IN_TRANSIT.
+    - `com.warehouse.wes.fulfillment-execution.transfer.TransferArrived`
+      (consumed fact, RESERVED — scan-driven receiving may bypass it):
+      IN_TRANSIT → ARRIVED; inventory-storage's TransferReceiptStaged
+      drives the same transition.
+    - `com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged`
+      (consumed fact, subject/key transfer_line_id): IN_TRANSIT → ARRIVED
+      (the scan-driven receiving path).
+    - `com.warehouse.wms.inventory-storage.stock.TransferStockStowed`
+      (consumed fact, subject/key transfer_line_id): ARRIVED → RECEIVED
+      (terminal), the destination stow allocations persisted.
+
+    Consumers decode CloudEvents 1.0 structured mode only, dispatch on the
+    FULL `type`, ignore unknown types, dedupe on `id` in-transaction
+    (processed_events), and commit offsets only after the read-model
+    transaction commits. Consumer group ids are environment-configured
+    (SITE_CAPABILITY_CONSUMER_GROUP, SITE_SKU_DEMAND_CONSUMER_GROUP,
+    CAPACITY_PLAN_CONSUMER_GROUP, TRANSFER_REPLY_CONSUMER_GROUP,
+    TRANSFER_FACT_CONSUMER_GROUP, PACK_LEVEL_CONSUMER_GROUP); an empty
+    value means the consumer does not exist. A message that can never be
+    applied (not a valid CloudEvent, an undecodable payload) is published
+    raw, with x-dlq-* headers, to `<source topic>.dlq` and committed past;
+    only infrastructure failures are retried. A fact whose transfer_ref
+    names no known transfer is WARN-logged and committed past, never
+    retried.
+
+    Every produced message uses `source` `/warehouse/network-inventory-planning`,
+    the Kafka header `content-type: application/cloudevents+json;
+    charset=UTF-8`, the W3C trace headers when a span is active, and the
+    Kafka key shown per event (hash-partitioned).
+
+    The analytics stream is also CONSUMED by this context's own
+    `nip-projector` binary (group ANALYTICS_CONSUMER_GROUP, default
+    `network-inventory-planning-analytics`; dead letters go to
+    `warehouse.network-inventory-planning.analytics.dlq`), which builds the
+    analytical database behind the nip-reports API.
+
+    The consumed payload schemas below are the producers' own contract
+    shapes mirrored read-only (each producer's apis/asyncapi.yaml on
+    origin/develop is authoritative).
+
+servers:
+  production:
+    host: kafka.warehouse-systems.internal:9092
+    protocol: kafka
+    description: Fleet-shared Kafka broker.
+
+defaultContentType: application/cloudevents+json
+
+channels:
+  warehouse.facility.events:
+    address: warehouse.facility.events
+    title: facility-layout integration topic
+    description: |
+      facility-layout's integration stream. network-inventory-planning
+      consumes only SiteCapabilityChanged and ignores every other type.
+    messages:
+      siteCapabilityChanged:
+        $ref: '#/components/messages/siteCapabilityChanged'
+  warehouse.order-management.events:
+    address: warehouse.order-management.events
+    title: order-management integration topic
+    description: |
+      order-management's integration stream. network-inventory-planning
+      consumes only SiteSkuDemandChanged and ignores every other type.
+    messages:
+      siteSkuDemandChanged:
+        $ref: '#/components/messages/siteSkuDemandChanged'
+  warehouse.warehouse-planning.events:
+    address: warehouse.warehouse-planning.events
+    title: warehouse-planning integration topic
+    description: |
+      warehouse-planning's integration stream. network-inventory-planning
+      consumes only CapacityPlanPublished and ignores every other type.
+    messages:
+      capacityPlanPublished:
+        $ref: '#/components/messages/capacityPlanPublished'
+  warehouse.network-inventory-planning.events:
+    address: warehouse.network-inventory-planning.events
+    title: network-inventory-planning integration topic
+    description: |
+      This context's OWN integration stream (Phase 2). Everything on it is
+      emitted through the transactional outbox: the saga state change and
+      the outbox row commit in one transaction, and a background relay
+      publishes afterwards — a request handler never sends directly.
+    messages:
+      transferPlanApproved:
+        $ref: '#/components/messages/transferPlanApproved'
+      transferAllocationRequested:
+        $ref: '#/components/messages/transferAllocationRequested'
+      transferAllocationReleaseRequested:
+        $ref: '#/components/messages/transferAllocationReleaseRequested'
+      workDemandReleased:
+        $ref: '#/components/messages/workDemandReleased'
+  warehouse.network-inventory-planning.analytics:
+    address: warehouse.network-inventory-planning.analytics
+    title: network-inventory-planning analytics topic
+    description: |
+      This context's dedicated analytics stream (ADR 0007): saga-health
+      occurrences only, never OLTP commands. Consumed by this context's own
+      nip-projector. Published through the same
+      transactional outbox as the integration events, on separate rows
+      with their own topic, so the integration contract and the health
+      signal evolve independently.
+    messages:
+      transferStateAdvanced:
+        $ref: '#/components/messages/transferStateAdvanced'
+      transferStuckDetected:
+        $ref: '#/components/messages/transferStuckDetected'
+      rebalanceRunCompleted:
+        $ref: '#/components/messages/rebalanceRunCompleted'
+  warehouse.inventory.events:
+    address: warehouse.inventory.events
+    title: inventory-storage integration topic
+    description: |
+      inventory-storage's integration stream. network-inventory-planning
+      consumes only the two transfer-allocation replies, the allocation
+      release fact (ADR 0022) and the two destination facts; every other
+      type is ignored.
+    messages:
+      transferStockAllocated:
+        $ref: '#/components/messages/transferStockAllocated'
+      transferStockAllocationRejected:
+        $ref: '#/components/messages/transferStockAllocationRejected'
+      transferStockAllocationReleased:
+        $ref: '#/components/messages/transferStockAllocationReleased'
+      transferReceiptStaged:
+        $ref: '#/components/messages/transferReceiptStaged'
+      transferStockStowed:
+        $ref: '#/components/messages/transferStockStowed'
+  warehouse.fulfillment.events:
+    address: warehouse.fulfillment.events
+    title: fulfillment-execution integration topic
+    description: |
+      fulfillment-execution's integration stream. network-inventory-
+      planning consumes only the three transfer facts and ignores every
+      other type.
+    messages:
+      transferPicked:
+        $ref: '#/components/messages/transferPicked'
+      transferDispatched:
+        $ref: '#/components/messages/transferDispatched'
+      transferArrived:
+        $ref: '#/components/messages/transferArrived'
+
+  warehouse.product-master.events:
+    address: warehouse.product-master.events
+    title: product-master integration topic
+    description: |
+      product-master's integration stream (the ProductMasterTopic constant in
+      internal/adapters/inbound/kafka/pack_level_consumer.go).
+      network-inventory-planning consumes only ProductPackLevelDeclared and
+      ProductPackLevelRetired into its local pack_levels view (ADR 0017,
+      case-multiple transfers) and ignores every other type.
+    messages:
+      productPackLevelDeclared:
+        $ref: '#/components/messages/productPackLevelDeclared'
+      productPackLevelRetired:
+        $ref: '#/components/messages/productPackLevelRetired'
+
+operations:
+  receiveSiteCapabilityChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.facility.events'
+    summary: Keep the local site_capability read model current.
+    description: |
+      Consume facility-layout's SiteCapabilityChanged, dedupe on CloudEvents
+      id inside the read-model transaction, and upsert site_capability keyed
+      by site_id with last-writer-wins on capability_revision.
+  receiveSiteSkuDemandChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.order-management.events'
+    summary: Keep the local site_sku_demand read model current.
+    description: |
+      Consume order-management's SiteSkuDemandChanged, dedupe on CloudEvents
+      id inside the read-model transaction, and upsert/tombstone
+      site_sku_demand keyed by source_order_id+line_no (ACTIVE/REMOVED).
+  receiveCapacityPlanPublished:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.warehouse-planning.events'
+    summary: Keep the local published_capacity_plan read model current.
+    description: |
+      Consume warehouse-planning's CapacityPlanPublished, dedupe on
+      CloudEvents id inside the read-model transaction, and upsert
+      published_capacity_plan keyed by plan_id with last-writer-wins on the
+      CloudEvents time. Legacy payloads without site_id are excluded, never
+      inferred.
+  sendTransferPlanApproved:
+    action: send
+    channel:
+      $ref: '#/channels/warehouse.network-inventory-planning.events'
+    summary: Announce an operator-approved transfer plan.
+    description: |
+      Published through the transactional outbox in the same transaction
+      that persists the saga's APPROVED transition (POST
+      /v1/transfer-approvals). Subject and Kafka key are the transfer id.
+  sendTransferAllocationRequested:
+    action: send
+    channel:
+      $ref: '#/channels/warehouse.network-inventory-planning.events'
+    summary: Command inventory-storage to allocate origin stock.
+    description: |
+      The saga's COMMAND event, published right after TransferPlanApproved
+      through the same outbox transaction (the APPROVED → ALLOCATING
+      transition). Subject and Kafka key are the transfer_line_id
+      ("<transfer_id>:1" in v1's single-line saga) — inventory-storage's
+      transfer_allocations ledger key, so its reply and any replay
+      correlate on exactly it.
+  sendTransferAllocationReleaseRequested:
+    action: send
+    channel:
+      $ref: '#/channels/warehouse.network-inventory-planning.events'
+    summary: Command inventory-storage to resolve the origin hold of a cancelled transfer.
+    description: |
+      The saga's compensation COMMAND (ADR 0022), published through the
+      outbox in the SAME transaction as the ALLOCATED → RELEASING
+      transition (POST /v1/transfers/{transferId}/cancellation).
+      Subject and Kafka key are the transfer_line_id, mirroring
+      TransferAllocationRequested; the payload additionally carries the
+      reservation_id being resolved and the operator's cancellation
+      reason. inventory-storage's TransferStockAllocationReleased reply
+      settles the saga to CANCELLED.
+  receiveTransferStockAllocated:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.inventory.events'
+    summary: Drive the saga ALLOCATING → ALLOCATED.
+    description: |
+      inventory-storage's success reply. The consumer dedupes on the
+      CloudEvents id, validates the reply against the transfer (line,
+      origin, SKU, quantity sum, reservation completeness) and, in ONE
+      transaction with the processed-event claim, persists state ALLOCATED
+      with reservation_id, allocations[] and expires_at. Consumer group
+      TRANSFER_REPLY_CONSUMER_GROUP (env-configured).
+  receiveTransferStockAllocationRejected:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.inventory.events'
+    summary: Drive the saga ALLOCATING → UNFULFILLABLE.
+    description: |
+      inventory-storage's rejection reply with one of the closed reasons
+      ORIGIN_SITE_UNKNOWN|INSUFFICIENT_USABLE|IDEMPOTENCY_CONFLICT. The
+      consumer applies it in ONE transaction with the processed-event
+      claim; an unknown reason is a deterministic skip. Consumer group
+      TRANSFER_REPLY_CONSUMER_GROUP (env-configured).
+  receiveTransferStockAllocationReleased:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.inventory.events'
+    summary: Drive the saga RELEASING → CANCELLED.
+    description: |
+      inventory-storage's release fact (ADR 0022): the origin hold of a
+      transfer cancelled after allocation is resolved. outcome is the
+      closed set RELEASED (the reservation still held the stock; it was
+      revoked) | ALREADY_RESOLVED (it had already expired or been
+      confirmed) — both settle the saga to CANCELLED. The consumer
+      validates the fact against the transfer (line, reservation, origin,
+      SKU, quantity) exactly like the allocation reply; a mismatch is a
+      deterministic dead-letter, never a retry. Consumer group
+      TRANSFER_REPLY_CONSUMER_GROUP (env-configured).
+  sendWorkDemandReleased:
+    action: send
+    channel:
+      $ref: '#/channels/warehouse.network-inventory-planning.events'
+    summary: Release one transfer leg as warehouse work.
+    description: |
+      The WorkDemandReleased COMMAND (ADR 0005), published through the
+      transactional outbox in the SAME transaction as the state change
+      that justifies it: the ALLOCATED transition releases the pick leg
+      (demand_id `<transfer_id>:pick`, quantity = allocated), the PICKED
+      transition releases the dispatch leg (demand_id
+      `<transfer_id>:dispatch`, quantity = PICKED, so a short pick
+      dispatches only what was picked). Subject and Kafka key are the
+      demand_id. WES validates path_id against its PathCatalogue and
+      enqueues one work unit under the deterministic demand_id.
+  sendTransferStateAdvanced:
+    action: send
+    channel:
+      $ref: '#/channels/warehouse.network-inventory-planning.analytics'
+    summary: Announce one saga state transition for health analytics.
+    description: |
+      Published through the transactional outbox in the SAME transaction
+      as the transition it describes (ADR 0007): data {transfer_id, from,
+      to, age_seconds}, subject/key transfer_id. An occurrence exists for
+      every step of every transfer.
+  sendTransferStuckDetected:
+    action: send
+    channel:
+      $ref: '#/channels/warehouse.network-inventory-planning.analytics'
+    summary: Announce a non-terminal transfer aged past its per-state threshold.
+    description: |
+      Emitted by a bounded in-process ticker (NIP_HEALTH_CHECK_INTERVAL,
+      default 5m, 0=off) using per-state thresholds from
+      NIP_STUCK_THRESHOLDS (defaults ALLOCATING=1h, PICKED=24h,
+      IN_TRANSIT=72h, flat 24h otherwise). OBSERVE-ONLY: the check reads
+      and publishes, it never mutates saga state. Data {transfer_id,
+      state, age_seconds, threshold_seconds}, subject/key transfer_id.
+  sendRebalanceRunCompleted:
+    action: send
+    channel:
+      $ref: '#/channels/warehouse.network-inventory-planning.analytics'
+    summary: Announce one scheduled rebalance pass (observe-only).
+    description: |
+      One occurrence per NIP_REBALANCE_SCHEDULE tick (no default: unset
+      means the loop is off). The pass runs the same fail-closed snapshot
+      build + planner as the simulation and records a rebalance_runs row
+      (served by GET /v1/rebalance-runs); it NEVER approves anything and
+      NEVER emits an allocation command. Data {run_id, proposal_count,
+      rejected_count, stale_facts}, subject/key run_id.
+  receiveTransferPicked:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.fulfillment.events'
+    summary: Drive the saga ALLOCATED → PICKED and release the dispatch leg.
+    description: |
+      fulfillment-execution's pick-completion fact. The consumer applies
+      it in ONE transaction with the processed-event claim: PICKED state,
+      picked_quantity recorded (a SHORT pick is recorded, not refused),
+      and the dispatch WorkDemandReleased outboxed with the picked
+      quantity. A fact whose transfer_ref names no known transfer is
+      WARN-logged and committed past. Consumer group
+      TRANSFER_FACT_CONSUMER_GROUP (env-configured).
+  receiveTransferDispatched:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.fulfillment.events'
+    summary: Drive the saga PICKED → IN_TRANSIT.
+    description: |
+      fulfillment-execution's dispatch-completion fact. No demand is
+      released (the arrival leg is triggered by the receiving scan).
+      Consumer group TRANSFER_FACT_CONSUMER_GROUP (env-configured).
+  receiveTransferArrived:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.fulfillment.events'
+    summary: Drive the saga IN_TRANSIT → ARRIVED (reserved kind).
+    description: |
+      fulfillment-execution's arrival-completion fact. RESERVED:
+      scan-driven receiving may bypass it entirely —
+      inventory-storage's TransferReceiptStaged drives the same
+      transition, and whichever arrives first wins (the other is a
+      deterministic out-of-order skip). Consumer group
+      TRANSFER_FACT_CONSUMER_GROUP (env-configured).
+  receiveTransferReceiptStaged:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.inventory.events'
+    summary: Drive the saga IN_TRANSIT → ARRIVED (scan-driven receiving).
+    description: |
+      inventory-storage's destination receipt fact: the received stock
+      was staged at the destination. Same transition as the reserved
+      TransferArrived fact. The variance is informational. Consumer
+      group TRANSFER_REPLY_CONSUMER_GROUP (env-configured).
+  receiveTransferStockStowed:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.inventory.events'
+    summary: Drive the saga ARRIVED → RECEIVED (terminal).
+    description: |
+      inventory-storage's destination stow fact: the received stock was
+      stowed into destination bins. RECEIVED is terminal; the stow
+      allocations are persisted on the aggregate. Consumer group
+      TRANSFER_REPLY_CONSUMER_GROUP (env-configured).
+  receiveTransferStateAdvanced:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.network-inventory-planning.analytics'
+    summary: Project a saga transition into the analytical database (nip-projector).
+    description: |
+      Consumed by cmd/nip-projector (group ANALYTICS_CONSUMER_GROUP). The
+      payload is validated (transfer_id must equal the subject, `to` is
+      required, age_seconds is required and not negative); a violation or a
+      database constraint rejection is dead-lettered to
+      warehouse.network-inventory-planning.analytics.dlq, an unknown type is
+      skipped, anything else is retried.
+    messages:
+      - $ref: '#/channels/warehouse.network-inventory-planning.analytics/messages/transferStateAdvanced'
+  receiveTransferStuckDetected:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.network-inventory-planning.analytics'
+    summary: Project a stuck-transfer detection into the analytical database (nip-projector).
+    description: Consumed by cmd/nip-projector, same rules as receiveTransferStateAdvanced.
+    messages:
+      - $ref: '#/channels/warehouse.network-inventory-planning.analytics/messages/transferStuckDetected'
+  receiveRebalanceRunCompleted:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.network-inventory-planning.analytics'
+    summary: Project a rebalance run into the analytical database (nip-projector).
+    description: Consumed by cmd/nip-projector, same rules as receiveTransferStateAdvanced.
+    messages:
+      - $ref: '#/channels/warehouse.network-inventory-planning.analytics/messages/rebalanceRunCompleted'
+  receiveProductPackLevelDeclared:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.product-master.events'
+    summary: Keep the local pack_levels view current (a pack level declared).
+    description: |
+      Upsert the (sku, level) pack level with its GTIN, units_per_pack and
+      effective_from, last writer wins on version, in ONE transaction with
+      the processed-event claim (consumer pack-level-consumer). A malformed
+      payload or an unparsable effective_from is dead-lettered to
+      warehouse.product-master.events.dlq; only infrastructure failures are
+      retried. Consumer group PACK_LEVEL_CONSUMER_GROUP (env-configured; unset
+      = the consumer does not start).
+    messages:
+      - $ref: '#/channels/warehouse.product-master.events/messages/productPackLevelDeclared'
+  receiveProductPackLevelRetired:
+    action: receive
+    channel:
+      $ref: '#/channels/warehouse.product-master.events'
+    summary: Keep the local pack_levels view current (a pack level retired).
+    description: |
+      Mark the (sku, level) pack level retired as of effective_to, last
+      writer wins on version, in the same transaction shape as the declared
+      handler. Consumer group PACK_LEVEL_CONSUMER_GROUP.
+    messages:
+      - $ref: '#/channels/warehouse.product-master.events/messages/productPackLevelRetired'
+
+components:
+  messages:
+    productPackLevelDeclared:
+      name: ProductPackLevelDeclared
+      title: Product pack level declared
+      summary: product-master declared or revised a pack level of a SKU (consumed).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/ProductPackLevelDeclaredEvent'
+    productPackLevelRetired:
+      name: ProductPackLevelRetired
+      title: Product pack level retired
+      summary: product-master retired a pack level of a SKU (consumed).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/ProductPackLevelRetiredEvent'
+    siteCapabilityChanged:
+      name: SiteCapabilityChanged
+      title: Site capability changed
+      summary: A site's transfer capability state changed (consumed).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/SiteCapabilityChangedEvent'
+    siteSkuDemandChanged:
+      name: SiteSkuDemandChanged
+      title: Site/SKU demand changed
+      summary: One source order line's site demand changed (consumed).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/SiteSkuDemandChangedEvent'
+    capacityPlanPublished:
+      name: CapacityPlanPublished
+      title: Capacity plan published
+      summary: A capacity plan was published (consumed).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/CapacityPlanPublishedEvent'
+    transferPlanApproved:
+      x-no-consumer-reason: "operator approval record of the transfer saga; consumed on demand"
+      name: TransferPlanApproved
+      title: Transfer plan approved
+      summary: An operator approved an advisory proposal into a transfer plan (published).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferPlanApprovedEvent'
+    transferAllocationRequested:
+      name: TransferAllocationRequested
+      title: Transfer allocation requested
+      summary: Command inventory-storage to allocate origin stock for a transfer line (published).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferAllocationRequestedEvent'
+    transferAllocationReleaseRequested:
+      name: TransferAllocationReleaseRequested
+      title: Transfer allocation release requested
+      summary: Command inventory-storage to resolve the origin hold of a cancelled transfer (published).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferAllocationReleaseRequestedEvent'
+    transferStockAllocated:
+      name: TransferStockAllocated
+      title: Transfer stock allocated
+      summary: inventory-storage allocated origin stock for a transfer line (consumed reply).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferStockAllocatedEvent'
+    transferStockAllocationRejected:
+      name: TransferStockAllocationRejected
+      title: Transfer stock allocation rejected
+      summary: inventory-storage refused a transfer-line allocation (consumed reply).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferStockAllocationRejectedEvent'
+    transferStockAllocationReleased:
+      name: TransferStockAllocationReleased
+      title: Transfer stock allocation released
+      summary: inventory-storage resolved the origin hold of a cancelled transfer (consumed reply).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferStockAllocationReleasedEvent'
+    workDemandReleased:
+      name: WorkDemandReleased
+      title: Work demand released
+      summary: One leg of an approved transfer released for warehouse work (published).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/WorkDemandReleasedEvent'
+    transferPicked:
+      name: TransferPicked
+      title: Transfer picked
+      summary: fulfillment-execution completed a TRANSFER_PICK task (consumed fact).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferPickedEvent'
+    transferDispatched:
+      name: TransferDispatched
+      title: Transfer dispatched
+      summary: fulfillment-execution completed a TRANSFER_DISPATCH task (consumed fact).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferDispatchedEvent'
+    transferArrived:
+      name: TransferArrived
+      title: Transfer arrived
+      summary: fulfillment-execution completed a TRANSFER_ARRIVAL task (consumed fact, reserved).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferArrivedEvent'
+    transferReceiptStaged:
+      name: TransferReceiptStaged
+      title: Transfer receipt staged
+      summary: inventory-storage staged a transfer receipt at the destination (consumed fact).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferReceiptStagedEvent'
+    transferStockStowed:
+      name: TransferStockStowed
+      title: Transfer stock stowed
+      summary: inventory-storage stowed transferred stock at the destination (consumed fact).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferStockStowedEvent'
+    transferStateAdvanced:
+      name: TransferStateAdvanced
+      title: Transfer state advanced
+      summary: One saga state transition, as a health-analytics occurrence (published).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferStateAdvancedEvent'
+    transferStuckDetected:
+      name: TransferStuckDetected
+      title: Transfer stuck detected
+      summary: A non-terminal transfer aged past its per-state threshold (published, observe-only).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/TransferStuckDetectedEvent'
+    rebalanceRunCompleted:
+      name: RebalanceRunCompleted
+      title: Rebalance run completed
+      summary: One scheduled (observe-only) rebalance pass (published).
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '#/components/schemas/RebalanceRunCompletedEvent'
+  schemas:
+    ProductPackLevelDeclaredEvent:
+      description: CloudEvents 1.0 envelope of product-master's ProductPackLevelDeclared (fields as product-master's apis/asyncapi.yaml; this service reads sku, level, gtin, units_per_pack, effective_from, version).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wms.product-master.product.ProductPackLevelDeclared
+            dataschema:
+              const: urn:warehouse:product-master:events:ProductPackLevelDeclared:v1
+            data:
+              type: object
+              required: [sku, level, gtin, units_per_pack, is_orderable, is_despatch_unit, effective_from, version]
+              properties:
+                sku:
+                  type: string
+                  description: The SKU; also the Kafka key and subject.
+                level:
+                  type: string
+                  description: The pack level (product-master's PackLevel enum).
+                gtin:
+                  type: string
+                child_gtin:
+                  type: string
+                qty_of_child:
+                  type: integer
+                  minimum: 2
+                  description: Absent for EACH.
+                units_per_pack:
+                  type: integer
+                  minimum: 1
+                  description: Direct factor to eaches; 1 for EACH.
+                is_orderable:
+                  type: boolean
+                is_despatch_unit:
+                  type: boolean
+                effective_from:
+                  type: string
+                  format: date-time
+                version:
+                  type: integer
+                  minimum: 1
+                  description: Per (sku, level); last writer wins.
+    ProductPackLevelRetiredEvent:
+      description: CloudEvents 1.0 envelope of product-master's ProductPackLevelRetired (this service reads sku, level, gtin, effective_to, version).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wms.product-master.product.ProductPackLevelRetired
+            dataschema:
+              const: urn:warehouse:product-master:events:ProductPackLevelRetired:v1
+            data:
+              type: object
+              required: [sku, level, gtin, effective_to, reason, version]
+              properties:
+                sku:
+                  type: string
+                level:
+                  type: string
+                gtin:
+                  type: string
+                effective_to:
+                  type: string
+                  format: date-time
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                version:
+                  type: integer
+                  minimum: 1
+    cloudEvent:
+      type: object
+      required: [specversion, id, source, type, subject, time, datacontenttype, dataschema, data]
+      properties:
+        specversion:
+          const: "1.0"
+        id:
+          type: string
+          description: UUID; the consumer's dedupe key.
+        source:
+          type: string
+        type:
+          type: string
+        subject:
+          type: string
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          const: application/json
+        dataschema:
+          type: string
+        data:
+          type: object
+    SiteCapabilityChangedEvent:
+      description: CloudEvents 1.0 envelope of facility-layout's SiteCapabilityChanged.
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wms.facility-layout.site.SiteCapabilityChanged
+            dataschema:
+              const: urn:warehouse:facility-layout:events:SiteCapabilityChanged:v1
+            data:
+              type: object
+              required: [site_code, transfer_origin_enabled, transfer_destination_enabled, capability_revision]
+              properties:
+                site_code:
+                  type: string
+                  description: The site identity; also the Kafka key and subject.
+                transfer_origin_enabled:
+                  type: boolean
+                transfer_destination_enabled:
+                  type: boolean
+                capability_revision:
+                  type: integer
+                  format: int64
+                  description: Monotonically increasing; LWW tiebreaker.
+    SiteSkuDemandChangedEvent:
+      description: CloudEvents 1.0 envelope of order-management's SiteSkuDemandChanged.
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wes.order-management.siteskudemand.SiteSkuDemandChanged
+            dataschema:
+              const: urn:warehouse:order-management:events:SiteSkuDemandChanged:v1
+            data:
+              type: object
+              required: [source_order_id, line_no, site_id, sku, demanded_units, due_at, state, assignment_version]
+              properties:
+                source_order_id:
+                  type: string
+                line_no:
+                  type: integer
+                site_id:
+                  type: string
+                sku:
+                  type: string
+                demanded_units:
+                  type: integer
+                due_at:
+                  type: string
+                  format: date-time
+                state:
+                  type: string
+                  enum: [ACTIVE, REMOVED]
+                assignment_version:
+                  type: string
+                  description: order-management's site-assignment policy version ("static-site-v1").
+    CapacityPlanPublishedEvent:
+      description: CloudEvents 1.0 envelope of warehouse-planning's CapacityPlanPublished (v1 payload + additive site_id).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wes.warehouse-planning.capacityplan.CapacityPlanPublished
+            dataschema:
+              const: urn:warehouse:warehouse-planning:events:CapacityPlanPublished:v1
+            data:
+              type: object
+              required: [plan_id, site_id, location, path_id, window_start, window_end, assigned_demand, path_capacity, capacity_over_window, shortage, bottleneck_step, published_at]
+              properties:
+                plan_id:
+                  type: string
+                site_id:
+                  type: string
+                  description: Additive Phase-1 field. A legacy event without it is EXCLUDED by this consumer, never defaulted or inferred.
+                warehouse_id:
+                  type: string
+                  description: Legacy warehouse-planning field; read by this consumer but never used to infer the site.
+                location:
+                  type: string
+                path_id:
+                  type: string
+                window_start:
+                  type: string
+                  format: date-time
+                  description: Planning window start (RFC 3339, UTC). The window is [window_start, window_end).
+                window_end:
+                  type: string
+                  format: date-time
+                  description: Planning window end, EXCLUSIVE.
+                assigned_demand:
+                  type: number
+                  format: double
+                path_capacity:
+                  type: number
+                  format: double
+                capacity_over_window:
+                  type: number
+                  format: double
+                shortage:
+                  type: number
+                  format: double
+                bottleneck_step:
+                  type: string
+                published_at:
+                  type: string
+                  format: date-time
+    TransferPlanApprovedEvent:
+      description: CloudEvents 1.0 envelope of this context's TransferPlanApproved (published via the transactional outbox).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            source:
+              const: /warehouse/network-inventory-planning
+            type:
+              const: com.warehouse.wes.network-inventory-planning.transfer.TransferPlanApproved
+            dataschema:
+              const: urn:warehouse:network-inventory-planning:events:TransferPlanApproved:v1
+            data:
+              type: object
+              required: [transfer_id, origin_site_id, destination_site_id, sku, quantity, policy_version, operator_reason, proposal_as_of]
+              properties:
+                transfer_id:
+                  type: string
+                  description: The saga aggregate id; also the Kafka key and subject.
+                origin_site_id:
+                  type: string
+                destination_site_id:
+                  type: string
+                sku:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+                case_multiple:
+                  type: integer
+                  minimum: 2
+                  description: Additive (ADR 0017). Units per pack of the SKU's active CASE level; the case rounding fields are present only for such a SKU, and quantity is then the rounded whole-case quantity.
+                cases:
+                  type: integer
+                  minimum: 1
+                requested_qty_eaches:
+                  type: integer
+                  minimum: 1
+                  description: The quantity before rounding (the demand).
+                rounded_qty_eaches:
+                  type: integer
+                  minimum: 1
+                remainder_eaches:
+                  type: integer
+                  description: requested_qty_eaches minus rounded_qty_eaches (signed).
+                policy_version:
+                  type: string
+                operator_reason:
+                  type: string
+                  description: The operator's captured approval reason; always present, may be the empty string.
+                proposal_as_of:
+                  type: string
+                  format: date-time
+                  description: The advisory proposal snapshot's as-of watermark (RFC 3339, UTC).
+    TransferAllocationRequestedEvent:
+      description: |
+        CloudEvents 1.0 envelope of this context's TransferAllocationRequested
+        COMMAND (published via the transactional outbox). The data payload is
+        EXACTLY inventory-storage's consumed contract — five fields, no more.
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            source:
+              const: /warehouse/network-inventory-planning
+            type:
+              const: com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested
+            dataschema:
+              const: urn:warehouse:network-inventory-planning:events:TransferAllocationRequested:v1
+            data:
+              type: object
+              required: [transfer_id, transfer_line_id, origin_site_id, sku, quantity]
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                  description: |
+                    "<transfer_id>:1" in v1's single-line saga; also the Kafka
+                    key and subject, and inventory-storage's allocation-ledger
+                    and reply-correlation key.
+                origin_site_id:
+                  type: string
+                sku:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+    TransferStockAllocatedEvent:
+      description: CloudEvents 1.0 envelope of inventory-storage's TransferStockAllocated reply (consumed).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wms.inventory-storage.reservation.TransferStockAllocated
+            dataschema:
+              const: urn:warehouse:inventory-storage:events:TransferStockAllocated:v1
+            data:
+              type: object
+              required: [transfer_id, transfer_line_id, origin_site_id, reservation_id, sku, quantity, allocations, expires_at]
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                origin_site_id:
+                  type: string
+                reservation_id:
+                  type: string
+                  description: Also the Kafka key and subject of the reply.
+                sku:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+                allocations:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [stock_unit_id, bin_id, quantity]
+                    properties:
+                      stock_unit_id:
+                        type: string
+                      bin_id:
+                        type: string
+                      quantity:
+                        type: integer
+                        minimum: 1
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: The origin reservation's expiry.
+    TransferStockAllocationRejectedEvent:
+      description: CloudEvents 1.0 envelope of inventory-storage's TransferStockAllocationRejected reply (consumed).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationRejected
+            dataschema:
+              const: urn:warehouse:inventory-storage:events:TransferStockAllocationRejected:v1
+            data:
+              type: object
+              required: [transfer_id, transfer_line_id, origin_site_id, sku, requested_quantity, reason]
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                  description: Also the Kafka key and subject of the reply.
+                origin_site_id:
+                  type: string
+                sku:
+                  type: string
+                requested_quantity:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+                  enum: [ORIGIN_SITE_UNKNOWN, INSUFFICIENT_USABLE, IDEMPOTENCY_CONFLICT]
+    TransferAllocationReleaseRequestedEvent:
+      description: |
+        CloudEvents 1.0 envelope of this context's
+        TransferAllocationReleaseRequested COMMAND (published via the
+        transactional outbox, ADR 0022). The data payload is EXACTLY
+        inventory-storage's consumed contract.
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            source:
+              const: /warehouse/network-inventory-planning
+            type:
+              const: com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested
+            dataschema:
+              const: urn:warehouse:network-inventory-planning:events:TransferAllocationReleaseRequested:v1
+            data:
+              type: object
+              required: [transfer_id, transfer_line_id, reservation_id, origin_site_id, sku, quantity, reason]
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                  description: Also the Kafka key and subject, mirroring TransferAllocationRequested.
+                reservation_id:
+                  type: string
+                  description: The origin reservation being resolved.
+                origin_site_id:
+                  type: string
+                sku:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+                  description: The operator's cancellation reason, carried through to the reply.
+    TransferStockAllocationReleasedEvent:
+      description: CloudEvents 1.0 envelope of inventory-storage's TransferStockAllocationReleased reply (consumed).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wms.inventory-storage.reservation.TransferStockAllocationReleased
+            dataschema:
+              const: urn:warehouse:inventory-storage:events:TransferStockAllocationReleased:v1
+            data:
+              type: object
+              required: [transfer_id, transfer_line_id, reservation_id, origin_site_id, sku, quantity, outcome, reason]
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                  description: Also the Kafka key and subject of the reply.
+                reservation_id:
+                  type: string
+                origin_site_id:
+                  type: string
+                sku:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+                outcome:
+                  type: string
+                  enum: [RELEASED, ALREADY_RESOLVED]
+                  description: Both settle the saga — either way the hold is gone.
+                reason:
+                  type: string
+                  description: The echoed cancellation reason, or IDEMPOTENCY_CONFLICT on a conflicting replay's answer.
+    WorkDemandReleasedEvent:
+      description: |
+        CloudEvents 1.0 envelope of this context's WorkDemandReleased
+        COMMAND (published via the transactional outbox, ADR 0005). The
+        data payload is EXACTLY WES's (wes-work-planning) consumed
+        contract, mirrored read-only from its apis/asyncapi.yaml — every
+        data field is required by the producer.
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            source:
+              const: /warehouse/network-inventory-planning
+            type:
+              const: com.warehouse.wes.network-inventory-planning.workdemand.WorkDemandReleased
+            dataschema:
+              const: urn:warehouse:network-inventory-planning:events:WorkDemandReleased:v1
+            data:
+              type: object
+              required: [demand_id, work_kind, transfer_ref, path_id, site_id, cpt, sku, quantity]
+              properties:
+                demand_id:
+                  type: string
+                  description: |
+                    Deterministic identity of the leg — `<transfer_id>:pick`
+                    or `<transfer_id>:dispatch`. Also the Kafka key and
+                    subject; WES mints its work unit under it.
+                work_kind:
+                  type: string
+                  enum: [TRANSFER_PICK, TRANSFER_DISPATCH, TRANSFER_ARRIVAL]
+                transfer_ref:
+                  type: string
+                  description: The transfer saga's correlation id.
+                path_id:
+                  type: string
+                  description: |
+                    Process path the leg executes on, from deployment
+                    configuration (TRANSFER_PICK_PATH_ID /
+                    TRANSFER_DISPATCH_PATH_ID); WES validates it against
+                    its PathCatalogue.
+                site_id:
+                  type: string
+                  description: Network site anchoring the leg — the ORIGIN for pick and dispatch.
+                cpt:
+                  type: string
+                  format: date-time
+                  description: |
+                    Critical Pull Time: the triggering fact's time plus the
+                    leg's configured TRANSFER_*_CPT_OFFSET.
+                sku:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+                  description: |
+                    Units the leg moves — the allocated quantity for the
+                    pick leg, the PICKED quantity for the dispatch leg
+                    (short picks dispatch what was actually picked).
+    TransferFactData:
+      description: |
+        The payload every fulfillment-execution transfer fact carries,
+        mirrored read-only from fulfillment-execution's
+        TransferFactData. The optional fields are omitted when the
+        release carried none.
+      type: object
+      required: [transfer_ref, work_unit_id, task_id, work_kind]
+      properties:
+        transfer_ref:
+          type: string
+        demand_id:
+          type: string
+        work_unit_id:
+          type: string
+        task_id:
+          type: string
+          description: Also the Kafka key and subject.
+        work_kind:
+          type: string
+          enum: [TRANSFER_PICK, TRANSFER_DISPATCH, TRANSFER_ARRIVAL]
+        site_id:
+          type: string
+        sku:
+          type: string
+        quantity:
+          type: integer
+    TransferPickedEvent:
+      description: CloudEvents 1.0 envelope of fulfillment-execution's TransferPicked fact (consumed).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wes.fulfillment-execution.transfer.TransferPicked
+            dataschema:
+              const: urn:warehouse:fulfillment-execution:events:TransferPicked:v1
+            data:
+              $ref: '#/components/schemas/TransferFactData'
+    TransferDispatchedEvent:
+      description: CloudEvents 1.0 envelope of fulfillment-execution's TransferDispatched fact (consumed).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched
+            dataschema:
+              const: urn:warehouse:fulfillment-execution:events:TransferDispatched:v1
+            data:
+              $ref: '#/components/schemas/TransferFactData'
+    TransferArrivedEvent:
+      description: |
+        CloudEvents 1.0 envelope of fulfillment-execution's
+        TransferArrived fact (consumed, RESERVED — scan-driven receiving
+        may bypass it; TransferReceiptStaged drives the same transition).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wes.fulfillment-execution.transfer.TransferArrived
+            dataschema:
+              const: urn:warehouse:fulfillment-execution:events:TransferArrived:v1
+            data:
+              $ref: '#/components/schemas/TransferFactData'
+    TransferReceiptStagedEvent:
+      description: CloudEvents 1.0 envelope of inventory-storage's TransferReceiptStaged destination fact (consumed).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wms.inventory-storage.stock.TransferReceiptStaged
+            dataschema:
+              const: urn:warehouse:inventory-storage:events:TransferReceiptStaged:v1
+            data:
+              type: object
+              required: [transfer_id, transfer_line_id, destination_site_id, sku, expected_quantity, received_quantity, variance]
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                  description: Also the Kafka key and subject.
+                destination_site_id:
+                  type: string
+                sku:
+                  type: string
+                expected_quantity:
+                  type: integer
+                received_quantity:
+                  type: integer
+                variance:
+                  type: integer
+                  description: Informational in v1 (no variance disposition workflow yet).
+    TransferStockStowedEvent:
+      description: CloudEvents 1.0 envelope of inventory-storage's TransferStockStowed destination fact (consumed).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            type:
+              const: com.warehouse.wms.inventory-storage.stock.TransferStockStowed
+            dataschema:
+              const: urn:warehouse:inventory-storage:events:TransferStockStowed:v1
+            data:
+              type: object
+              required: [transfer_id, transfer_line_id, destination_site_id, sku, received_quantity, stowed_quantity, allocations]
+              properties:
+                transfer_id:
+                  type: string
+                transfer_line_id:
+                  type: string
+                  description: Also the Kafka key and subject.
+                destination_site_id:
+                  type: string
+                sku:
+                  type: string
+                received_quantity:
+                  type: integer
+                stowed_quantity:
+                  type: integer
+                allocations:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [stock_unit_id, bin_id, quantity]
+                    properties:
+                      stock_unit_id:
+                        type: string
+                      bin_id:
+                        type: string
+                      quantity:
+                        type: integer
+                        minimum: 1
+    TransferStateAdvancedEvent:
+      description: CloudEvents 1.0 envelope of this context's TransferStateAdvanced analytics occurrence (ADR 0007, published via the transactional outbox in the same transaction as the transition).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            source:
+              const: /warehouse/network-inventory-planning
+            type:
+              const: com.warehouse.wes.network-inventory-planning.saga.TransferStateAdvanced
+            dataschema:
+              const: urn:warehouse:network-inventory-planning:analytics:TransferStateAdvanced:v1
+            data:
+              type: object
+              required: [transfer_id, from, to, age_seconds]
+              properties:
+                transfer_id:
+                  type: string
+                  description: The saga aggregate id; also the Kafka key and subject.
+                from:
+                  type: string
+                  description: The state before the transition (empty string for the creation entry).
+                to:
+                  type: string
+                  enum: [DRAFT, PROPOSED, APPROVED, ALLOCATING, ALLOCATED, PICKED, IN_TRANSIT, ARRIVED, RECEIVED, UNFULFILLABLE, CANCELLED]
+                age_seconds:
+                  type: integer
+                  format: int64
+                  description: Seconds since the aggregate's creation at the moment of the transition.
+    TransferStuckDetectedEvent:
+      description: CloudEvents 1.0 envelope of this context's TransferStuckDetected analytics occurrence (ADR 0007, published by the bounded observe-only health ticker).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            source:
+              const: /warehouse/network-inventory-planning
+            type:
+              const: com.warehouse.wes.network-inventory-planning.saga.TransferStuckDetected
+            dataschema:
+              const: urn:warehouse:network-inventory-planning:analytics:TransferStuckDetected:v1
+            data:
+              type: object
+              required: [transfer_id, state, age_seconds, threshold_seconds]
+              properties:
+                transfer_id:
+                  type: string
+                  description: The saga aggregate id; also the Kafka key and subject.
+                state:
+                  type: string
+                  description: The non-terminal state the transfer is stuck in.
+                age_seconds:
+                  type: integer
+                  format: int64
+                  description: Seconds since the transfer's last transition (updated_at).
+                threshold_seconds:
+                  type: integer
+                  format: int64
+                  description: The per-state threshold that was exceeded (NIP_STUCK_THRESHOLDS or the default).
+    RebalanceRunCompletedEvent:
+      description: CloudEvents 1.0 envelope of this context's RebalanceRunCompleted analytics occurrence (ADR 0007, one per scheduled observe-only rebalance pass).
+      allOf:
+        - $ref: '#/components/schemas/cloudEvent'
+        - type: object
+          properties:
+            source:
+              const: /warehouse/network-inventory-planning
+            type:
+              const: com.warehouse.wes.network-inventory-planning.saga.RebalanceRunCompleted
+            dataschema:
+              const: urn:warehouse:network-inventory-planning:analytics:RebalanceRunCompleted:v1
+            data:
+              type: object
+              required: [run_id, proposal_count, rejected_count, stale_facts]
+              properties:
+                run_id:
+                  type: string
+                  description: The run's identity; also the Kafka key and subject.
+                proposal_count:
+                  type: integer
+                  description: Proposals the planner produced this pass.
+                rejected_count:
+                  type: integer
+                  description: Proposals the run's own safety checks refused (never an operator rejection; the run approves nothing).
+                stale_facts:
+                  type: integer
+                  description: Facts excluded by freshness in this pass (0 while the snapshot is fully fresh).
