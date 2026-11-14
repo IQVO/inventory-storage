@@ -40,7 +40,7 @@ Page index (source paths under `docs/docs/`):
 | Ecosystem | [Context map](docs/docs/ecosystem/context-map.md), [Integration](docs/docs/ecosystem/integration.md) |
 | DDD | [Use cases](docs/docs/ddd/use-cases.md), [Subdomain classification](docs/docs/ddd/subdomain-classification.md), and the artifact pack under [`docs/docs/ddd/`](docs/docs/ddd/) |
 | APIs | [REST reference](docs/docs/api-reference/overview.md), [Integration events](docs/docs/api-reference/events.md), [MCP tools](docs/docs/mcp/tools.md), [MCP governance charter](docs/docs/mcp/governance-charter.md), [A2A inbound adapter (ADR-0048)](docs/docs/adr/0048-a2a-inbound-adapter.md), [Flow & Accuracy report](docs/docs/analytics/inventory-flow-accuracy-report.md) |
-| Decisions | [ADR index](docs/docs/adr/about.md) (42 ADRs; [ADR-0042](docs/docs/adr/0042-postgres-and-kafka-are-the-only-runtime.md): Postgres and Kafka are the only runtime) |
+| Decisions | [ADR index](docs/docs/adr/about.md) (52 ADRs; [ADR-0052](docs/docs/adr/0052-held-stock-and-disposition.md): held stock and disposition; [ADR-0042](docs/docs/adr/0042-postgres-and-kafka-are-the-only-runtime.md): Postgres and Kafka are the only runtime) |
 
 ## Layering (hexagonal / ports & adapters)
 

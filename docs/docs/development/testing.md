@@ -8,15 +8,16 @@ description: The test pyramid as it exists in this repository — unit, BDD, MCP
 # Testing
 
 Counts below were taken from the tree on this branch: 152 `*_test.go` files, of
-which 40 carry the `integration` build tag; 9 Gherkin files with 31 scenarios
-under `features/`, plus 1 MCP feature file with 9 scenarios.
+which 40 carry the `integration` build tag; 21 Gherkin files with 107 scenarios
+under `features/`, plus 1 MCP feature file with 9 scenarios (counted by
+`Scenario` and `Scenario Outline`).
 
 ```mermaid
 flowchart TB
   MUT["Mutation (gremlins)<br/>internal/domain — efficacy and mutant coverage gate 99"]
   CON["Contract (Schemathesis 4.28.0)<br/>apis/openapi.yaml vs cmd/inventory on real Postgres + Kafka"]
   INT["Integration (-tags=integration)<br/>44 files, Postgres + Kafka via testcontainers"]
-  BDD["Acceptance (godog)<br/>features/ 9 files · 31 scenarios<br/>MCP E3 1 file · 9 scenarios"]
+  BDD["Acceptance (godog)<br/>features/ 21 files · 107 scenarios<br/>MCP E3 1 file · 9 scenarios"]
   ARCH["Architecture fitness<br/>internal/architecture — 27 test functions"]
   UNIT["Unit + httptest<br/>domain, use cases, adapters, cmd wiring<br/>coverage gate 90 % on domain + application"]
   MUT --> CON --> INT --> BDD --> ARCH --> UNIT
