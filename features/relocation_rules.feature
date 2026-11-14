@@ -198,6 +198,16 @@ Feature: Intra-site relocation (REST and TaskCompleted)
     And StockUnit "su-4" is AVAILABLE with quantity 4
 
   @bdd
+  Scenario: A fully reserved source unit contributes no leg to the move
+    Given 3 units of SKU "SKU-RD" are Stowed into Bin "SP-A1"
+    And a Reservation of 3 units of SKU "SKU-RD" for demand "ORDER-RD"
+    And 5 units of SKU "SKU-RD" are Stowed into Bin "SP-A1"
+    When I Relocate 4 units of SKU "SKU-RD" from Bin "SP-A1" to Bin "SP-A2" at site "SITE-P"
+    Then the response status is 201
+    And the Relocation drew source legs "4" in order
+    And StockUnit "su-2" is RESERVED with quantity 3
+
+  @bdd
   Scenario: A move raises one level event for the source bin and then one for the destination
     When I Relocate 4 units of SKU "SKU-RL" from Bin "SP-A1" to Bin "SP-A2" at site "SITE-P" for reason "SLOTTING"
     Then the response status is 201
