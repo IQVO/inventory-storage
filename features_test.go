@@ -86,6 +86,10 @@ type world struct {
 	// held is the held-stock repository behind GET /held-stock and the
 	// disposition POST (features_held_test.go).
 	held *memory.HeldStockRepo
+
+	// rules holds the relocation wiring and the raw-input consumer steps of
+	// the documentation-derived scenarios (features_rules_test.go).
+	rules rulesState
 }
 
 // start builds the composition root the way cmd/inventory does, but with the
@@ -121,6 +125,7 @@ func (w *world) start() {
 	w.applyClassification = &usecases.ApplyProductClassification{Classifications: classificationRepo, ProcessedEvents: memory.NewProcessedEventRepo()}
 	w.wireWave2(s, reservationRepo)
 	w.wireContainers(s, reservationRepo)
+	w.wireRules(s)
 	w.status = 0
 	w.body = nil
 	w.headers = nil
@@ -737,4 +742,5 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	w.registerContainerSteps(sc)
 	w.registerHeldSteps(sc)
 	w.registerTransferSagaSteps(sc)
+	w.registerRuleSteps(sc)
 }
