@@ -72,7 +72,7 @@ during the REST hardening pass:
 | `400 Bad Request` | Malformed or missing input | empty SKU, empty bin id, unparseable JSON |
 | `404 Not Found` | The addressed resource does not exist | unknown reservation, unknown bin |
 | `409 Conflict` | Well-formed and addressable, but conflicts with current state | bin full, reservation exceeds usable, reservation already resolved, reservation expired |
-| `422 Unprocessable Entity` | Well-formed but semantically invalid *values* | quantity ≤ 0, negative quantity, non-positive bin capacity |
+| `422 Unprocessable Entity` | Well-formed but semantically invalid *values* | quantity ≤ 0 (`zero-quantity`), negative bin capacity or counted quantity (`negative-quantity`), zero bin capacity |
 
 The `400` / `422` split is the one worth internalising: `400` means "I could
 not understand the request," `422` means "I understood it perfectly and it is
@@ -112,7 +112,7 @@ Mapping is one-for-one with the typed domain and application errors, in
 | `product-classification-not-found` | 404 | `usecases.ErrProductClassificationNotFound` |
 | `empty-sku` | 400 | `shared.ErrEmptySKU` |
 | `empty-bin-id` | 400 | `shared.ErrEmptyBinID` |
-| `stow-requires-item-and-location` | 400 | `stock.ErrStowRequiresItemAndLocation` |
+| `stow-requires-item-and-location` | 400 | `stock.ErrStowRequiresItemAndLocation` — mapped, but not reachable over REST: the stow handler builds the `SKU` and `BinId` value objects first, so a missing scan answers `empty-sku` / `empty-bin-id` |
 | `unknown-handling-tag` | 400 | `product.ErrUnknownHandlingTag` |
 | `unknown-temperature-class` | 400 | `product.ErrUnknownTemperatureClass` |
 | `no-handling-tags` | 400 | `product.ErrNoHandlingTags` |
@@ -121,8 +121,8 @@ Mapping is one-for-one with the typed domain and application errors, in
 | `duplicate-handling-tag` | 400 | `product.ErrDuplicateHandlingTag` |
 | `invalid-dot-hazard-class` | 400 | `product.ErrInvalidDOTHazardClass` |
 | `dot-hazard-class-not-applicable` | 400 | `product.ErrDOTHazardClassNotApplicable` |
-| `negative-quantity` | 422 | `shared.ErrNegativeQuantity` |
-| `zero-quantity` | 422 | `shared.ErrZeroQuantity` |
+| `negative-quantity` | 422 | `shared.ErrNegativeQuantity` — only for a negative bin `capacity` (`PUT /bins/{binId}`) or `countedQuantity` (cycle count); a negative quantity on receive, stow, reserve or relocate answers `zero-quantity` |
+| `zero-quantity` | 422 | `shared.ErrZeroQuantity` — a quantity ≤ 0 on receive, stow, reserve and relocate (`NewPositiveQuantity`) |
 | `invalid-bin-capacity` | 422 | `location.ErrInvalidCapacity` |
 | `bin-full` | 409 | `location.ErrBinFull` |
 | `capacity-below-occupancy` | 409 | `location.ErrCapacityBelowOccupancy` (`PUT /bins/{binId}`, ADR 0025) |
