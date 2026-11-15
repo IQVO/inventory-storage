@@ -208,6 +208,76 @@ jobs:
           KAFKA_BROKERS: "localhost:9092"
         run: ./scripts/contract-test.sh
 
+  # Producer-contract gate (parity with the consumer pins): a PR that edits
+  # apis/** must prove it does not BREAK the specs consumers pin as
+  # byte-copies in their contracts/pinned.json. REST: oasdiff (installed
+  # pinned, like every tool this workflow installs). Events: AsyncAPI has no
+  # oasdiff equivalent, so scripts/harness/asyncapi_breaking.py checks the
+  # three shapes a pinning consumer cannot tolerate — a removed message, a
+  # removed/renamed required data field, a narrowed data-field type. Additive
+  # change stays free (consumers ignore unknown types and data keys).
+  # Pinned consumers today (verified against each repo's develop and
+  # warehouse-docs network/model/contract-edges.json on origin/main):
+  # openapi.yaml <- order-management, network-fulfillment, fulfillment-execution,
+  #                 + this repo's own mcp contract testdata (self-pin);
+  # asyncapi.yaml <- exception-management, inbound-receiving, slotting-optimization,
+  #                 + this repo's own kafka testdata (self-pin).
+  # ============================================================
+  # CLASSIFICATION: CONTRACT TESTING (breaking-change gates over apis/**)
+  # ============================================================
+  spec-breaking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0    # the base branch must be present to diff and extract specs
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.13"
+      - name: Does this PR touch the specs?
+        id: specs
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+          if git diff --name-only "$base"...HEAD -- apis | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No apis/** change; breaking-change gates skipped."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Extract the base specs
+        if: steps.specs.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p base/apis
+          base="origin/${{ github.base_ref }}"
+          git show "$base:apis/openapi.yaml"  > base/apis/openapi.yaml
+          git show "$base:apis/asyncapi.yaml" > base/apis/asyncapi.yaml
+      - name: Install oasdiff (pinned)
+        if: steps.specs.outputs.changed == 'true'
+        run: go install github.com/oasdiff/oasdiff@v1.38.0
+      - name: REST breaking changes (oasdiff over apis/openapi.yaml)
+        if: steps.specs.outputs.changed == 'true'
+        run: |
+          oasdiff breaking base/apis/openapi.yaml apis/openapi.yaml && rc=0 || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::Breaking change to apis/openapi.yaml (oasdiff exit $rc). Pinned as a byte-copy by: order-management, network-fulfillment, fulfillment-execution, and this repo's own mcp contract testdata. Make the change additive, or coordinate a versioned migration and refresh every pin."
+            exit 1
+          fi
+      - name: AsyncAPI gate self-check (never pass vacuously)
+        if: steps.specs.outputs.changed == 'true'
+        run: |
+          python3 -m pip install --require-hashes -r .github/requirements/chart-tests.txt
+          python3 scripts/harness/asyncapi_breaking.py --self-test
+      - name: Events breaking changes (asyncapi_breaking.py over apis/asyncapi.yaml)
+        if: steps.specs.outputs.changed == 'true'
+        run: python3 scripts/harness/asyncapi_breaking.py base/apis/asyncapi.yaml apis/asyncapi.yaml
+
   # The MCP eval gate as its own named check: the eval suites from
   # internal/adapters/inbound/mcp run inside the `test` job too; this job makes the gate
   # visible — and individually gating — on every push and PR.
