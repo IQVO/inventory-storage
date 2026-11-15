@@ -655,7 +655,7 @@ components:
             subject: SKU-1001
             time: "2026-08-21T22:05:00Z"
             datacontenttype: application/json
-            dataschema: urn:warehouse:inventory-storage:analytics:ItemStowed:v1
+            dataschema: urn:warehouse:inventory-storage:events:ItemStowed:v1
             data:
               sku: SKU-1001
               bin_id: A-12-3
@@ -2151,7 +2151,7 @@ components:
             subject: su-7781
             time: "2026-08-21T23:00:02Z"
             datacontenttype: application/json
-            dataschema: urn:warehouse:inventory-storage:analytics:ItemUnlocated:v1
+            dataschema: urn:warehouse:inventory-storage:events:ItemUnlocated:v1
             data:
               stock_unit_id: su-7781
               sku: SKU-1001
@@ -2227,7 +2227,7 @@ components:
             subject: A-12-3
             time: "2026-08-21T23:00:01Z"
             datacontenttype: application/json
-            dataschema: urn:warehouse:inventory-storage:analytics:DiscrepancyDetected:v1
+            dataschema: urn:warehouse:inventory-storage:events:DiscrepancyDetected:v1
             data:
               bin_id: A-12-3
               counted: 47
