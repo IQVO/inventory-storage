@@ -75,7 +75,7 @@ the code writes them. Variables are explained in
 | `409 transfer-receipt-conflict`, `409 receipt-not-staged`, `409 bin-wrong-site`, `409 stow-quantity-mismatch` | Destination transfer custody rules ([ADR 0033](../adr/0033-destination-transfer-receipt-custody.md)). | Stage before stow; stow into bins of the destination site; quantities must sum to the received quantity. |
 | `422 transfer-scan-quarantined` (body has an `exception` object) | The destination scan has no ALLOCATED ledger row for that line; an `inventory_exceptions` row was written instead of stock. | Check `transfer_allocations` for the line; the transfer-allocation consumer must be on at the origin. |
 | `400 missing-demand-ref`, `400 invalid-line-no`, `400 counted-quantity-required`, `400 capacity-required`, `400 transfer-id-required`, `400 bins-required`, `400 malformed-request-body`, `400 empty-sku`, `400 empty-bin-id`, `400 empty-site-id`, `400 quantity-not-positive` | Request validation in the handlers. | Fix the request. |
-| `422 capacity-out-of-range`, `422 negative-quantity`, `422 zero-quantity`, `422 invalid-bin-capacity` | Quantity / capacity value objects. | Fix the value. |
+| `422 capacity-out-of-range`, `422 negative-quantity`, `422 zero-quantity`, `422 invalid-bin-capacity` | Quantity / capacity value objects. `zero-quantity`: quantity ≤ 0 on receive, stow, reserve, relocate. `negative-quantity`: a negative bin capacity or cycle-count `countedQuantity` only. | Fix the value. |
 | `400 invalid-report-query`, `500 report-store-error` (reports binary) | Missing / non-RFC3339 `from`/`to`, `granularity` other than `hour`; analytical DB error. | Fix the query; check the projector's database. |
 
 This service sends no `412`: there is no `If-Match` precondition on any route.

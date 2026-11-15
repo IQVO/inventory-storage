@@ -8,16 +8,18 @@ description: The test pyramid as it exists in this repository — unit, BDD, MCP
 # Testing
 
 Counts below were taken from the tree on this branch: 152 `*_test.go` files, of
-which 40 carry the `integration` build tag; 21 Gherkin files with 107 scenarios
-under `features/`, plus 1 MCP feature file with 9 scenarios (counted by
-`Scenario` and `Scenario Outline`).
+which 40 carry the `integration` build tag; 27 Gherkin files with 172 scenario
+definitions under `features/` (249 scenarios executed once every `Examples` row
+of a `Scenario Outline` is counted), plus 1 MCP feature file with 9 scenarios
+(definitions counted by `Scenario` and `Scenario Outline`; executed counts are
+the `N scenarios` line of `go test . -run TestFeatures -count=1 -v`).
 
 ```mermaid
 flowchart TB
   MUT["Mutation (gremlins)<br/>internal/domain — efficacy and mutant coverage gate 99"]
   CON["Contract (Schemathesis 4.28.0)<br/>apis/openapi.yaml vs cmd/inventory on real Postgres + Kafka"]
   INT["Integration (-tags=integration)<br/>44 files, Postgres + Kafka via testcontainers"]
-  BDD["Acceptance (godog)<br/>features/ 21 files · 107 scenarios<br/>MCP E3 1 file · 9 scenarios"]
+  BDD["Acceptance (godog)<br/>features/ 27 files · 172 definitions · 249 executed<br/>MCP E3 1 file · 9 scenarios"]
   ARCH["Architecture fitness<br/>internal/architecture — 27 test functions"]
   UNIT["Unit + httptest<br/>domain, use cases, adapters, cmd wiring<br/>coverage gate 90 % on domain + application"]
   MUT --> CON --> INT --> BDD --> ARCH --> UNIT
@@ -73,17 +75,45 @@ application packages.
 the REST API
 ([ADR 0007](../adr/0007-godog-bdd-acceptance-tests.md)).
 
-| Feature file | Scenarios |
+| Feature file | Scenario definitions |
 | --- | --- |
 | `bin_registration.feature` | 7 |
+| `bin_validation.feature` | 1 |
+| `classification_rules.feature` | 4 |
+| `container_rules.feature` | 5 |
+| `containers.feature` | 14 |
 | `cycle_count.feature` | 3 |
+| `cycle_count_edges.feature` | 2 |
 | `demand_ref.feature` | 4 |
-| `product_classification.feature` | 4 |
+| `fulfillment_rules.feature` | 10 |
+| `held_stock.feature` | 4 |
+| `inbound_receipt.feature` | 1 |
+| `order_pick_completion.feature` | 3 |
+| `product_classification.feature` | 1 |
 | `receive.feature` | 1 |
+| `relocation_rules.feature` | 23 |
 | `reservation.feature` | 4 |
 | `reservation_expiry.feature` | 4 |
+| `reservation_lines.feature` | 4 |
+| `storage_rules.feature` | 22 |
 | `stow.feature` | 3 |
+| `stow_placement.feature` | 5 |
+| `transfer_allocation.feature` | 10 |
+| `transfer_receipt.feature` | 9 |
+| `transfer_scan_edges.feature` | 13 |
+| `transfer_stow.feature` | 13 |
+| `transfer_stow_rules.feature` | 1 |
 | `usable_inventory.feature` | 1 |
+| **Total** | **172** (249 executed) |
+
+The `*_rules.feature` files pin rules documented in `docs/ddd/` (use cases,
+aggregate canvas, troubleshooting) one by one: relocation (#17-#20), storage
+(#1-#6, #9-#11), fulfillment (#12, #13), classification (#8), containers and
+transfer stow (#16). Step definitions for them are in `features_rules_test.go`
+(registered from `features_test.go`; the other suites live in the sibling
+`features_*_test.go` files). The BDD-only statement coverage over
+`./internal/...` (`go test . -run TestFeatures -count=1 -coverpkg=./internal/...`)
+is 64.7 %.
 
 ### MCP evals
 

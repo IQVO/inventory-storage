@@ -57,8 +57,11 @@ func NewStockUnit(id string, sku shared.SKU, binID shared.BinId, qty shared.Quan
 Item-scan without location-scan means "we know we have it, somewhere" — which
 under chaotic storage is worth nothing. Location-scan without item-scan means
 "something is in that bin" — worth even less. The aggregate refuses to
-construct rather than record a half-truth, and the HTTP adapter maps that
-refusal to `400 Bad Request` with problem type `stow-requires-item-and-location`.
+construct rather than record a half-truth. Over REST the refusal surfaces earlier:
+the handler builds the `SKU` and `BinId` value objects first, so a missing scan is
+`400 Bad Request` with problem type `empty-sku` or `empty-bin-id`; the problem
+type `stow-requires-item-and-location` is mapped but not reachable through the
+router.
 
 ### Rule 2 — capacity is real
 

@@ -6,7 +6,7 @@ description: The application-layer use cases, their collaborators, and their fai
 
 # Use Cases
 
-Nineteen use cases, one struct each, in `internal/application/usecases`. Each
+Twenty use cases, one struct each, in `internal/application/usecases`. Each
 depends only on the domain and on `application/ports` — never on an adapter.
 Dependencies are plain struct fields, wired once per binary in
 `cmd/inventory/main.go` (REST) and `cmd/mcp/main.go` (MCP, which wires
@@ -26,7 +26,7 @@ Dependencies are plain struct fields, wired once per binary in
 | 10 | `RegisterBin` | `PUT /bins/{binId}` | — | — (local topology master data, ADR 0025) |
 | 11 | `GetBin` | `GET /bins/{binId}` | — | — (read) |
 | 12 | `ConfirmPicksForOrder` | — (Kafka: `warehouse.fulfillment.events` `TaskCompleted`, ADR 0035, ADR 0036) | — | `StockPicked` per confirmed reservation via `ConfirmPick`: the picked line's reservation when the event carries `line_no`, otherwise only on the order's last pick (+ `ReservationExpired` via lazy expiry) |
-| 13 | `BookInboundReceiptLine` | — (Kafka: `warehouse.inbound-receiving.events` `ReceiptLineReceived`, ADR 0037) | — | `StockReceived` through `ReceiveStock` for a `Good` line (analytics topic); a `Damaged` line raises nothing |
+| 13 | `BookInboundReceiptLine` | — (Kafka: `warehouse.inbound-receiving.events` `ReceiptLineReceived`, ADR 0037) | — | `StockReceived` through `ReceiveStock` for a `Good` line (analytics topic); a `Damaged` line is held, not dropped: `HoldStock` books it as a HELD unit and raises `StockHeld` (ADR 0052) |
 | 14 | `AllocateTransferStock` | — (Kafka: `warehouse.network-inventory-planning.events` `TransferAllocationRequested`, ADR 0030) | — | `TransferStockAllocated` or `TransferStockAllocationRejected` (integration topic, through the outbox) |
 | 15 | `StageTransferReceipt` | `POST /transfers/{transferLineId}/receipt` | — | `TransferReceiptStaged` for a recognized `ALLOCATED` line (ADR 0033); a quarantine publishes nothing |
 | 16 | `StowTransferStock` | `POST /transfers/{transferLineId}/stowages` | — | `TransferStockStowed` — the only event that raises destination usable (ADR 0033) |
@@ -57,7 +57,9 @@ why the endpoint answers `202 Accepted` and not `201 Created`: there is no
 addressable resource to point a `Location` header at. The addressable resource
 — a `StockUnit` — is created later, at stow.
 
-**Fails when:** SKU is empty (400), quantity ≤ 0 (422).
+**Fails when:** SKU is empty (400 `empty-sku`), quantity ≤ 0 (422 `zero-quantity`; a
+negative quantity answers `zero-quantity` too, `NewPositiveQuantity` rejects every
+value ≤ 0).
 
 ## 2. StowStock(sku, qty, binId)
 
@@ -110,7 +112,10 @@ the aggregate is constructed *before* the bin is occupied, so an invalid stow
 never mutates bin occupancy. Bin and unit are then saved together, bin first,
 in the same transaction as the two events' outbox rows.
 
-**Fails when:** bin unknown (404), missing scan (400), quantity ≤ 0 (422), bin
+**Fails when:** bin unknown (404), missing scan (400 `empty-sku` / `empty-bin-id`:
+the handler builds the `SKU` and `BinId` value objects first, so the aggregate's
+`stow-requires-item-and-location` is unreachable over REST), quantity ≤ 0 (422
+`zero-quantity`), bin
 full (409), placement or segregation rule violated (409), a concurrent writer
 changed the bin first (409 `concurrent-modification`, ADR 0019).
 
@@ -197,7 +202,7 @@ A single reservation therefore **may span multiple bins** — covered by
 allocation is what makes a later revoke re-satisfiable from a different
 holding.
 
-**Fails when:** quantity ≤ 0 (422), empty `demandRef` (400
+**Fails when:** quantity ≤ 0 (422 `zero-quantity`), empty `demandRef` (400
 `missing-demand-ref`, in the handler), `lineNo` present but outside 1..2147483647 (400
 `invalid-line-no`; the use case entry point is `ExecuteForLine`, `Execute` is the
 same without a line), usable insufficient (409), SKU has no
