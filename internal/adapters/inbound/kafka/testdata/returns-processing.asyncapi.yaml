@@ -454,9 +454,10 @@ components:
         `type` = `com.warehouse.wms.returns-processing.disposition.ReturnLineStaged`;
         subject and key = the dispositionId. `data` is inbound-receiving's
         `ReceiptLineReceived` shape (`receipt_id`, `line_no`, `sku`,
-        `quantity`, `condition`, `received_at`) plus `rma_id`,
-        `disposition_id` and `site_id`; inventory-storage consumes it into its
-        staged-receipt use case and the stow stays an RF action there. Raised
+        `quantity`, `condition`, `received_at`) plus `rma_id` (null for an
+        UNEXPECTED line), `disposition_id` and `site_id`; inventory-storage
+        consumes it into its staged-receipt use case and the stow stays an RF
+        action there. Raised
         exactly once per RESTOCK disposition (idempotent on `disposition_id`);
         no other outcome touches any sibling.
       contentType: application/cloudevents+json
@@ -1003,7 +1004,7 @@ components:
                 quantity: { type: integer, minimum: 1 }
                 condition: { type: string, const: "Good", description: inbound-receiving's ReceiptLineReceived carries this field; a staged return line is always Good. }
                 received_at: { type: string, format: date-time, description: When the line arrived on the receipt. }
-                rma_id: { type: string, description: The RMA the line was authorized against. }
+                rma_id: { type: string, nullable: true, description: The RMA the line was authorized against; null when the line is UNEXPECTED (a parcel line with no RMA that was still inspected and restocked). }
                 disposition_id: { type: string, description: The RESTOCK disposition this staging belongs to; the idempotency key downstream. }
                 site_id: { type: string }
 
