@@ -121,7 +121,7 @@ tags:
       contract run, which boots only the OLTP binary.
 
 paths:
-  /healthz:
+  /healthz-canary:
     get:
       operationId: getHealthz
       summary: Liveness probe
