@@ -264,7 +264,9 @@ jobs:
       - name: REST breaking changes (oasdiff over apis/openapi.yaml)
         if: steps.specs.outputs.changed == 'true'
         run: |
-          oasdiff breaking base/apis/openapi.yaml apis/openapi.yaml && rc=0 || rc=$?
+          # --fail-on ERR is load-bearing: oasdiff v1.38.0 PRINTS breaking changes but exits 0
+          # without it, which made this step green on a deleted endpoint.
+          oasdiff breaking --fail-on ERR base/apis/openapi.yaml apis/openapi.yaml && rc=0 || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "::error::Breaking change to apis/openapi.yaml (oasdiff exit $rc). Pinned as a byte-copy by: order-management, network-fulfillment, fulfillment-execution, and this repo's own mcp contract testdata. Make the change additive, or coordinate a versioned migration and refresh every pin."
             exit 1
