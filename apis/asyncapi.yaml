@@ -586,7 +586,7 @@ channels:
 
 components:
   messages:
-    StockReceived:
+    StockReceivedCanary:
       name: StockReceived
       title: Stock Received
       summary: Goods were received against a SKU and staged, awaiting stow.
