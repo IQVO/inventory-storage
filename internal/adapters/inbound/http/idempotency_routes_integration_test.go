@@ -38,6 +38,7 @@ import (
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
+	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -58,13 +59,20 @@ type faultyPublisher struct {
 	mu    sync.Mutex
 	fail  error
 	boom  bool
+	// gate, when set, runs on EVERY Publish before the event is written: a test uses
+	// it to hold one request open while a second one races it.
+	gate func()
 }
 
 func (p *faultyPublisher) Publish(ctx context.Context, event shared.DomainEvent) error {
 	p.mu.Lock()
 	fail, boom := p.fail, p.boom
 	p.fail, p.boom = nil, false
+	gate := p.gate
 	p.mu.Unlock()
+	if gate != nil {
+		gate()
+	}
 	if boom {
 		panic("injected panic after the aggregate was written")
 	}
@@ -85,6 +93,13 @@ type routesFixture struct {
 
 func newRoutesFixture(t *testing.T) routesFixture {
 	t.Helper()
+	return newRoutesFixtureAt(t, fixedIdempotencyClock(time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)))
+}
+
+// newRoutesFixtureAt is newRoutesFixture over a caller-owned clock, so a test can let a
+// reservation time out between two requests.
+func newRoutesFixtureAt(t *testing.T, clock ports.Clock) routesFixture {
+	t.Helper()
 	pool := idempotencyDB(t)
 	stockRepo := postgres.NewStockRepo(pool)
 	locationRepo := postgres.NewLocationRepo(pool)
@@ -92,7 +107,6 @@ func newRoutesFixture(t *testing.T) routesFixture {
 	containerRepo := postgres.NewContainerRepo(pool)
 	uow := postgres.NewUnitOfWork(pool)
 	publisher := &faultyPublisher{inner: postgres.NewOutboxPublisher(pool, outboxStubEncoder{})}
-	clock := fixedIdempotencyClock(time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC))
 
 	reserve := &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow}
 	server := &inboundhttp.Server{
@@ -107,7 +121,11 @@ func newRoutesFixture(t *testing.T) routesFixture {
 			Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow,
 		},
 		ListBinContainers: &usecases.ListBinContainers{Containers: containerRepo, Locations: locationRepo},
-		IdempotencyPool:   pool,
+		StageTransferReceipt: &usecases.StageTransferReceipt{
+			Transfers: postgres.NewTransferAllocationRepo(pool), Receipts: postgres.NewTransferReceiptRepo(pool),
+			Exceptions: postgres.NewInventoryExceptionRepo(pool), Events: publisher, Clock: clock, UnitOfWork: uow,
+		},
+		IdempotencyPool: pool,
 	}
 	router := inboundhttp.NewRouter(server, slog.New(slog.NewTextHandler(io.Discard, nil)), "")
 	return routesFixture{router: router, pool: pool, publisher: publisher}
