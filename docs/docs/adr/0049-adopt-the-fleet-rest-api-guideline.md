@@ -17,6 +17,11 @@ sets `Idempotency-Replayed`). Part of the fleet-wide REST cutover: the
 guideline is the *Warehouse REST API Guideline*, kept in warehouse-docs; this
 ADR records how this service applies it.
 
+> **Update 2026-11-19 ([ADR 0053](./0053-idempotency-replay-classes.md)).** "Deterministic answers (2xx and 4xx) are
+> stored and replayed" is narrowed: a 2xx, a FINAL refusal and an OUTCOME refusal are stored; a RETRYABLE refusal
+> (concurrent-modification, a referenced fact not known yet, a state not reached yet, a dependency not ready) is not,
+> and its key is released. A concurrent duplicate of a request that ends RETRYABLE executes the command itself.
+
 ## Context
 
 The 2026-10-30 application portfolio assessment measured, across the fleet, two

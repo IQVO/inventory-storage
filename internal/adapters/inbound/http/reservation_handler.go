@@ -28,7 +28,7 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Cases.set && req.Quantity != 0 {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"quantity-and-cases-exclusive", "quantity and cases are mutually exclusive"}, "send either quantity (eaches) or cases (whole sealed cases), not both", r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemQuantityAndCases, "send either quantity (eaches) or cases (whole sealed cases), not both", r.URL.Path)
 		return
 	}
 
@@ -36,14 +36,14 @@ func (s *Server) handleReserveStock(w http.ResponseWriter, r *http.Request) {
 	// GET /reservations?demandRef= looks up by — an empty one would make
 	// every such reservation unreachable, so reject it like the GET does.
 	if req.DemandRef == "" {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"missing-demand-ref", "demandRef is required"}, "demandRef must not be empty", r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemMissingDemandRef, "demandRef must not be empty", r.URL.Path)
 		return
 	}
 
 	// lineNo is optional (ADR 0036); when given it must be a line number,
 	// i.e. between 1 and 2147483647 (the 32-bit line_no column).
 	if req.LineNo != nil && !reservation.ValidLineNo(*req.LineNo) {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"invalid-line-no", "lineNo must be between 1 and 2147483647"}, "lineNo must be an integer between 1 and 2147483647 when present", r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemInvalidLineNo, "lineNo must be an integer between 1 and 2147483647 when present", r.URL.Path)
 		return
 	}
 
@@ -91,7 +91,7 @@ func (s *Server) handleRevokeReservation(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleGetReservationsByDemandRef(w http.ResponseWriter, r *http.Request) {
 	demandRef := r.URL.Query().Get("demandRef")
 	if demandRef == "" {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"missing-demand-ref", "demandRef query parameter is required"}, "demandRef query parameter must not be empty", r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemMissingDemandRefQuery, "demandRef query parameter must not be empty", r.URL.Path)
 		return
 	}
 	limit, pos, ok := pageParams(w, r, "demandRef")

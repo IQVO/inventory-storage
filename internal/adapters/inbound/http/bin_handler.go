@@ -29,11 +29,11 @@ func (s *Server) handleRegisterBin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Capacity == nil {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"capacity-required", "capacity is required"}, "capacity must be present in the request body", r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemCapacityRequired, "capacity must be present in the request body", r.URL.Path)
 		return
 	}
 	if *req.Capacity > maxBinCapacity {
-		writeProblem(w, http.StatusUnprocessableEntity, problemInfo{"capacity-out-of-range", "Bin capacity is out of range"}, fmt.Sprintf("capacity must not exceed %d", maxBinCapacity), r.URL.Path)
+		writeProblem(w, http.StatusUnprocessableEntity, problemCapacityOutOfRange, fmt.Sprintf("capacity must not exceed %d", maxBinCapacity), r.URL.Path)
 		return
 	}
 	capacity, err := shared.NewQuantity(*req.Capacity)

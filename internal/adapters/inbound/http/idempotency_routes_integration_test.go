@@ -11,11 +11,12 @@
 //   - the previously unkeyed POST /stowages, /reservations/{id}/pick-confirmations
 //     and /bins/{binId}/cycle-counts: fresh key, byte-identical replay with
 //     Idempotency-Replayed: true, key reuse 409, N concurrent requests with one
-//     key give exactly one aggregate change, a 4xx is cached and replayed;
+//     key give exactly one aggregate change, a FINAL 4xx is cached and replayed;
 //   - the key row, the aggregate rows and the outbox rows commit together, and a
 //     5xx (or a panic) rolls ALL of them back, so the retry executes again;
-//   - a use case that fails half-way leaves none of its writes behind even
-//     though the 4xx answer is cached (the savepoint of a joined unit of work).
+//   - a use case that fails half-way leaves none of its writes behind and, when its
+//     refusal is RETRYABLE, its key is released (the savepoint of a joined unit of work;
+//     the replay classes themselves: idempotency_replay_classes_integration_test.go).
 package http_test
 
 import (
@@ -38,6 +39,7 @@ import (
 	inboundhttp "github.com/claudioed/inventory-storage/internal/adapters/inbound/http"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/kafka"
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/postgres"
+	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/application/usecases"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -58,13 +60,20 @@ type faultyPublisher struct {
 	mu    sync.Mutex
 	fail  error
 	boom  bool
+	// gate, when set, runs on EVERY Publish before the event is written: a test uses
+	// it to hold one request open while a second one races it.
+	gate func()
 }
 
 func (p *faultyPublisher) Publish(ctx context.Context, event shared.DomainEvent) error {
 	p.mu.Lock()
 	fail, boom := p.fail, p.boom
 	p.fail, p.boom = nil, false
+	gate := p.gate
 	p.mu.Unlock()
+	if gate != nil {
+		gate()
+	}
 	if boom {
 		panic("injected panic after the aggregate was written")
 	}
@@ -85,6 +94,13 @@ type routesFixture struct {
 
 func newRoutesFixture(t *testing.T) routesFixture {
 	t.Helper()
+	return newRoutesFixtureAt(t, fixedIdempotencyClock(time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)))
+}
+
+// newRoutesFixtureAt is newRoutesFixture over a caller-owned clock, so a test can let a
+// reservation time out between two requests.
+func newRoutesFixtureAt(t *testing.T, clock ports.Clock) routesFixture {
+	t.Helper()
 	pool := idempotencyDB(t)
 	stockRepo := postgres.NewStockRepo(pool)
 	locationRepo := postgres.NewLocationRepo(pool)
@@ -92,7 +108,6 @@ func newRoutesFixture(t *testing.T) routesFixture {
 	containerRepo := postgres.NewContainerRepo(pool)
 	uow := postgres.NewUnitOfWork(pool)
 	publisher := &faultyPublisher{inner: postgres.NewOutboxPublisher(pool, outboxStubEncoder{})}
-	clock := fixedIdempotencyClock(time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC))
 
 	reserve := &usecases.ReserveStock{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow}
 	server := &inboundhttp.Server{
@@ -107,7 +122,11 @@ func newRoutesFixture(t *testing.T) routesFixture {
 			Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, UnitOfWork: uow,
 		},
 		ListBinContainers: &usecases.ListBinContainers{Containers: containerRepo, Locations: locationRepo},
-		IdempotencyPool:   pool,
+		StageTransferReceipt: &usecases.StageTransferReceipt{
+			Transfers: postgres.NewTransferAllocationRepo(pool), Receipts: postgres.NewTransferReceiptRepo(pool),
+			Exceptions: postgres.NewInventoryExceptionRepo(pool), Events: publisher, Clock: clock, UnitOfWork: uow,
+		},
+		IdempotencyPool: pool,
 	}
 	router := inboundhttp.NewRouter(server, slog.New(slog.NewTextHandler(io.Discard, nil)), "")
 	return routesFixture{router: router, pool: pool, publisher: publisher}
@@ -340,19 +359,19 @@ func TestIdempotency_Stow_Concurrent_ExactlyOneStockUnit(t *testing.T) {
 	}
 }
 
-func TestIdempotency_Stow_4xxIsCachedAndReplayed(t *testing.T) {
+// A FINAL refusal (malformed body: a function of the request alone) is stored and replayed.
+func TestIdempotency_Stow_FinalRefusalIsCachedAndReplayed(t *testing.T) {
 	fx := newRoutesFixture(t)
 
-	body := `{"sku":"SKU-STOW-1","quantity":4,"binId":"NO-SUCH-BIN"}`
-	first := fx.post("/stowages", "stow-404", body)
-	if first.Code != http.StatusNotFound {
-		t.Fatalf("first = %d %s, want 404 bin-not-found", first.Code, first.Body.String())
+	first := fx.post("/stowages", "stow-400", `{"sku":`)
+	if first.Code != http.StatusBadRequest {
+		t.Fatalf("first = %d %s, want 400 malformed-request-body", first.Code, first.Body.String())
 	}
 	var stored int
-	if err := fx.pool.QueryRow(context.Background(), `SELECT status_code FROM idempotency_keys WHERE key = 'stow-404'`).Scan(&stored); err != nil || stored != 404 {
-		t.Fatalf("stored status = %d (%v), want the cached 404", stored, err)
+	if err := fx.pool.QueryRow(context.Background(), `SELECT status_code FROM idempotency_keys WHERE key = 'stow-400'`).Scan(&stored); err != nil || stored != 400 {
+		t.Fatalf("stored status = %d (%v), want the cached 400", stored, err)
 	}
-	assertReplay(t, first, fx.post("/stowages", "stow-404", body))
+	assertReplay(t, first, fx.post("/stowages", "stow-400", `{"sku":`))
 }
 
 func TestIdempotency_5xxIsNotStoredAndTheRetryExecutes(t *testing.T) {
@@ -397,10 +416,10 @@ func TestIdempotency_5xxIsNotStoredAndTheRetryExecutes(t *testing.T) {
 	}
 }
 
-// A use case that fails half-way (the aggregate is written, the event is not)
-// must leave none of its writes behind even though the 4xx answer is cached:
-// the joined unit of work runs in a savepoint of the middleware's transaction.
-func TestIdempotency_FailedUseCaseLeavesNoPartialWrites(t *testing.T) {
+// A use case that fails half-way (the aggregate is written, the event is not) must leave none of
+// its writes behind, and a RETRYABLE answer (concurrent-modification) must release the key: the
+// retry under the same key executes the stow, once.
+func TestIdempotency_FailedUseCaseLeavesNoPartialWritesAndItsKeyIsReleased(t *testing.T) {
 	fx := newRoutesFixture(t)
 	fx.seedBin(t, "STOW-BIN-1", 100)
 
@@ -418,10 +437,15 @@ func TestIdempotency_FailedUseCaseLeavesNoPartialWrites(t *testing.T) {
 	if n := fx.outboxRows(t); n != 0 {
 		t.Fatalf("outbox rows = %d, want 0", n)
 	}
-	// The deterministic answer is cached: the same key replays the 409, nothing is retried.
-	assertReplay(t, first, fx.post("/stowages", "stow-partial", stowBody))
-	if n := fx.count(t, `SELECT count(*) FROM stock_units`); n != 0 {
-		t.Fatalf("stock_units after the replay = %d, want 0", n)
+	if n := fx.keyRows(t, "stow-partial"); n != 0 {
+		t.Fatalf("key rows = %d, want 0: a RETRYABLE refusal is not stored", n)
+	}
+	retry := fx.post("/stowages", "stow-partial", stowBody)
+	if retry.Code != http.StatusCreated || retry.Header().Get(inboundhttp.IdempotencyReplayedHeader) != "" {
+		t.Fatalf("retry = %d %s, want a fresh 201", retry.Code, retry.Body.String())
+	}
+	if n := fx.count(t, `SELECT count(*) FROM stock_units`); n != 1 {
+		t.Fatalf("stock_units after the retry = %d, want 1", n)
 	}
 }
 
