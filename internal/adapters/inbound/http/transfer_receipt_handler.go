@@ -26,7 +26,7 @@ func (s *Server) handleStageTransferReceipt(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if req.TransferID == "" {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"transfer-id-required", "transferId is required"}, "transferId must not be empty", r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemTransferIDRequired, "transferId must not be empty", r.URL.Path)
 		return
 	}
 
@@ -44,7 +44,7 @@ func (s *Server) handleStageTransferReceipt(w http.ResponseWriter, r *http.Reque
 	// endpoint (unlike the service-wide 422 zero-quantity), so it is checked
 	// here, before the shared constructor would map it to 422.
 	if req.ReceivedQuantity <= 0 {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"quantity-not-positive", "quantity must be positive"}, "receivedQuantity must be greater than zero", r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemQuantityNotPositive, "receivedQuantity must be greater than zero", r.URL.Path)
 		return
 	}
 	receivedQty, err := shared.NewPositiveQuantity(req.ReceivedQuantity)
@@ -92,7 +92,7 @@ func (s *Server) handleStowTransferStock(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if len(req.Bins) == 0 {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"bins-required", "bins is required"}, "bins must contain at least one placement", r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemBinsRequired, "bins must contain at least one placement", r.URL.Path)
 		return
 	}
 
@@ -105,7 +105,7 @@ func (s *Server) handleStowTransferStock(w http.ResponseWriter, r *http.Request)
 		}
 		// Documented as 400 for this endpoint; see handleStageTransferReceipt.
 		if b.Quantity <= 0 {
-			writeProblem(w, http.StatusBadRequest, problemInfo{"quantity-not-positive", "quantity must be positive"}, "each bin quantity must be greater than zero", r.URL.Path)
+			writeProblem(w, http.StatusBadRequest, problemQuantityNotPositive, "each bin quantity must be greater than zero", r.URL.Path)
 			return
 		}
 		qty, err := shared.NewPositiveQuantity(b.Quantity)
@@ -185,11 +185,13 @@ type exceptionBody struct {
 // explicit problem + exception coordinates, so an operator can find the
 // quarantine row without guessing.
 func writeQuarantineProblem(w http.ResponseWriter, r *http.Request, problem error, exc *transfer.Exception) {
+	// The scan is recorded as an inventory exception (committed with the answer): an OUTCOME.
+	markReplayClass(w, problemTransferScanQuarantined.class)
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(http.StatusUnprocessableEntity)
 	_ = json.NewEncoder(w).Encode(quarantinedScanProblem{
-		Type:     problemBaseURI + "transfer-scan-quarantined",
-		Title:    "Destination scan quarantined",
+		Type:     problemBaseURI + problemTransferScanQuarantined.slug,
+		Title:    problemTransferScanQuarantined.title,
 		Status:   http.StatusUnprocessableEntity,
 		Detail:   problem.Error(),
 		Instance: r.URL.Path,

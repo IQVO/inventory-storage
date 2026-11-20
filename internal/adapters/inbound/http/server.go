@@ -117,7 +117,7 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	// An unmatched path (for example a container lpn outside [A-Za-z0-9._-])
 	// answers RFC 7807 like every other error, not chi's text/plain 404.
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
-		writeProblem(w, http.StatusNotFound, problemInfo{"route-not-found", "No such resource"}, "no route matches "+req.Method+" "+req.URL.Path, req.URL.Path)
+		writeProblem(w, http.StatusNotFound, problemRouteNotFound, "no route matches "+req.Method+" "+req.URL.Path, req.URL.Path)
 	})
 	metricCfg := otelchimetric.NewBaseConfig(serviceName)
 

@@ -15,12 +15,6 @@ import (
 
 // --- held stock and disposition (ADR 0052) -------------------------------------
 
-// The 400 problems of the held-stock filters.
-var (
-	problemInvalidHoldReasonFilter = problemInfo{"invalid-hold-reason", "reason must be DAMAGED, QC_PENDING, SUSPECT or OTHER"}
-	problemInvalidOlderThanHours   = problemInfo{"invalid-older-than-hours", "olderThanHours must be a non-negative integer"}
-)
-
 type dispositionRequest struct {
 	Disposition string `json:"disposition"`
 	// Reason is the new hold reason of a REWORK; absent means OTHER.

@@ -19,7 +19,7 @@ const statusKey = "status"
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
 	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
-		writeProblem(w, http.StatusBadRequest, problemInfo{slugMalformedRequestBody, "The request body is not valid JSON"}, err.Error(), r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemMalformedJSON, err.Error(), r.URL.Path)
 		return false
 	}
 	return true
@@ -33,6 +33,8 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func writeProblem(w http.ResponseWriter, status int, info problemInfo, detail, instance string) {
+	// The idempotency middleware reads the class of the problem answered from its capture.
+	markReplayClass(w, info.class)
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(problemDetails{

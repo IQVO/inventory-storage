@@ -25,12 +25,12 @@ import (
 func rejectNUL(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.ContainsRune(r.URL.Path, 0) || strings.ContainsRune(r.URL.RawPath, 0) || strings.Contains(r.URL.RawPath, "%00") {
-			writeProblem(w, http.StatusNotFound, problemInfo{slug: "not-found", title: "Resource not found"},
+			writeProblem(w, http.StatusNotFound, problemNotFound,
 				"no resource matches the requested path", r.URL.Path)
 			return
 		}
 		if strings.ContainsRune(r.URL.RawQuery, 0) || strings.Contains(r.URL.RawQuery, "%00") {
-			writeProblem(w, http.StatusBadRequest, problemInfo{slug: slugMalformedRequestBody, title: "Malformed request body"},
+			writeProblem(w, http.StatusBadRequest, problemMalformedQuery,
 				"a NUL character (U+0000) is not allowed in a query parameter", r.URL.Path)
 			return
 		}
@@ -38,12 +38,12 @@ func rejectNUL(next http.Handler) http.Handler {
 			body, err := io.ReadAll(r.Body)
 			_ = r.Body.Close()
 			if err != nil {
-				writeProblem(w, http.StatusBadRequest, problemInfo{slug: slugMalformedRequestBody, title: "The request body could not be read"},
+				writeProblem(w, http.StatusBadRequest, problemBodyUnreadable,
 					err.Error(), r.URL.Path)
 				return
 			}
 			if containsNUL(body) {
-				writeProblem(w, http.StatusBadRequest, problemInfo{slug: slugMalformedRequestBody, title: "The request body contains a NUL character"},
+				writeProblem(w, http.StatusBadRequest, problemBodyHasNUL,
 					"a NUL character (U+0000) is not allowed in a request body", r.URL.Path)
 				return
 			}
