@@ -221,7 +221,13 @@ missing header is a 400 `idempotency-key-required`, a key reused with a
 different method, path or body is a 409 `idempotency-key-reused`, and a
 retried identical request returns the exact same stored response plus
 `Idempotency-Replayed: true` without re-executing the handler — a client-side
-retry after a dropped response can never apply a write twice. The middleware
+retry after a dropped response can never apply a write twice. Only an answer
+that is final for the request is stored (a 2xx, a validation refusal, a refusal
+that committed state); a refusal that depends on state that can change
+(`concurrent-modification`, `bin-not-found`, `insufficient-usable`,
+`receipt-not-staged`, ...) and every 5xx is NOT stored: retry with the same
+key and the request executes again. The class of every problem type is in
+[ADR-0053](docs/docs/adr/0053-idempotency-replay-classes.md). The middleware
 is backed by Postgres (`idempotency_keys`) in every deployment: there is no
 mode in which a `POST` is unprotected.
 
@@ -270,7 +276,8 @@ curl -s -i -X POST localhost:8080/reservations \
 #    optional (1..2147483647; omitted from the response when unknown) — ADR-0036.
 # A retry with the SAME Idempotency-Key + body returns this exact response
 # again (plus `Idempotency-Replayed: true`) without creating a second
-# reservation (ADR-0018); omitting the header entirely on any POST is a 400,
+# reservation (ADR-0018); a refusal that depends on stock, such as 409
+# insufficient-usable, is not stored, so the same key executes again (ADR-0053); omitting the header entirely on any POST is a 400,
 # and reusing the key for a different request is a 409 idempotency-key-reused.
 
 curl -s 'localhost:8080/reservations?demandRef=order-42&limit=100'

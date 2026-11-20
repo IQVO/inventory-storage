@@ -42,6 +42,18 @@ reservations across its lifetime — a revoke followed by a retry), never
 404s on an unknown demandRef (200 + empty array instead), and is
 side-effect-free.
 
+## Idempotency replay classes (ADR-0053)
+
+Every problem type is declared with a replay class on its catalogue entry
+(`problemInfo.class`: `problemCatalog` in `errors.go`, `register` in
+`problems.go`). `FINAL` (a function of the request alone) and `OUTCOME` (the
+command committed state, then refused) are stored under the `Idempotency-Key`
+and replayed; `RETRYABLE` (state that can change, a dependency not ready) is
+not stored: the request rolls back, key row included, and a retry executes. A
+new problem type without a class fails `TestEveryProblemTypeDeclaresAReplayClass`,
+and its row must be added to the table in ADR-0053 (`TestTheADRClassTableMatchesTheCatalogue`).
+Never write a `problemInfo{...}` literal at a call site.
+
 ## CORS
 
 `go-chi/cors` middleware is enabled on every route, allowing
