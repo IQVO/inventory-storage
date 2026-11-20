@@ -59,7 +59,9 @@ func validIdempotencyKey(key string) bool {
 //     with the same fingerprint replays the stored answer (status, body and
 //     headers, plus Idempotency-Replayed: true), the same key with a different
 //     fingerprint is 409 idempotency-key-reused;
-//   - 2xx and 4xx answers are stored; a 5xx or a panic rolls the whole
+//   - a 2xx is stored; a refusal is stored only when its problem type declares
+//     FINAL or OUTCOME (ADR 0053, replay_class.go); a refusal declared
+//     RETRYABLE (or declaring no class), a 5xx or a panic rolls the whole
 //     transaction back, key row included, so the retry re-executes.
 //
 // # The core correctness argument: a committed row's status_code is NEVER NULL
@@ -309,9 +311,11 @@ func runFreshRequest(w http.ResponseWriter, r *http.Request, ctx context.Context
 			writeProblem(w, http.StatusInternalServerError, problemInternalError, err.Error(), r.URL.Path)
 			return
 		}
-		if rec.Code < http.StatusBadRequest {
+		if rec.success() || rec.class == classOutcome {
 			// A success answer whose writes cannot be committed must neither
-			// be returned nor cached: fail the request so the key retries.
+			// be returned nor cached, and neither must an OUTCOME refusal,
+			// whose whole point is that its writes commit with it: fail the
+			// request so the key retries.
 			_ = tx.Rollback(ctx)
 			writeProblem(w, http.StatusInternalServerError, problemInternalError, err.Error(), r.URL.Path)
 			return
