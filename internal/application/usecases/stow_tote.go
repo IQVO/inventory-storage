@@ -85,18 +85,35 @@ func (uc *StowTote) stow(ctx context.Context, lpn string, binID shared.BinId) (*
 	return t, uc.announce(ctx, t, units, fromID)
 }
 
-// movable refuses a tote holding reserved stock and applies the placement
-// rules of every SKU at the destination.
+// movable refuses a tote holding reserved stock or a held or unlocated unit
+// and applies the placement rules of every SKU at the destination.
 func (uc *StowTote) movable(ctx context.Context, units []*stock.StockUnit, to shared.BinId) error {
 	for _, u := range units {
 		if u.Reserved().Int() > 0 {
 			return container.ErrToteReserved
+		}
+		if err := unitUnavailable(u); err != nil {
+			return err
 		}
 		if err := uc.Placement.placeable(ctx, u.SKU(), to); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// carry (Task 6 review): unitUnavailable is the refusal StockUnit.MoveTo
+// raises for a held or unlocated unit, checked in movable before any write,
+// so a refused stow writes no bin even where no unit of work is wired.
+func unitUnavailable(u *stock.StockUnit) error {
+	switch u.State() {
+	case stock.StateHeld:
+		return stock.ErrUnitHeld
+	case stock.StateUnlocated:
+		return stock.ErrUnitUnlocated
+	default:
+		return nil
+	}
 }
 
 // move transfers the contents' occupancy and moves every unit to to.
