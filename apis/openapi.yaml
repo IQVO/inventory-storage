@@ -2382,6 +2382,18 @@ paths:
                 status: 409
                 detail: license plate is already registered
                 instance: /totes/003400000000000017
+        "400":
+          description: The lpn is longer than 64 characters (invalid-lpn).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.inventory-storage.warehouse-systems.dev/invalid-lpn
+                title: lpn must be 1 to 64 characters of [A-Za-z0-9._-]
+                status: 400
+                detail: 'lpn must be 1 to 64 characters of [A-Za-z0-9._-]: "00000000000000000000000000000000000000000000000000000000000000000"'
+                instance: /totes/00000000000000000000000000000000000000000000000000000000000000000
         "404":
           description: >-
             No route matches: the lpn holds a character outside

@@ -129,6 +129,7 @@ question so that no problem type is unclassified. One problem type has one class
 | `invalid-hold-reason` | 422 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
 | `invalid-limit` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
 | `invalid-line-no` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
+| `invalid-lpn` | 400 | FINAL | `PUT /totes/{lpn}` with a license plate longer than 64 characters (`container.NewTote`, ADR 0054): the path alone. |
 | `invalid-older-than-hours` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
 | `invalid-owner-ref` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
 | `invalid-relocation-reason` | 422 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
