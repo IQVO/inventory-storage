@@ -10,6 +10,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/domain/container"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/relocation"
+	"github.com/claudioed/inventory-storage/internal/domain/transfer"
 )
 
 func (w *tw) guardedBins(t *testing.T) {
@@ -87,3 +88,28 @@ func TestASealedCaseMayBeStowedIntoAutomatedStorage(t *testing.T) {
 }
 
 func memoryRelocations() *memory.RelocationRepo { return memory.NewRelocationRepo() }
+
+// carry (Task 7 review): a transfer stow into an AutomatedStorage bin is
+// refused before any write; the receipt stays STAGED and no event is raised.
+func TestTransferStowIntoAutomatedStorageIsRefused(t *testing.T) {
+	e := newReceiptEnv()
+	types := memory.NewBinLocationTypes()
+	types.Set(asrs, location.TypeAutomatedStorage)
+	seedAllocatedLine(t, e, "tr-1", "tl-1", "SITE-ORIG", "SKU-T", 5)
+	seedDestBin(t, e, asrs, "WH1", 100000)
+	if _, err := e.stageUseCase().Execute(context.Background(), receiptCmd("tr-1", "tl-1", "WH1", "SKU-T", 5)); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	before := len(e.Events.Events())
+	uc := e.stowUseCase()
+	uc.LocationTypes = types
+	_, err := uc.Execute(context.Background(), "tl-1", []usecases.StowBin{{BinID: asrs, Quantity: 5}})
+	if !errors.Is(err, usecases.ErrAutomatedStorageRequiresContainer) {
+		t.Fatalf("err = %v, want ErrAutomatedStorageRequiresContainer", err)
+	}
+	r, _ := e.Receipts.FindByTransferLineID(context.Background(), "tl-1")
+	units, _ := e.Stock.FindBySKU(context.Background(), "SKU-T")
+	if r == nil || r.State() != transfer.ReceiptStaged || len(units) != 0 || len(e.Events.Events()) != before {
+		t.Fatalf("a refused transfer stow wrote something: receipt %+v, units %d, events %d -> %d", r, len(units), before, len(e.Events.Events()))
+	}
+}
