@@ -183,7 +183,7 @@ func TestRehydrateReservation(t *testing.T) {
 }
 
 func TestRehydrateAllocation(t *testing.T) {
-	alloc, err := rehydrateAllocation("res-1", "su-1", 2, "")
+	alloc, err := rehydrateAllocation("res-1", "su-1", 2, "", "")
 	if err != nil {
 		t.Fatalf("a legacy allocation with no bin id must still hydrate: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestRehydrateAllocation(t *testing.T) {
 		t.Fatalf("unexpected allocation: %+v", alloc)
 	}
 
-	_, err = rehydrateAllocation("res-1", "su-1", -5, "BIN-1")
+	_, err = rehydrateAllocation("res-1", "su-1", -5, "BIN-1", "")
 	if err == nil {
 		t.Fatal("expected an error for a negative allocation quantity")
 	}

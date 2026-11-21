@@ -61,12 +61,13 @@ func (r *ReservationRepo) Save(ctx context.Context, res *reservation.Reservation
 
 	for _, alloc := range res.Allocations() {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO reservation_allocations (reservation_id, stock_unit_id, quantity, bin_id)
-			VALUES ($1, $2, $3, NULLIF($4, ''))
+			INSERT INTO reservation_allocations (reservation_id, stock_unit_id, quantity, bin_id, container_lpn)
+			VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''))
 			ON CONFLICT (reservation_id, stock_unit_id) DO UPDATE SET
 				quantity = EXCLUDED.quantity,
-				bin_id = COALESCE(EXCLUDED.bin_id, reservation_allocations.bin_id)
-		`, res.ID(), alloc.StockUnitID, alloc.Quantity.Int(), alloc.BinID.String())
+				bin_id = COALESCE(EXCLUDED.bin_id, reservation_allocations.bin_id),
+				container_lpn = COALESCE(EXCLUDED.container_lpn, reservation_allocations.container_lpn)
+		`, res.ID(), alloc.StockUnitID, alloc.Quantity.Int(), alloc.BinID.String(), alloc.ContainerLPN)
 		if err != nil {
 			return err
 		}
@@ -209,7 +210,7 @@ func (r *ReservationRepo) queryByDemandRef(ctx context.Context, demandRef, query
 // Ordered by stock_unit_id so callers see a stable order.
 func loadAllocations(ctx context.Context, q querier, reservationID string) ([]reservation.Allocation, error) {
 	rows, err := q.Query(ctx, `
-		SELECT stock_unit_id, quantity, COALESCE(bin_id, '')
+		SELECT stock_unit_id, quantity, COALESCE(bin_id, ''), COALESCE(container_lpn, '')
 		FROM reservation_allocations WHERE reservation_id = $1
 		ORDER BY stock_unit_id
 	`, reservationID)
@@ -220,12 +221,12 @@ func loadAllocations(ctx context.Context, q querier, reservationID string) ([]re
 
 	var allocations []reservation.Allocation
 	for rows.Next() {
-		var stockUnitID, binID string
+		var stockUnitID, binID, containerLPN string
 		var allocQty int
-		if err := rows.Scan(&stockUnitID, &allocQty, &binID); err != nil {
+		if err := rows.Scan(&stockUnitID, &allocQty, &binID, &containerLPN); err != nil {
 			return nil, err
 		}
-		alloc, err := rehydrateAllocation(reservationID, stockUnitID, allocQty, binID)
+		alloc, err := rehydrateAllocation(reservationID, stockUnitID, allocQty, binID, containerLPN)
 		if err != nil {
 			return nil, err
 		}
@@ -241,10 +242,10 @@ func loadAllocations(ctx context.Context, q querier, reservationID string) ([]re
 // unvalidated conversion on purpose: it is nullable for legacy rows the 0008
 // backfill could not resolve, which hydrate with an empty BinID (see
 // loadAllocations). The quantity, though, must be a valid Quantity.
-func rehydrateAllocation(reservationID, stockUnitID string, quantity int, binID string) (reservation.Allocation, error) {
+func rehydrateAllocation(reservationID, stockUnitID string, quantity int, binID, containerLPN string) (reservation.Allocation, error) {
 	qty, err := rehydrateQuantity("allocation quantity", quantity)
 	if err != nil {
 		return reservation.Allocation{}, fmt.Errorf("reservation %q allocation on stock unit %q: %w", reservationID, stockUnitID, err)
 	}
-	return reservation.Allocation{StockUnitID: stockUnitID, BinID: shared.BinId(binID), Quantity: qty}, nil
+	return reservation.Allocation{StockUnitID: stockUnitID, BinID: shared.BinId(binID), Quantity: qty, ContainerLPN: containerLPN}, nil
 }
