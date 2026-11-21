@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/kafka/cloudevents"
+	"github.com/claudioed/inventory-storage/internal/application/ports"
 	"github.com/claudioed/inventory-storage/internal/domain/container"
 	"github.com/claudioed/inventory-storage/internal/domain/product"
 	"github.com/claudioed/inventory-storage/internal/domain/shared"
@@ -173,3 +174,7 @@ func (c *Consumer) LocationType(_ context.Context, bin shared.BinId) (string, er
 	defer c.mu.RUnlock()
 	return c.locationTypes[bin.String()], nil
 }
+
+// carry (Task 9 review): the compiler pins the port the wiring hands this
+// consumer to (cmd/inventory lookup.go, locationTypes: consumer).
+var _ ports.BinLocationTypeLookup = (*Consumer)(nil)
