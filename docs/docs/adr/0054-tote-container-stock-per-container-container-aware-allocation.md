@@ -99,6 +99,56 @@ from at a goods-to-person station and returned, many times.
     as `LPN_REGISTERED_AT_ANOTHER_RECEIPT_LINE` (never merged), exactly like a
     duplicate SSCC (ADR 0046).
 
+## Amendment (2026-11-21): what the build settled
+
+Recorded after the WCS plan 05a reviews; each point states behaviour the code on
+`develop` has and names the test that pins it.
+
+1. **`PUT /totes/{lpn}` stays idempotent under concurrency.** Two registrations of
+   the same new LPN can both read "no tote" and race on the `license_plates` primary
+   key. The loser's claim waits for the winner's transaction, then finds the plate
+   held by a TOTE and the tote row present: it re-reads and answers the winner's tote
+   with `created=false` (200). Exactly one `ToteRegistered` is raised.
+   `409 license-plate-taken` (FINAL, ADR 0053) is answered only when the plate is
+   held by a sealed case. Tests: `TestConcurrentRegisterToteOfOneNewLPNAnswersTheExistingTote`,
+   `TestRegisterToteLosingThePlateToASealedCaseIsLicensePlateTaken` (use case) and
+   `TestConcurrentRegisterToteOverPostgresAnswersTheExistingTote` (Postgres, one unit
+   of work per racer).
+2. **Rejection reason reuse (decision 10).** A carton whose LPN is a tote is rejected
+   with the existing reason `LPN_REGISTERED_AT_ANOTHER_RECEIPT_LINE`. No new reason
+   value is added, so no consumer of the rejection sees an unknown value. Read the
+   reason as "this LPN already names another container"; the name dates from ADR 0046,
+   when the only other holder was a receipt line.
+3. **One plate, one owner, in one transaction.** `ToteRepo.Add` and `ContainerRepo.Add`
+   claim the plate in `license_plates` and insert their row in the same transaction:
+   the use case's unit of work when one is active, otherwise a transaction of their
+   own (`claimAndInsert`). A failed insert leaves no plate claimed. Tests:
+   `TestToteAddClaimRollsBackWithAFailedInsert`, `TestCaseAddClaimRollsBackWithAFailedInsert`,
+   `TestLicensePlateClaimRollsBackWithTheUnitOfWork`, `TestOneLicensePlateNamespaceAcrossCasesAndTotes`.
+   The reads that come before the claim (`RegisterTote` looking for a sealed case, the
+   carton linker looking for a tote) are only checks: the claim decides. When a carton
+   loses the claim to a tote registered between the linker's read and its insert, the
+   pending link is dropped without the rejection of decision 10, as when a redelivered
+   case loses (ADR 0046). No plate gets two owners; only the rejection record is missing.
+4. **Rollout window of migration 0042.** The migration backfills a CASE plate for every
+   existing `containers` row. During a rolling deploy a pod still running pre-0042 code
+   can register a sealed case after the backfill, and that case gets no plate.
+   A later `PUT /totes/{lpn}` of that LPN is still refused, because `RegisterTote`
+   reads `containers` in the same unit of work. Only a tote registered at the same
+   moment as such a case can take its LPN. There is no code defence: one more
+   `containers` read inside `ToteRepo.Add` would be the same check-then-act read,
+   because pre-0042 code takes no lock on `license_plates`. Once the last pre-0042 pod
+   is gone, close the window by re-running the backfill
+   (`INSERT INTO license_plates (lpn, kind) SELECT lpn, 'CASE' FROM containers ON CONFLICT (lpn) DO NOTHING`)
+   and check that `SELECT lpn FROM containers JOIN totes USING (lpn)` returns no row.
+5. **`StowTote` refusal precedence.** Every refusal is checked before the same-bin
+   no-op and before any write, unit by unit: `tote-reserved` when the unit is
+   reserved, `unit-held` or `unit-unlocated`, then the placement rules of its SKU at
+   the destination. So stowing a tote into the bin it is already in answers 409 when
+   one of its units is reserved, held or unlocated, instead of the no-op of
+   decision 5. A held unit going into a full destination answers `unit-held`, not
+   `bin-full`. The route is new in this ADR, so no existing caller changes behaviour.
+
 ## Not in this change
 
 - Moving a container from `TaskCompleted`. The WCS putaway ends with
