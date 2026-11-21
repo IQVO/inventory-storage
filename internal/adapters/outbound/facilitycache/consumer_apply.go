@@ -38,6 +38,7 @@ func (c *Consumer) apply(value []byte) error {
 		c.mu.Lock()
 		delete(c.slots, data.LocationCode)
 		delete(c.handlingUnits, data.LocationCode)
+		delete(c.locationTypes, data.LocationCode)
 		c.mu.Unlock()
 	default:
 		// Every other event on this topic (SiteRegistered, AisleRegistered,
@@ -92,6 +93,7 @@ func (c *Consumer) applySlotRegistered(dataAs func(any) error) error {
 	c.mu.Lock()
 	c.slots[data.LocationCode] = zoneID
 	c.setHandlingUnit(data.LocationCode, container.ParseHandlingUnit(data.HandlingUnit))
+	c.setLocationType(data.LocationCode, data.LocationType)
 	c.mu.Unlock()
 	return nil
 }
@@ -149,4 +151,25 @@ func zoneIDFromLocationCode(code string) string {
 		return ""
 	}
 	return strings.Join(parts[:3], "-")
+}
+
+// setLocationType records (or clears) a bin's LocationType. The caller holds
+// c.mu. A registration that carries none clears a stale value.
+func (c *Consumer) setLocationType(code, locationType string) {
+	if locationType == "" {
+		delete(c.locationTypes, code)
+		return
+	}
+	if c.locationTypes == nil {
+		c.locationTypes = make(map[string]string)
+	}
+	c.locationTypes[code] = locationType
+}
+
+// LocationType satisfies ports.BinLocationTypeLookup from the local copy
+// (ADR 0054). It never performs I/O; an unseen bin answers "".
+func (c *Consumer) LocationType(_ context.Context, bin shared.BinId) (string, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.locationTypes[bin.String()], nil
 }

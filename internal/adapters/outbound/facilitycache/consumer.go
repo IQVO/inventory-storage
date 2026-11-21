@@ -113,6 +113,10 @@ type slotData struct {
 	// LocationSlotHandlingUnitDeclared (ADR 0047). Wire name: camelCase,
 	// like every other facility-layout slot field.
 	HandlingUnit string `json:"handlingUnit"`
+	// LocationType is the slot's facility-layout LocationType (required on
+	// LocationSlotRegistered); ADR 0054 reads it to keep loose stock out of an
+	// AutomatedStorage bin.
+	LocationType string `json:"locationType"`
 }
 
 // Reader is the subset of *kafkago.Reader this Consumer needs, so tests
@@ -143,6 +147,9 @@ type Consumer struct {
 	// handlingUnits is the event-fed copy of each bin's handling unit
 	// (locationCode -> unit). A bin absent from it has none recorded.
 	handlingUnits map[string]container.HandlingUnit
+	// locationTypes is the event-fed copy of each bin's LocationType
+	// (locationCode -> type). A bin absent from it has none known.
+	locationTypes map[string]string
 
 	ready   bool
 	readyCh chan struct{}

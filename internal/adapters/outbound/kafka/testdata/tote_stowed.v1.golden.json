@@ -1,0 +1,28 @@
+{
+  "specversion": "1.0",
+  "id": "0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c",
+  "source": "/warehouse/inventory-storage",
+  "type": "com.warehouse.wms.inventory-storage.tote.ToteStowed",
+  "subject": "TOTE-1",
+  "time": "2026-08-21T22:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:inventory-storage:events:ToteStowed:v1",
+  "data": {
+    "lpn": "TOTE-1",
+    "site_id": "WH1",
+    "from_bin": "WH1-RCV-DEC-D01-01-01-A",
+    "bin": "WH1-AUTO-ASRS-ASRS1-00-00-S",
+    "contents": [
+      {
+        "sku": "SKU-1",
+        "qty_eaches": 6,
+        "owner_ref": "seller-a"
+      },
+      {
+        "sku": "SKU-2",
+        "qty_eaches": 4
+      }
+    ],
+    "at": "2026-08-21T22:00:00Z"
+  }
+}

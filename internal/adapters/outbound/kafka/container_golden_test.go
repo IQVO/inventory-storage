@@ -57,6 +57,32 @@ func TestGolden_Container_Events(t *testing.T) {
 	}
 }
 
+func TestGolden_Tote_Events(t *testing.T) {
+	sku := mustSKU(t, "SKU-1")
+	asrs, decant := mustBin(t, "WH1-AUTO-ASRS-ASRS1-00-00-S"), mustBin(t, "WH1-RCV-DEC-D01-01-01-A")
+	cases := []struct {
+		name, file, eventType string
+		event                 shared.DomainEvent
+	}{
+		{"registered", "tote_registered.v1.golden.json", "com.warehouse.wms.inventory-storage.tote.ToteRegistered",
+			shared.NewToteRegistered(goldenAt, "TOTE-1")},
+		{"filled", "tote_filled.v1.golden.json", "com.warehouse.wms.inventory-storage.tote.ToteFilled",
+			shared.NewToteFilled(goldenAt, "TOTE-1", sku, newQty(t, 6), "seller-a", "WH1", decant, "su-9a1e0f3c-2b4d-4c6e-8f00-112233445566")},
+		{"stowed", "tote_stowed.v1.golden.json", "com.warehouse.wms.inventory-storage.tote.ToteStowed",
+			shared.NewToteStowed(goldenAt, "TOTE-1", "WH1", decant, asrs, []shared.ToteLine{
+				{SKU: sku, Quantity: newQty(t, 6), OwnerRef: "seller-a"}, {SKU: mustSKU(t, "SKU-2"), Quantity: newQty(t, 4)}})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			enc := encodeOne(t, containerEncoder(), tc.event)
+			assertGolden(t, enc, "TOTE-1", goldenFile(t, tc.file))
+			if enc.Topic != "warehouse.inventory.events" || enc.EventType != tc.eventType {
+				t.Errorf("topic %q type %q", enc.Topic, enc.EventType)
+			}
+		})
+	}
+}
+
 // A fleet-owned container carries no owner_ref and no empty optional fields.
 func TestGolden_Container_FleetOwnedOmitsOptionalFields(t *testing.T) {
 	ev := shared.NewContainerRegistered(goldenAt, testLPN, mustSKU(t, "SKU-1"), "24006381333935", 12, newQty(t, 12), "", "", "", "R-1", 1)

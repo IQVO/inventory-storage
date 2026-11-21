@@ -1,0 +1,20 @@
+{
+  "specversion": "1.0",
+  "id": "0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c",
+  "source": "/warehouse/inventory-storage",
+  "type": "com.warehouse.wms.inventory-storage.tote.ToteFilled",
+  "subject": "TOTE-1",
+  "time": "2026-08-21T22:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:inventory-storage:events:ToteFilled:v1",
+  "data": {
+    "lpn": "TOTE-1",
+    "sku": "SKU-1",
+    "qty_eaches": 6,
+    "owner_ref": "seller-a",
+    "site_id": "WH1",
+    "bin": "WH1-RCV-DEC-D01-01-01-A",
+    "stock_unit_id": "su-9a1e0f3c-2b4d-4c6e-8f00-112233445566",
+    "at": "2026-08-21T22:00:00Z"
+  }
+}

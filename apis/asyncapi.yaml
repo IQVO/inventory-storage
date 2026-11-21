@@ -176,7 +176,9 @@ channels:
       feed, consumed by exception-management; `ItemStowed` has no consumer
       yet) and the
       container events `ContainerRegistered`, `ContainerStowed`, `CaseBroken`
-      and `ContainerEmptied` (keyed by LPN, ADR 0045/0046) and the held-stock
+      and `ContainerEmptied` (keyed by LPN, ADR 0045/0046), the tote events
+      `ToteRegistered`, `ToteFilled` and `ToteStowed` (keyed by LPN, ADR 0054)
+      and the held-stock
       events `StockHeld`, `StockReleased` and `StockDispositioned` (keyed by
       held unit id, ADR 0052). The legacy
       `ProductClassified` was retired at product-master ADR 0003 stage E
@@ -214,6 +216,9 @@ channels:
           - $ref: "#/components/messages/ContainerStowed"
           - $ref: "#/components/messages/CaseBroken"
           - $ref: "#/components/messages/ContainerEmptied"
+          - $ref: "#/components/messages/ToteRegistered"
+          - $ref: "#/components/messages/ToteFilled"
+          - $ref: "#/components/messages/ToteStowed"
           - $ref: "#/components/messages/StockHeld"
           - $ref: "#/components/messages/StockReleased"
           - $ref: "#/components/messages/StockDispositioned"
@@ -721,6 +726,7 @@ components:
         `source=/warehouse/facility-layout`, subject and Kafka key = the locationCode.
         Only the fields the facility cache relies on are listed; the producer's
         own AsyncAPI is authoritative and unknown fields are ignored.
+        `locationType` is read (ADR 0054): a bin of type `AutomatedStorage` takes container stock only.
       contentType: application/cloudevents+json
       tags:
         - name: facility-layout
@@ -976,6 +982,105 @@ components:
               site_id: WH1
               reason: BROKEN
               at: "2026-10-24T12:10:00Z"
+    ToteRegistered:
+      x-no-consumer-reason: "pending: tote fact (ADR 0054); no consumer declared in any fleet spec yet"
+      name: ToteRegistered
+      title: Tote Registered
+      summary: A reusable tote was registered, empty and in no bin.
+      description: >-
+        A reusable tote with this license plate exists, empty and in no bin (ADR 0054). Raised once by `PUT /totes/{lpn}`. The LPN shares one namespace with sealed cases. Kafka key and `subject` are the LPN.
+      contentType: application/cloudevents+json
+      tags:
+        - name: tote
+          description: Raised by the Tote aggregate (ADR 0054).
+      payload:
+        $ref: "#/components/schemas/ToteRegisteredEvent"
+      examples:
+        - name: registered
+          summary: Tote TOTE-1 was commissioned.
+          payload:
+            specversion: "1.0"
+            id: 0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.tote.ToteRegistered
+            subject: TOTE-1
+            time: "2026-08-21T22:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:ToteRegistered:v1
+            data:
+              lpn: "TOTE-1"
+              at: "2026-08-21T22:00:00Z"
+    ToteFilled:
+      x-no-consumer-reason: "pending: tote fact (ADR 0054); no consumer declared in any fleet spec yet"
+      name: ToteFilled
+      title: Tote Filled
+      summary: Loose eaches were stowed into a tote at its current bin.
+      description: >-
+        Loose eaches were stowed into a tote at its current bin (`POST /totes/{lpn}/fills`, ADR 0054). `ItemStowed`, `LocationRecorded` and `BinStockLevelChanged` accompany it as for any stow; it books no extra quantity.
+      contentType: application/cloudevents+json
+      tags:
+        - name: tote
+          description: Raised by the Tote aggregate (ADR 0054).
+      payload:
+        $ref: "#/components/schemas/ToteFilledEvent"
+      examples:
+        - name: filled
+          summary: 6 eaches of SKU-1 were decanted into TOTE-1.
+          payload:
+            specversion: "1.0"
+            id: 0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.tote.ToteFilled
+            subject: TOTE-1
+            time: "2026-08-21T22:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:ToteFilled:v1
+            data:
+              lpn: "TOTE-1"
+              sku: "SKU-1"
+              qty_eaches: 6
+              owner_ref: "seller-a"
+              site_id: "WH1"
+              bin: "WH1-RCV-DEC-D01-01-01-A"
+              stock_unit_id: "su-9a1e0f3c-2b4d-4c6e-8f00-112233445566"
+              at: "2026-08-21T22:00:00Z"
+    ToteStowed:
+      x-no-consumer-reason: "pending: tote fact (ADR 0054); no consumer declared in any fleet spec yet"
+      name: ToteStowed
+      title: Tote Stowed
+      summary: A tote and all its contents now have a new logical location.
+      description: >-
+        A tote and all its contents now have `bin` as their logical location (`POST /totes/{lpn}/stowages`, ADR 0054). `from_bin` is omitted on the first placement. Moves inside the AS/RS never produce it (WCS seam decision 2). `BinStockLevelChanged` is raised for both bins.
+      contentType: application/cloudevents+json
+      tags:
+        - name: tote
+          description: Raised by the Tote aggregate (ADR 0054).
+      payload:
+        $ref: "#/components/schemas/ToteStowedEvent"
+      examples:
+        - name: stowed
+          summary: TOTE-1 went from the decant station into the AS/RS.
+          payload:
+            specversion: "1.0"
+            id: 0b7c4a1e-2f3d-4e5a-8b6c-7d8e9f0a1b2c
+            source: /warehouse/inventory-storage
+            type: com.warehouse.wms.inventory-storage.tote.ToteStowed
+            subject: TOTE-1
+            time: "2026-08-21T22:00:00Z"
+            datacontenttype: application/json
+            dataschema: urn:warehouse:inventory-storage:events:ToteStowed:v1
+            data:
+              lpn: "TOTE-1"
+              site_id: "WH1"
+              from_bin: "WH1-RCV-DEC-D01-01-01-A"
+              bin: "WH1-AUTO-ASRS-ASRS1-00-00-S"
+              contents:
+                - sku: "SKU-1"
+                  qty_eaches: 6
+                  owner_ref: "seller-a"
+                - sku: "SKU-2"
+                  qty_eaches: 4
+              at: "2026-08-21T22:00:00Z"
     StockHeld:
       x-no-consumer-reason: "pending: held-stock fact (ADR 0052); no consumer declared in any fleet spec yet"
       name: StockHeld
@@ -2555,6 +2660,12 @@ components:
           properties:
             locationCode: { type: string }
             zoneId: { type: string }
+            locationType:
+              type: string
+              description: >
+                The slot's LocationType (required by the producer). Read since ADR 0054:
+                `AutomatedStorage` holds container stock only; an absent or unknown
+                type keeps today's behaviour (fail open, ADR 0013).
             handlingUnit:
               type: string
               enum: [EACH, CASE, PALLET]
@@ -3126,6 +3237,149 @@ components:
                   type: string
                   description: Why it became EMPTY.
                   enum: [BROKEN, PICKED]
+                at:
+                  type: string
+                  description: When the fact happened (the service clock).
+                  format: date-time
+
+    ToteRegisteredEvent:
+      description: CloudEvents envelope for a ToteRegistered domain event (ADR 0054).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for ToteRegistered.
+              const: "com.warehouse.wms.inventory-storage.tote.ToteRegistered"
+            subject:
+              type: string
+              description: The LPN (also the Kafka key).
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:ToteRegistered:v1
+              pattern: "^urn:warehouse:inventory-storage:events:ToteRegistered:v1$"
+            data:
+              type: object
+              required: [lpn, at]
+              properties:
+                lpn:
+                  type: string
+                  description: The tote's license plate.
+                at:
+                  type: string
+                  description: When the fact happened (the service clock).
+                  format: date-time
+
+    ToteFilledEvent:
+      description: CloudEvents envelope for a ToteFilled domain event (ADR 0054).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for ToteFilled.
+              const: "com.warehouse.wms.inventory-storage.tote.ToteFilled"
+            subject:
+              type: string
+              description: The LPN (also the Kafka key).
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:ToteFilled:v1
+              pattern: "^urn:warehouse:inventory-storage:events:ToteFilled:v1$"
+            data:
+              type: object
+              required: [lpn, sku, qty_eaches, site_id, bin, stock_unit_id, at]
+              properties:
+                lpn:
+                  type: string
+                  description: The tote's license plate.
+                sku:
+                  type: string
+                  description: The SKU filled into the tote.
+                qty_eaches:
+                  type: integer
+                  description: Eaches filled into the tote.
+                  minimum: 1
+                owner_ref:
+                  type: string
+                  description: Owner of the stock. Omitted for fleet-owned stock.
+                  maxLength: 64
+                site_id:
+                  type: string
+                  description: The tote's site.
+                bin:
+                  type: string
+                  description: The tote's current bin (the decant station).
+                stock_unit_id:
+                  type: string
+                  description: The LOOSE stock unit holding the filled eaches.
+                at:
+                  type: string
+                  description: When the fact happened (the service clock).
+                  format: date-time
+
+    ToteStowedEvent:
+      description: CloudEvents envelope for a ToteStowed domain event (ADR 0054).
+      allOf:
+        - $ref: "#/components/schemas/CloudEventBase"
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              description: Fixed event type for ToteStowed.
+              const: "com.warehouse.wms.inventory-storage.tote.ToteStowed"
+            subject:
+              type: string
+              description: The LPN (also the Kafka key).
+            dataschema:
+              type: string
+              description: urn:warehouse:inventory-storage:events:ToteStowed:v1
+              pattern: "^urn:warehouse:inventory-storage:events:ToteStowed:v1$"
+            data:
+              type: object
+              required: [lpn, site_id, bin, contents, at]
+              properties:
+                lpn:
+                  type: string
+                  description: The tote's license plate.
+                site_id:
+                  type: string
+                  description: The tote's site.
+                from_bin:
+                  type: string
+                  description: The bin the tote left. Omitted on the first placement.
+                bin:
+                  type: string
+                  description: The tote's new logical location.
+                contents:
+                  type: array
+                  description: The tote's contents, one line per (sku, owner), in eaches.
+                  items:
+                    type: object
+                    required: [sku, qty_eaches]
+                    properties:
+                      sku:
+                        type: string
+                        description: The SKU.
+                      qty_eaches:
+                        type: integer
+                        description: Eaches of this SKU and owner in the tote.
+                        minimum: 1
+                      owner_ref:
+                        type: string
+                        description: Owner of the stock. Omitted for fleet-owned stock.
+                        maxLength: 64
                 at:
                   type: string
                   description: When the fact happened (the service clock).
