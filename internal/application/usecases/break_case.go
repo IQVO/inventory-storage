@@ -32,6 +32,9 @@ type BreakCase struct {
 	Placement  *StowStock
 	UnitOfWork ports.UnitOfWork
 	Levels     *BinLevelEmitter
+	// LocationTypes keeps loose stock out of an AutomatedStorage bin (ADR
+	// 0054). Optional: nil applies no such rule.
+	LocationTypes ports.BinLocationTypeLookup
 }
 
 // Execute breaks the container with this LPN into looseBin.
@@ -115,6 +118,9 @@ func (uc *BreakCase) plan(ctx context.Context, lpn string, looseBinID shared.Bin
 		// The 1:1 link between container and unit is broken: breaking would
 		// not conserve quantity.
 		return nil, container.ErrBreakNotConserving
+	}
+	if err := refuseLooseInto(ctx, uc.LocationTypes, looseBinID); err != nil {
+		return nil, err
 	}
 	from, loose, err := uc.bins(ctx, c, looseBinID)
 	if err != nil {

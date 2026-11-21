@@ -112,6 +112,8 @@ func (uc *StowContainer) firstStow(ctx context.Context, c *container.Container, 
 	if err != nil {
 		return err
 	}
+	// ADR 0054: the SEALED_CASE unit is the case's contents.
+	unit.WithContainer(c.LPN())
 	if err := bin.Occupy(c.Quantity()); err != nil {
 		return err
 	}
