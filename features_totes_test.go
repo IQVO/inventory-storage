@@ -288,11 +288,26 @@ func (w *world) theReservationHasOneAllocationFromContainer(qty int, lpn, bin st
 	return nil
 }
 
-// theToteActionIsRefusedWith asserts a 4xx problem+json answer whose type
-// slug is the one named (the HTTP adapter's problem catalogue).
+// toteRefusalStatus is the status each tote refusal answers with (ADR 0054
+// items 5-8, and the placement rule a fill and a stow apply).
+// carry (Task 11 review): the refusal step pins the exact status, not any 4xx.
+var toteRefusalStatus = map[string]int{
+	"license-plate-taken":                  http.StatusConflict,
+	"tote-reserved":                        http.StatusConflict,
+	"automated-storage-requires-container": http.StatusConflict,
+	"hazmat-zone-required":                 http.StatusConflict,
+}
+
+// theToteActionIsRefusedWith asserts a problem+json answer with the status
+// toteRefusalStatus pins for the slug, whose type slug is the one named (the
+// HTTP adapter's problem catalogue).
 func (w *world) theToteActionIsRefusedWith(_, slug string) error {
-	if w.status < http.StatusBadRequest || w.status >= http.StatusInternalServerError {
-		return fmt.Errorf("expected a refusal, got %d: %s", w.status, string(w.body))
+	want, ok := toteRefusalStatus[slug]
+	if !ok {
+		return fmt.Errorf("no status pinned for refusal %q", slug)
+	}
+	if w.status != want {
+		return fmt.Errorf("expected a %d refusal, got %d: %s", want, w.status, string(w.body))
 	}
 	return w.theProblemDetailTypeIs(slug)
 }
