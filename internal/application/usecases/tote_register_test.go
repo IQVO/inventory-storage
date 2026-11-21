@@ -20,6 +20,8 @@ type tw struct {
 	Register *usecases.RegisterTote
 	Get      *usecases.GetTote
 	List     *usecases.ListBinTotes
+	Fill     *usecases.FillTote
+	Stow     *usecases.StowTote
 }
 
 func newTW() *tw {
@@ -29,6 +31,9 @@ func newTW() *tw {
 	w.Register = &usecases.RegisterTote{Totes: w.Totes, Containers: w.Containers, Events: w.Events, Clock: w.Clock}
 	w.Get = &usecases.GetTote{Totes: w.Totes, Stock: w.Stock}
 	w.List = &usecases.ListBinTotes{Totes: w.Totes, Locations: w.Locations}
+	w.Fill = &usecases.FillTote{Totes: w.Totes, Stock: w.Stock, Locations: w.Locations, Events: w.Events, Clock: w.Clock}
+	w.Stow = &usecases.StowTote{Totes: w.Totes, Contents: w.Stock, Stock: w.Stock, Locations: w.Locations, Events: w.Events, Clock: w.Clock}
+	w.Linker.Totes = w.Totes
 	return w
 }
 
