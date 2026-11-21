@@ -73,6 +73,49 @@ func TestToteRepoRoundTripAndVersionGuard(t *testing.T) {
 	}
 }
 
+// carry (Task 6 review): two readers load the same tote; the first save wins
+// and the second, at a stale version, is refused with ErrConcurrentModification
+// inside a unit of work, which rolls back every other write of that unit
+// (here a second tote and its license-plate claim). The stored tote keeps the
+// winner's bin.
+func TestStaleToteSaveIsRefusedAndRollsBackItsUnitOfWork(t *testing.T) {
+	ctx, pool := context.Background(), totePool(t)
+	repo, uow := postgres.NewToteRepo(pool), postgres.NewUnitOfWork(pool)
+	tote, _ := container.RegisterTote("TOTE-1")
+	if ok, err := repo.Add(ctx, tote); !ok || err != nil {
+		t.Fatalf("add = %v %v", ok, err)
+	}
+	winner, _ := repo.FindByLPN(ctx, "TOTE-1")
+	loser, _ := repo.FindByLPN(ctx, "TOTE-1")
+	_ = winner.PlaceIn("WH1-RCV-DEC-D01-01-01-A", "WH1")
+	if err := repo.Save(ctx, winner); err != nil {
+		t.Fatalf("winner save: %v", err)
+	}
+	_ = loser.PlaceIn("WH1-AUTO-ASRS-ASRS1-00-00-S", "WH1")
+	err := uow.Execute(ctx, func(ctx context.Context) error {
+		other, _ := container.RegisterTote("TOTE-2")
+		if _, err := repo.Add(ctx, other); err != nil {
+			return err
+		}
+		return repo.Save(ctx, loser)
+	})
+	if !errors.Is(err, usecases.ErrConcurrentModification) {
+		t.Fatalf("stale save in a unit of work = %v, want ErrConcurrentModification", err)
+	}
+	got, _ := repo.FindByLPN(ctx, "TOTE-1")
+	want := container.ToteSnapshot{LPN: "TOTE-1", SiteID: "WH1", BinID: "WH1-RCV-DEC-D01-01-01-A", Version: 2}
+	if got == nil || got.Snapshot() != want {
+		t.Fatalf("stored = %+v, want the winner's %+v", got, want)
+	}
+	if rolledBack, _ := repo.FindByLPN(ctx, "TOTE-2"); rolledBack != nil {
+		t.Fatal("TOTE-2 survived the rolled-back unit of work")
+	}
+	again, _ := container.RegisterTote("TOTE-2")
+	if ok, err := repo.Add(ctx, again); !ok || err != nil {
+		t.Fatalf("TOTE-2 plate still claimed after the rollback: %v %v", ok, err)
+	}
+}
+
 func TestOneLicensePlateNamespaceAcrossCasesAndTotes(t *testing.T) {
 	ctx, pool := context.Background(), totePool(t)
 	totes, cases := postgres.NewToteRepo(pool), postgres.NewContainerRepo(pool)
