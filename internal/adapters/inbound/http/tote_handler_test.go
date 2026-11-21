@@ -90,7 +90,14 @@ func TestAllocationCarriesContainerIDOnlyWhenThereIsOne(t *testing.T) {
 // storage location.
 func newToteTestServer(t *testing.T) http.Handler {
 	t.Helper()
-	stockRepo, locations, containers := memory.NewStockRepo(), memory.NewLocationRepo(), memory.NewContainerRepo()
+	return newToteTestServerWith(t, memory.NewContainerRepo())
+}
+
+// newToteTestServerWith is newToteTestServer over a caller-seeded container
+// repo (the tote repo shares it, as in cmd/inventory).
+func newToteTestServerWith(t *testing.T, containers *memory.ContainerRepo) http.Handler {
+	t.Helper()
+	stockRepo, locations := memory.NewStockRepo(), memory.NewLocationRepo()
 	totes := memory.NewToteRepo(containers)
 	publisher := events.NewBufferedPublisher()
 	clock := memory.NewFixedClock(time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC))
