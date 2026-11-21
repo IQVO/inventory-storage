@@ -10,8 +10,9 @@ import (
 )
 
 // allocate reserves qty across the given stock units, drawing in
-// allocation.Order (forward pick face before reserve storage, then the
-// deterministic tie-breakers; ADR 0050) until the full amount is covered. It
+// allocation.OrderFor (ADR 0050's forward pick face before reserve storage,
+// then the deterministic tie-breakers, plus the container rule below) until
+// the full amount is covered. It
 // returns the allocations recorded and the units touched (mutated but not yet
 // persisted; persisting is Execute's job, inside its UnitOfWork, so a later failure never leaves a
 // partially-drawn reservation behind). It fails with ErrInsufficientUsable —
@@ -19,6 +20,7 @@ import (
 // combined usable quantity cannot cover qty. The order is allocation.OrderFor:
 // ADR 0050's, with one covering container drawn first after the forward faces
 // (ADR 0054); every allocation names the container its unit is in.
+// carry (Task 7 review): the first sentence names OrderFor, as the code does.
 func (uc *ReserveStock) allocate(ctx context.Context, sku shared.SKU, all []*stock.StockUnit, qty shared.Quantity, owner shared.OwnerRef) ([]reservation.Allocation, []*stock.StockUnit, error) {
 	faces := allocation.ForwardFaces{}
 	if uc.Forward != nil {
