@@ -1,7 +1,7 @@
 # Review carries of WCS plan 05a pinned at the acceptance level (ADR 0054):
 #   - carry (Task 6 review): a fill raises BinStockLevelChanged STOW for the
-#     tote's bin, a stow RELOCATE for both bins (D12); a fill applies the
-#     placement rules of a plain stow (hazmat refused, Placement wired).
+#     tote's bin, a stow RELOCATE for both bins (D12); a fill and a stow apply
+#     the placement rules of a plain stow (hazmat refused, Placement wired).
 #   - carry (Task 7 review): a transfer stow into an AutomatedStorage bin is
 #     refused (D9).
 
@@ -43,3 +43,15 @@ Feature: Tote fills and stows, as a stow and a move (ADR 0054)
     When the receipt for line "tl-1" is stowed into "WH1-AUTO-ASRS-ASRS1-00-00-S=5"
     Then the stow is refused with "automated-storage-requires-container"
     And bin "WH1-AUTO-ASRS-ASRS1-00-00-S" holds 0 eaches and bin "WH1-RCV-DEC-D01-01-01-A" holds 0
+
+  # carry (Task 6 review): a stow applies the destination's placement rules
+  Scenario: A tote holding a Hazmat SKU is refused a stow into a bin outside a hazmat-rated zone
+    Given Bin "WH1-RCV-DEC-D01-01-01-A" sits in a hazmat-rated zone
+    And Bin "WH1-AUTO-ASRS-ASRS1-00-00-S" sits in a non-hazmat "Ambient" zone
+    And SKU "SKU-H" is classified by product-master as Hazmat with DOT hazard class 3
+    And tote "TOTE-1" is stowed into "WH1-RCV-DEC-D01-01-01-A"
+    And 2 of "SKU-H" are filled into tote "TOTE-1"
+    When tote "TOTE-1" is stowed into "WH1-AUTO-ASRS-ASRS1-00-00-S"
+    Then the stow is refused with "hazmat-zone-required"
+    And tote "TOTE-1" is in "WH1-RCV-DEC-D01-01-01-A" holding 2 of "SKU-H"
+    And bin "WH1-RCV-DEC-D01-01-01-A" holds 2 eaches and bin "WH1-AUTO-ASRS-ASRS1-00-00-S" holds 0
