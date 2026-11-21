@@ -10,6 +10,7 @@ import (
 	"github.com/claudioed/inventory-storage/internal/domain/container"
 	"github.com/claudioed/inventory-storage/internal/domain/location"
 	"github.com/claudioed/inventory-storage/internal/domain/relocation"
+	"github.com/claudioed/inventory-storage/internal/domain/shared"
 	"github.com/claudioed/inventory-storage/internal/domain/transfer"
 )
 
@@ -111,5 +112,26 @@ func TestTransferStowIntoAutomatedStorageIsRefused(t *testing.T) {
 	units, _ := e.Stock.FindBySKU(context.Background(), "SKU-T")
 	if r == nil || r.State() != transfer.ReceiptStaged || len(units) != 0 || len(e.Events.Events()) != before {
 		t.Fatalf("a refused transfer stow wrote something: receipt %+v, units %d, events %d -> %d", r, len(units), before, len(e.Events.Events()))
+	}
+}
+
+// failingTypes is a location-type lookup whose read fails.
+type failingTypes struct{ err error }
+
+func (f failingTypes) LocationType(context.Context, shared.BinId) (string, error) { return "", f.err }
+
+// carry (Task 7 review): a failing location-type lookup is not "unknown type,
+// fail open": the guard returns its error and the stow writes nothing.
+func TestLocationTypeLookupErrorPropagatesFromTheGuard(t *testing.T) {
+	w := newTW()
+	w.guardedBins(t)
+	boom := errors.New("x")
+	stow := &usecases.StowStock{Stock: w.Stock, Locations: w.Locations, Events: w.Events, Clock: w.Clock, LocationTypes: failingTypes{err: boom}}
+	if _, err := stow.Execute(context.Background(), "SKU-1", 5, "WH1-STOR-RSV-A01-01-01-A"); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the lookup's error", err)
+	}
+	units, _ := w.Stock.FindBySKU(context.Background(), "SKU-1")
+	if w.occupied(t, "WH1-STOR-RSV-A01-01-01-A") != 0 || len(units) != 0 || len(w.Events.Events()) != 0 {
+		t.Fatal("a stow whose type lookup failed wrote something")
 	}
 }
