@@ -125,7 +125,7 @@ func (s *Server) handleConfirmPick(w http.ResponseWriter, r *http.Request) {
 func toReservationResponse(res *reservation.Reservation) reservationResponse {
 	allocations := make([]allocationResponse, 0, len(res.Allocations()))
 	for _, a := range res.Allocations() {
-		allocations = append(allocations, allocationResponse{StockUnitID: a.StockUnitID, BinID: a.BinID.String(), Quantity: a.Quantity.Int()})
+		allocations = append(allocations, toAllocationResponse(a))
 	}
 	return reservationResponse{
 		ID:          res.ID(),
@@ -139,4 +139,10 @@ func toReservationResponse(res *reservation.Reservation) reservationResponse {
 		CreatedAt:   res.CreatedAt().Format(timeFormat),
 		ExpiresAt:   res.ExpiresAt().Format(timeFormat),
 	}
+}
+
+// toAllocationResponse maps one allocation to its DTO; containerId is set only
+// for an allocation drawn from a tote or a sealed case (ADR 0054).
+func toAllocationResponse(a reservation.Allocation) allocationResponse {
+	return allocationResponse{StockUnitID: a.StockUnitID, BinID: a.BinID.String(), Quantity: a.Quantity.Int(), ContainerID: a.ContainerLPN}
 }

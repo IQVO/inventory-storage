@@ -58,8 +58,12 @@ type adapterSet struct {
 	// the PackagingView (ADR 0045, 0046).
 	containers   ports.ContainerRepo
 	pendingLinks ports.PendingLinkRepo
-	bookings     ports.ReceiptBookingRepo
-	packaging    *postgres.PackagingViewRepo
+	// totes backs the Tote aggregate and containerStock reads a container's
+	// units (ADR 0054); containerStock is the same stock repo value as stock.
+	totes          ports.ToteRepo
+	containerStock ports.ContainerStock
+	bookings       ports.ReceiptBookingRepo
+	packaging      *postgres.PackagingViewRepo
 	// held backs the held-stock aggregate and the carton marks (ADR 0052);
 	// heldMetrics moves inventory.held_units. It is set by run() once the
 	// process's meter exists.
@@ -87,7 +91,7 @@ func (a adapterSet) decideHeldDisposition(clock ports.Clock) *usecases.DecideHel
 func (a adapterSet) containerLinker(clock ports.Clock) *usecases.ContainerLinker {
 	return &usecases.ContainerLinker{
 		Containers: a.containers, Pending: a.pendingLinks, Bookings: a.bookings, Packaging: a.packaging,
-		Events: a.publisher, Clock: clock,
+		Events: a.publisher, Clock: clock, Totes: a.totes,
 	}
 }
 
@@ -123,8 +127,11 @@ func buildRepos(ctx context.Context, databaseURL, migrationsDatabaseURL, migrati
 	if err != nil {
 		return adapterSet{}, err
 	}
+	stockRepo := postgres.NewStockRepo(pool)
 	return adapterSet{
-		stock:               postgres.NewStockRepo(pool),
+		stock:               stockRepo,
+		containerStock:      stockRepo,
+		totes:               postgres.NewToteRepo(pool),
 		locations:           postgres.NewLocationRepo(pool),
 		reservations:        postgres.NewReservationRepo(pool),
 		classifications:     postgres.NewProductClassificationRepo(pool),

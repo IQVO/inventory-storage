@@ -1,0 +1,1 @@
+{"parameters":[{"name":"lpn","in":"path","required":true,"description":"The tote's license plate: its permanent label, registered once (ADR 0054). One namespace with sealed cases.","schema":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[A-Za-z0-9._-]+$","example":"TOTE-000123"}}]}

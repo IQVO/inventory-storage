@@ -1,0 +1,72 @@
+---
+id: stow-tote
+title: "Stow a tote and all its contents into a bin"
+description: "Scan the tote, scan the location (ADR 0054): the bin becomes the tote's logical location. In one transaction the destination is occupied by the contents' eaches, the source bin released, every stock unit of the tote moved, `LocationRecorded` raised per unit, `BinStockLevelChanged` for both bins and `ToteStowed` published. The first stow of a new tote only places it. Into the bin it is already in, nothing changes. A tote holding reserved stock is 409 `tote-reserved`: each allocation names its pick bin (ADR 0025). An `AutomatedStorage` bin accepts a tote: it holds container stock only."
+sidebar_label: "Stow a tote and all its contents into a bin"
+hide_title: true
+hide_table_of_contents: true
+api: eJztXItuHLly/RWiEWRnvN2jkSx77VEQQNZ6s8p6bUOPLG5sJ83prpnhFZvsJdmSZgUF+Yh8Yb4kqCL7NQ9LcnTvTQAZhmx1s8lisR6niizeRLoEw53Q6jiPJpF1+upMO4jiKAebGVHiq2gSnWZcMbcA5rSDmNn6V6kz+poNDn88YePxi/3hhF5MhWJTyHQBtvnuO8uknouMy+a7ETtWTCtgznBleUZ9YfscrBPK9y0s01lWlQJyNl3S60wrB8rZ7xjwbAE2pqdWVybzYxuQwC3kMYNLMEtmnc4uWKWEY3rWUMQKfYlt0neBnhPItMkhT5nhwkLOSjD0VczSN0KdYi/v4BLk0YKrObabacOm2i1wVMu4ylmKHDx1+gpfl9VUCruAfMTOFsBmwliHxFwhGZwpuPKEaCWXrJQ8A8uEQ7Y43TBSOOQBlwZ4vmRCxUxptxBqzjIiw47Yoe9moWWOzw1YMJeQh3kLy/bHr1mKbZL6XToh5jEum1VUvKDxLStFdkFjh4XdezEcsUPF0sPK6YI7yE+dNnwOKbXiWQals4wTGROkGEmxtFBcKDCBEpzn6LP6rN7AQqicpnicQ1FqBypbJr/AkhUizyVccQNMigsIK6jdAgz7+OH0rKZp99VwFMWR43MbTT5FyHYbfYmjkhtegAODj28inFQ0iVZGieJIoGQvgOdgojgy8HslDOTRxJkKVhXgiEsJJpmDQn2BHIXi9wrYBSzZgLPz8+MfSVZqAbfVtBDugHFmwJklM1BZYm0cVr2yYFgQ+EIo4h0+1wqGzC24YwW/ABs6QNFHAgGlh8+gZUHMTt6enrF5JXKQQgGz4DvdG07YbrK794qVRijHpxLY4enR8TEKjeEZ8mfEPmrr5gYp83pKcmgq5USBeu5lMFuAFyJURhXWI4dS6mUByk0YZ4WwFgUP+YGyquwVGMjZlXALtj8es1R0+H8By6Tmd4ocKbicaVNATsZg+0dCXXIp8tQztpR86RuT9vPCrwcPckUPCnALnces5G5Bb6Y6x+VwlVFhykbMheISlabUygIrZWVZ2hWYExoL8glD4UhjdrUQEvrDEiGc5WI2AwPK9YcmM5EvG1VcZ0dlIU9Hn9VvuPjChvlB3tjW50Pk9N71tZ/9rLJcelFBjrNZpfzKBwNXywuXyNMBMY7UfIK8jdn+3t4BS701oOeJ0i6Z6UrlqTdkC5B5gtav8yZmIrcksbU1FpZhFyID+kqheLAcJDjIhwf0bIXcTBeFcI7ME3fABj0qgp1DO6XlJQlISu5hBiZBz5P8XnHDlRMK8nQ4YjXD3n84a5iGnHpxfR3T8F5geyTkUILKSaI9DZ4wroJJjRkvtJojIwuWZlpllcFFTQqdi5nw9hIpmwrV407aWLz+Y6FsNZuJTGAnlUV1XHvcWObQ76ySEv9vIANR+lWwjs9hw0AWuNz43DuimKUL/kfBXfKHVtBVvtRBQSCgMpBkklubFMIW3GWLIAa1e/Bvm9knleKXXEiayoj9pA1zC229VgQ7ULvhSTCDjbKeHv76tqestbTCNWSVQ8M35+jpvPi0SkVKVKkcTPjMD9AYHjKiobPRZxXFkc0WUPBochO5ZQmEcoxQ8yiOCqHegZq7RTTZjaOCXze/7b1CN+IcGDT+//aJJf/x5fu/i+IIrnlRSuzlxXQ8e8nHkLzk+7vJfvbyefJ69vx5Ms5ezV5ku/ke/+GH6PY2bhyQLFXtdNAi3OlyzjqwSWTgDRP33tWisym4Qo5IPgUZMwNzYR0ZXa0y6CCyEfugwPv2kmfBvHp5YRm3YEffxqWX+30mHSb/ypM/xsnr0b8nq9w6+3D2NhmPx7t7z6Pb2y9+7mDdG50vcdBVVgSAh694Wcogcjt/tsiam3Vq9fTPkLkeTz9FU6EIDxhEuU6AxQ/w4Z2zXF8JRDlOe+jWwEehnB715vnbz7vJ4fnZh+Tw9OSUfuwm4zH+PY1ub287TQMld31xi1PyfonI3xuP8Z91Ar2ie7pQaVBIapiMND4KR70M190ic/uEHBLQIawRZDYhmQ10tTK5TiI7duvxQQ1LWhQcpimUV+7+2iJ5G9b2fno12i6wcWSFAwyR7tM5tu1GGd9ZpH/EDqcW9RXBlaS5t9HAmhDhmFOh7jskSWcjlR0usYHYwNbhw4jZLp8dWWjp5Mbw5RqZaINAoRMom2iA4jHRjSwx+jIeWZz+co4vVK9tfsCgKN0yDjhDVVIivcJBYe+SXuroXAl3nKPFu6iiOPq9QiThltTUu991sUba+xTzQC/CYYpAR2vC2B1twyK2HLZV8prvwnj2PEv2pvs5OhNIXs3G42R3d2/v+fP9/RcvXr4kMbyovt7X6S/nCQmPvlJgTmB2t/z8Rk47BIqoYwdMB3iGwe1MArgEu6ujyaDF+y+GfUmxQDESx+EbtrbDI2ScU6iFUJ87/+j5XrePl7edZXjYp2M0lU44r73awVEweLerL6K+GSaj0dP3Vt1JFRtN/KoudFXh08rq33uJwwqHZeyuYsvdLnNfdtk1vv1Cc/UhLcngphhm3X18xD6Ui1t4dsllBQi7Kdj58P7dn9gVqiKh/SZOErYNw4K9s06j+vr4j+SnA+6+s2ux/gBfL7jKJQYNIsfMBsafHv4Nu1kTjwxDgMMJ8HkbkHFjRB1cUwQiKFeQ6yZ+XvpveiHAFbc0WiC5ibIm2/H+t0YTlBTjLpDSh7h3gVRQVYHGC9cCLVOrb/TEQ4T9Tajg1yaoRtCMvPG2E70FWtqNyRcvPIyTe/gKbiiNnkoovr8bP/SJOvnpiP3wavwDG3z0PbAfwXEhLQnLz2dnH9nhx2M7ZGCMNswueAkxZku8NfLMV1ole9fXrSTyzGhre8HoiKVISYpSmi6cK+1kZ4c6tSOhLkE5bZYYHmEWa4TZpoWuLCR2adGXjHK43PkHK6v5P6YHdRJRVnPsLtdZhYkPFHQvYYGMsDYsJDGb5OrADluR8LmHRlqxYcHLErMnM6MLhlTnLNcFR+dCXHCaDVCwKhsTETEjezZkUlyi4PscqtT6oiqZT/UM0rBCR9xxqecptkI7ahSXOzznJSaAdoSaYoS6gwyquTPXMfPKMH4x9OLZ9aK0vrVFjSNPF60zruM64PbysC7YjSmvjFgTk0N2fnLMRA7KidlS+Eg8cCPjDubaLNmANBx1WAFBTBZyBsMRO/f5uZLMCuaSM7f6uVB9gaGZtur1jTKzMaEStS7oLnf8k7jGlPSiKrhKMBNCy2mrouCmMbP9mfTd8ElLAPGmISCs1L3cap+mHyuv+CGZT1rqe2OZzoG0wEvXHAwbNDoexAZ1pY8V9sf7t43E3A9Ul5ChIQ5TL8BaPofgYcIOAVrsbAXHm23cEMo6rrJ7rMhZJz1BuTxS5dLovMpQ7HB4oqo/clcS7A6KKskDXAuLoKTFJMEQdmAJLRLZ6jd1DBAEIJpEb4Rixz+yorKOZjQFb9ajOCK33ZnQN4owdZdgBkrkUUvnVwauRQsTi82yRhS15Rs/aLkf7SCStjsdALaDUQifgyU2dTKlv8DypLFEXZ5s8WJ1VlobFjLHbLCSLt8b7Q0fj3PbktwdLm4hlXBV03gzP89I0lReaqFcvfcTEAe6ktABuqTM71fYCl025NvcvNUbNhiEDcCKh4/dlfBqde9Vq1HJ/uZchd/yMm1ob1mlLpS+Uk+I4wlxPCGOJ8TxhDj+BogDzfJ77X4ignv+9b0O5wt4MHnvPr5/PK9JxxJaye1nazo87PrF/Y5fdKvN1v3U+w8f3/ZhxVSozXM9a50SJSOafZXHm3Bv03AFYd093elKqwd75debvXKYNGY3lT9tQZlst+ic/WGD/vYidwk2GsZtC3/wY+UEyqB39CQ0xwEXlIVhRuuCDepNzyGeCVhNDiNtuCONwKFSlMrGtA3tT+PzmL5ImldDynFw1iZz2JURDhNG/vAO4z4TEoYKeKSZ5aYMUEhI0Z7/KqTyO/j3PwbAJaEvPA0w2HwaYPiEhp7Q0BMaekJDT2job4CGGkf3XrtDdyocbMUJKy7z8YDCRmfbAQxHzfFKOtqGdBgPhbhrT6eFj1o08bqDJrKHdPGAtA2+Puls5fUZtxUpPDKqbHbHVkDlRpCCDMi4CqmqsIcO0sLVAsx2Dn5tLg9g2FSonyop15N9GS95JhxuHGUA+WMDUQRcKxhUWIZPJxuH3syE6V2fPYATCMd+BrkiNodbEeHj8aMBkx2GnHY2/gMC7QsKgSN/kAJxny21FWTvwuE03Jncyje71vvDeXVeQ977MKzBx4/MtW6/m1nXbXEfZnTbP4AjLXT/tYPcV1mzDfnjrrBH/P4USm3XawdUH7x+/YhZ4y3BRtdmkQsM9Q13kHjADCQzcJnfysejTdaxSzAWZdLniZ1Zbjdnf5Gx/hcJf9Svr6f7HxR6re8APP+L7gAQ+dvz/8jhurRj8ywCr7cu2Nn2bXzdHNnw0nv3YJtYNmLnGOPR0drVgWYUY89BVUKBXK6T/Q37Bi82nWY4VKxScF1C5uhkm4+kAhwN6DN/CpifAuangPkpYH4KmP+6AfMj+M2g6Ql91/GX97L7Hd/4ordl3vk0mBA240JWZjWa7TuhOPJ+EGs1NLleKtlo3NeNLNVt+00cUdgXCg4rIwMfJjs7CGHlQls3eTV+NV5bKiw8lSzHklJdFnRc9UscoY86aQsk3j6oZgDnNdO0IjXkqNeA/T0LZZvosxD0eKQWTaLd0Xi0Th5K0m+/niZOYH6gcgtthONOXKKAYaks6vdVqL+i0IhCZe8o6HmpTX1mM6B6Kg+Im7Oha+JAp/FRvzHXLiwje4+lKujXrx0TyAtklcVEvnYiYwPDVa6LIcXsVIBswO/fsBlapyD7rq0r+O///C9vAah3hsfHWcGXnbgfazsYV0s2MwAhXFB5v97N88DbGLjmmasLFSQnkvHU/7Fj4RSGZZ9DhGOAS+GWnyMWqnx/0+aCfZRcKfQcqzPGcUM1aFuri178UmdkbDuKG/szHSjkOO/F0tLJf6rn1VSXJzwioRMeFgvrcjKGdPJ+4sFBY4DQ/XN5xZcWOYMDXkAecH1iuROWAgOCAV0U2YwbCpKp5BcLPPh8bmBOhhnTTM+endbnpJ89w0La+mizP6+LJQDcMd4aU+Qvrp3HN80wtH64lUSrIJcEL+hASXPYFZMTks9x3+e8s0X07NkboXbq+m9PBLqInFmpncfHXobqpMYBSQWShgJDlenLFUEJclmbPGbdUuIeGTLu2bOOv/PjtQs5FYrqt/Ws5YTTLIeCqzyu0ToW5+rKDUfsc3RO6vQ5Yo2hJf5olSxIbISqLNUZX/bExIY3qLM77W6aF0/sQFivv5lWKCRY3E6/9+T/SkjJJDi21FWd+4r9rim/amioZ0JC8KEKFfhtN98FHedmSZXjDUhCocVIBH/ahShjZnSFZ52s1ZlAIaKVLbjyTA6ey3F7YXckn2qD58u9cepr2A4mqmZCSrQjSXOyPJSrdmnIIRM5sGc4+WcesWWAzNR0vB0ybl1YnxF7Q3cAGOgW4+WQSW7IZsolhtDtQqF+Gy3ZpeAs/Xh+xjAfZ3duqNzgNu3U3h80p85b3Vyr23dtmRqpO2nlIG3b2U9fRtQ3Vs2+JQfa1Jb1IpLDj8cYwbA29km3hVLpkK3ERbTMZ3U3My2lvvLEUSmJr1fHV20IXleUvB5O2PnJO0sTYnTFgcW92KLwVooS05XC6vqkTlFYZiu8xcCylC4HaLxyiksUnvWQzY3Ib3eQQ0mm1UwgkMTn6TBmb//l7cmf/EcUh03vdUvBoK3yx1oIu6ESoqmsaEKvEKF/rcy8rrlAE+i7QSNGteorlRVot22VZWAtZrXaWm+Pk8JO+NeKsNdqyu+ukG74vrVcAhdgtUA6FGo37OnU6mNJx2r9b12VcfAXKLY/WL+44OtXFQy79eSZljLctZD+01svLxewtOCSkuONAiHcTm+oOA0r1q7dUWWsNrepn0AqRSFcKLPO6FVK6nOEuphklXOEB2DBL4WuTJCFgCacrq/GqMN2FIP35+/aGx7Y4Pz78Xg8HtZZ4N8rfxuKCcdiOfvn0w/vO9was7S5jCEJ0pXg69TPPfRDbPaAbn+8z9J2hb0g+eAj3GPhsEDOn/JA8z2gvEjIPPDOFSGpLFFoKmfR5Kb9guJ02AxG3fSECtm81UL5OJmGySgtVN8IsgEWD460AfYmALAjD8CGFP1gIFBw1ekAL3kJlYC+Tl3KXk1rwJBolFeR9U2bpnq6XOfpcp3/u5fr+KAetWCnlFwojC8pwL0JIfEn2v/EGHjiq8ObqPhLHGHgi01ubqbcwrmRt7f4mKxQNPn0BdPuRiCCpcg5F4Rm82gy49Ku3ojQ1ZlBXQcwZH/dexI2MqQufFadIowoiqMLWIaLH26/NIWZ3z7Tp0uIni4herqE6OkSoqdLiP7fXUK00W1497B+MV3jQfD2IN8oXGaQnPm9rLrF2k0u7ReHhBq+2vZLJ82Nvh9vOgj38RQ6p80IfoWbafzK+zNN/ol2ZOjZTSS5mld8jm19n/jnfwDQQuWK
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Stow a tote and all its contents into a bin"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/totes/{lpn}/stowages"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Scan the tote, scan the location (ADR 0054): the bin becomes the tote's logical location. In one transaction the destination is occupied by the contents' eaches, the source bin released, every stock unit of the tote moved, `LocationRecorded` raised per unit, `BinStockLevelChanged` for both bins and `ToteStowed` published. The first stow of a new tote only places it. Into the bin it is already in, nothing changes. A tote holding reserved stock is 409 `tote-reserved`: each allocation names its pick bin (ADR 0025). An `AutomatedStorage` bin accepts a tote: it holds container stock only.
+
+Behind the Idempotency-Key middleware like every other POST (ADR 0018).
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./stow-tote.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./stow-tote.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./stow-tote.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

@@ -44,7 +44,7 @@ func TestBuildTaskCompletedConsumer_RetriesTheBootDial(t *testing.T) {
 		kafkaBrokers:               []string{"127.0.0.1:1"},
 		taskCompletedConsumerGroup: "inventory-storage-confirm-pick",
 	}
-	h, err := buildTaskCompletedConsumer(ctx, quietLogger(), cfg, adapterSet{pool: lazyPool(t)}, nil)
+	h, err := buildTaskCompletedConsumer(ctx, quietLogger(), cfg, adapterSet{pool: lazyPool(t)}, nil, noLocationTypes{})
 	if err != nil {
 		cancel()
 		t.Fatalf("a transient first dial must not fail boot: %v", err)
@@ -63,7 +63,7 @@ func TestBuildTaskCompletedConsumer_RetriesTheBootDial(t *testing.T) {
 func TestNewApplyRelocationTask_WiresTheSharedRelocateStock(t *testing.T) {
 	set := memoryAdapters(quietLogger())
 	processed := memory.NewProcessedEventRepo()
-	uc := newApplyRelocationTask(set, system.Clock{}, processed)
+	uc := newApplyRelocationTask(set, system.Clock{}, processed, noLocationTypes{})
 
 	if uc.ProcessedEvents != processed {
 		t.Fatal("ApplyRelocationTask must claim through the consumer's processed-events repo")
@@ -82,7 +82,7 @@ func TestNewApplyRelocationTask_WiresTheSharedRelocateStock(t *testing.T) {
 func TestNewApplyReplenishTask_WiresTheSharedRelocateStock(t *testing.T) {
 	set := memoryAdapters(quietLogger())
 	processed := memory.NewProcessedEventRepo()
-	uc := newApplyReplenishTask(set, system.Clock{}, processed)
+	uc := newApplyReplenishTask(set, system.Clock{}, processed, noLocationTypes{})
 
 	if uc.ProcessedEvents != processed || uc.UnitOfWork != set.uow {
 		t.Fatal("ApplyReplenishTask must claim through the consumer's processed-events repo, in the adapter set's unit of work")

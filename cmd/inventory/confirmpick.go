@@ -56,6 +56,7 @@ func buildTaskCompletedConsumer(
 	cfg config,
 	set adapterSet,
 	metrics ports.PickConfirmationMetrics,
+	locationTypes ports.BinLocationTypeLookup,
 ) (transferConsumerHandle, error) {
 	if err := bootretry.Retry(ctx, logger, "dial fulfillment kafka brokers", func() error {
 		return dialBroker(ctx, cfg.kafkaBrokers)
@@ -83,9 +84,9 @@ func buildTaskCompletedConsumer(
 	}
 	consumer := inboundkafka.NewTaskCompletedConsumer(cfg.kafkaBrokers, cfg.taskCompletedConsumerGroup, confirm, logger)
 	// RELOCATE completions (ADR 0039) ride the same consumer, group and DLQ.
-	consumer.Relocate = newApplyRelocationTask(set, clock, processed)
+	consumer.Relocate = newApplyRelocationTask(set, clock, processed, locationTypes)
 	// REPLENISH completions (ADR 0041) ride the same consumer, group and DLQ.
-	consumer.Replenish = newApplyReplenishTask(set, clock, processed)
+	consumer.Replenish = newApplyReplenishTask(set, clock, processed, locationTypes)
 	group := cfg.taskCompletedConsumerGroup
 	logger.Info("task-completed confirm-pick consumer configured",
 		"task_types", "PICK,RELOCATE,REPLENISH", "topic", inboundkafka.FulfillmentTopic, "dlq_topic", inboundkafka.FulfillmentTopic+".dlq",
@@ -113,9 +114,9 @@ func buildTaskCompletedConsumer(
 // newApplyRelocationTask wires the RELOCATE branch of the TaskCompleted
 // consumer (ADR 0039): the same RelocateStock as POST /relocations, with the
 // CloudEvents id claimed in processed_events in the move's UnitOfWork.
-func newApplyRelocationTask(set adapterSet, clock ports.Clock, processed ports.ProcessedEventRepo) *usecases.ApplyRelocationTask {
+func newApplyRelocationTask(set adapterSet, clock ports.Clock, processed ports.ProcessedEventRepo, locationTypes ports.BinLocationTypeLookup) *usecases.ApplyRelocationTask {
 	return &usecases.ApplyRelocationTask{
-		Relocate:        newRelocateStock(set, clock),
+		Relocate:        newRelocateStock(set, clock, locationTypes),
 		ProcessedEvents: processed,
 		UnitOfWork:      set.uow,
 	}
@@ -124,9 +125,9 @@ func newApplyRelocationTask(set adapterSet, clock ports.Clock, processed ports.P
 // newApplyReplenishTask wires the REPLENISH branch of the TaskCompleted
 // consumer (ADR 0041): the same RelocateStock, with reason REPLENISHMENT, the
 // CloudEvents id claimed under its own consumer name in the move's UnitOfWork.
-func newApplyReplenishTask(set adapterSet, clock ports.Clock, processed ports.ProcessedEventRepo) *usecases.ApplyReplenishTask {
+func newApplyReplenishTask(set adapterSet, clock ports.Clock, processed ports.ProcessedEventRepo, locationTypes ports.BinLocationTypeLookup) *usecases.ApplyReplenishTask {
 	return &usecases.ApplyReplenishTask{
-		Relocate:        newRelocateStock(set, clock),
+		Relocate:        newRelocateStock(set, clock, locationTypes),
 		ProcessedEvents: processed,
 		UnitOfWork:      set.uow,
 	}

@@ -1,0 +1,70 @@
+---
+id: list-bin-totes
+title: "List the totes stowed in a bin"
+description: "The totes whose logical location is the bin (ADR 0054), ordered by LPN (which is unique, so it is both the sort key and the id of the keyset cursor). Keyset-paginated (REST guideline section 3): one page of `{items, nextCursor}`, `limit` (1-500, default 100) and the opaque `cursor` from the previous page's `nextCursor`; `nextCursor` is absent on the last page. Any other query parameter is 400 `unknown-query-parameter`. Side-effect-free."
+sidebar_label: "List the totes stowed in a bin"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"List the totes stowed in a bin"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/bins/{binId}/totes"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The totes whose logical location is the bin (ADR 0054), ordered by LPN (which is unique, so it is both the sort key and the id of the keyset cursor). Keyset-paginated (REST guideline section 3): one page of `{items, nextCursor}`, `limit` (1-500, default 100) and the opaque `cursor` from the previous page's `nextCursor`; `nextCursor` is absent on the last page. Any other query parameter is 400 `unknown-query-parameter`. Side-effect-free.
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./list-bin-totes.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./list-bin-totes.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./list-bin-totes.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      
