@@ -10,7 +10,8 @@ import (
 
 // RegisterTote registers a reusable tote by the license plate printed on it
 // (ADR 0054, PUT /totes/{lpn}). It is idempotent: a tote that exists is
-// returned unchanged with created=false. An LPN held by a sealed case is
+// returned unchanged with created=false, also to the loser of a concurrent
+// registration of the same new LPN. An LPN held by a sealed case is
 // ErrLicensePlateTaken: one namespace for every container.
 type RegisterTote struct {
 	Totes      ports.ToteRepo
@@ -43,7 +44,8 @@ func (uc *RegisterTote) Execute(ctx context.Context, lpn string) (*container.Tot
 			return err
 		}
 		if !added {
-			return ErrLicensePlateTaken
+			out, err = uc.lostClaim(ctx, lpn)
+			return err
 		}
 		out, created = fresh, true
 		return uc.Events.Publish(ctx, shared.NewToteRegistered(uc.Clock.Now(), lpn))
@@ -52,6 +54,21 @@ func (uc *RegisterTote) Execute(ctx context.Context, lpn string) (*container.Tot
 		return nil, false, err
 	}
 	return out, created, nil
+}
+
+// lostClaim answers a lost license-plate claim. A concurrent PUT of the same
+// new LPN won it: the winner's tote is answered (created=false, 200), so the
+// PUT stays idempotent. Otherwise a sealed case took the plate:
+// ErrLicensePlateTaken. carry (Task 5/10 review, ADR 0054).
+func (uc *RegisterTote) lostClaim(ctx context.Context, lpn string) (*container.Tote, error) {
+	existing, err := uc.Totes.FindByLPN(ctx, lpn)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, ErrLicensePlateTaken
+	}
+	return existing, nil
 }
 
 func (uc *RegisterTote) refuseSealedCase(ctx context.Context, lpn string) error {
