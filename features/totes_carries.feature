@@ -2,6 +2,8 @@
 #   - carry (Task 6 review): a fill raises BinStockLevelChanged STOW for the
 #     tote's bin, a stow RELOCATE for both bins (D12); a fill applies the
 #     placement rules of a plain stow (hazmat refused, Placement wired).
+#   - carry (Task 7 review): a transfer stow into an AutomatedStorage bin is
+#     refused (D9).
 
 Feature: Tote fills and stows, as a stow and a move (ADR 0054)
   A fill is a stow into the tote at its bin; a stow moves the tote and every
@@ -32,3 +34,12 @@ Feature: Tote fills and stows, as a stow and a move (ADR 0054)
     Then the fill is refused with "hazmat-zone-required"
     And tote "TOTE-1" is in "WH1-RCV-DEC-D01-01-01-A" holding nothing
     And bin "WH1-RCV-DEC-D01-01-01-A" holds 0 eaches and bin "WH1-AUTO-ASRS-ASRS1-00-00-S" holds 0
+
+  # carry (Task 7 review)
+  Scenario: A transfer stow into the AS/RS location is refused and nothing is stowed
+    Given site "SITE-ORIG" holds 10 units of SKU "SKU-S1" in Bin "BIN-O1"
+    And an allocation of 5 units of SKU "SKU-S1" from Site "SITE-ORIG" is requested for transfer "tr-1" line "tl-1"
+    And the destination Site "WH1" scans 5 units of SKU "SKU-S1" for transfer "tr-1" line "tl-1"
+    When the receipt for line "tl-1" is stowed into "WH1-AUTO-ASRS-ASRS1-00-00-S=5"
+    Then the stow is refused with "automated-storage-requires-container"
+    And bin "WH1-AUTO-ASRS-ASRS1-00-00-S" holds 0 eaches and bin "WH1-RCV-DEC-D01-01-01-A" holds 0
