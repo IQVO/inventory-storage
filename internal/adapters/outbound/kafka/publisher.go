@@ -118,6 +118,7 @@ func isIntegrationEvent(event shared.DomainEvent) bool {
 		shared.StockRelocated, shared.BinStockLevelChanged,
 		shared.DiscrepancyDetected, shared.ItemUnlocated, shared.ItemStowed,
 		shared.ContainerRegistered, shared.ContainerStowed, shared.CaseBroken, shared.ContainerEmptied,
+		shared.ToteRegistered, shared.ToteFilled, shared.ToteStowed, // carry (Task 9 review)
 		shared.StockHeld, shared.StockReleased, shared.StockDispositioned:
 		return true
 	default:
