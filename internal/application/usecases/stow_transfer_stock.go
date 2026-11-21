@@ -52,6 +52,9 @@ type StowTransferStock struct {
 	// Levels raises BinStockLevelChanged (STOW) for every bin a leg fills,
 	// in the stow's transaction (ADR 0040). Optional: nil means "not emitted".
 	Levels *BinLevelEmitter
+	// LocationTypes keeps loose stock out of an AutomatedStorage bin (ADR
+	// 0054). Optional: nil applies no such rule.
+	LocationTypes ports.BinLocationTypeLookup
 }
 
 // StowBin is one requested destination placement: bin_id plus the
@@ -199,6 +202,9 @@ func (uc *StowTransferStock) loadStowLegs(ctx context.Context, receipt *transfer
 		}
 		if bin == nil {
 			return nil, ErrBinNotFound
+		}
+		if err := refuseLooseInto(ctx, uc.LocationTypes, req.BinID); err != nil {
+			return nil, err
 		}
 		if !bin.IsAtSite(receipt.DestinationSiteID()) {
 			return nil, fmt.Errorf("%w: bin %q is not in destination site %q's custody", ErrBinWrongSite, req.BinID, receipt.DestinationSiteID())

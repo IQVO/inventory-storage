@@ -50,6 +50,11 @@ type Allocation struct {
 	StockUnitID string
 	BinID       shared.BinId
 	Quantity    shared.Quantity
+	// ContainerLPN is the license plate of the container the allocated unit
+	// is in (a tote, or the sealed case of a full-case allocation; ADR 0054),
+	// so the WES can request that container's transport. Empty for stock in
+	// no container and for every allocation made before ADR 0054.
+	ContainerLPN string
 }
 
 // Reservation is the aggregate root for a revocable claim against usable

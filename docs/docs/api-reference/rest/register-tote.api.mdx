@@ -1,0 +1,70 @@
+---
+id: register-tote
+title: "Register a tote by its license plate"
+description: "Commission a reusable tote (ADR 0054): its license plate is its permanent label, printed once (pre-printed by the tote supplier, or by the floor client from the LPN as CODE128); this service mints no LPN and prints no label. Idempotent by method: the first call creates the tote in no bin and answers 201, a repeat answers 200 with the tote as it is now. One license-plate namespace with the sealed cases (ADR 0045): a plate that already names a sealed case is 409 `license-plate-taken`. Raises `ToteRegistered` when the tote is created."
+sidebar_label: "Register a tote by its license plate"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "put api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Register a tote by its license plate"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"put"}
+  path={"/totes/{lpn}"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Commission a reusable tote (ADR 0054): its license plate is its permanent label, printed once (pre-printed by the tote supplier, or by the floor client from the LPN as CODE128); this service mints no LPN and prints no label. Idempotent by method: the first call creates the tote in no bin and answers 201, a repeat answers 200 with the tote as it is now. One license-plate namespace with the sealed cases (ADR 0045): a plate that already names a sealed case is 409 `license-plate-taken`. Raises `ToteRegistered` when the tote is created.
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./register-tote.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./register-tote.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./register-tote.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

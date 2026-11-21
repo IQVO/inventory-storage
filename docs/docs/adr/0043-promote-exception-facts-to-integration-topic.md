@@ -93,3 +93,14 @@ integration fact (ADR 0017); no new publisher path exists.
   were already on the topic (wes-work-planning, pick-face-replenishment)
   see new `type` values they must skip — they already do, by dispatching
   only on their known full type strings.
+
+## Addendum 2026-11-13: current state
+
+- `ItemStowed` is published to both topics as decided here (`isIntegrationEvent` in
+  `internal/adapters/outbound/kafka/publisher.go`). exception-management consumes
+  `DiscrepancyDetected` and `ItemUnlocated` (`internal/adapters/inbound/kafka/inventory_exceptions_consumer.go`
+  in that repo).
+- returns-processing does not consume `ItemStowed`: its Kafka consumers
+  (`internal/adapters/inbound/kafka/`) are `allocated_lines`, `manifests` and `product_classes`,
+  and its ADR 0003 ("Restock loop closure") defers the consumer. No sibling context consumes
+  `ItemStowed` today; the "closes its restock loop" sentence above is the intent, not the current state.

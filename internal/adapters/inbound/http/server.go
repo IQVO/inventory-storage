@@ -57,6 +57,13 @@ type Server struct {
 	GetContainer      *usecases.GetContainer
 	ListBinContainers *usecases.ListBinContainers
 	ReserveFullCases  *usecases.ReserveFullCases
+	// RegisterTote, GetTote, FillTote, StowTote and ListBinTotes back the tote
+	// routes (ADR 0054).
+	RegisterTote *usecases.RegisterTote
+	GetTote      *usecases.GetTote
+	FillTote     *usecases.FillTote
+	StowTote     *usecases.StowTote
+	ListBinTotes *usecases.ListBinTotes
 	// Classifications backs the deprecated read-only GET endpoint: the
 	// local copy of product-master's classifications (ADR 0034). There is
 	// no dedicated use case because the read is a direct, no-invariant
@@ -117,7 +124,7 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	// An unmatched path (for example a container lpn outside [A-Za-z0-9._-])
 	// answers RFC 7807 like every other error, not chi's text/plain 404.
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
-		writeProblem(w, http.StatusNotFound, problemInfo{"route-not-found", "No such resource"}, "no route matches "+req.Method+" "+req.URL.Path, req.URL.Path)
+		writeProblem(w, http.StatusNotFound, problemRouteNotFound, "no route matches "+req.Method+" "+req.URL.Path, req.URL.Path)
 	})
 	metricCfg := otelchimetric.NewBaseConfig(serviceName)
 
@@ -187,6 +194,15 @@ func NewRouter(s *Server, logger *slog.Logger, serviceName string, opts ...Route
 	post.Post("/containers/{lpn:[A-Za-z0-9._-]+}/case-breaks", s.handleBreakCase)
 	r.Get("/containers/{lpn:[A-Za-z0-9._-]+}", s.handleGetContainer)
 	r.Get("/bins/{binId}/containers", s.handleListBinContainers)
+
+	// Totes (ADR 0054): reusable containers the WCS moves, one LPN namespace
+	// with the sealed cases. PUT is idempotent by method; the POSTs carry the
+	// Idempotency-Key middleware like every other POST.
+	r.Put("/totes/{lpn:[A-Za-z0-9._-]+}", s.handleRegisterTote)
+	r.Get("/totes/{lpn:[A-Za-z0-9._-]+}", s.handleGetTote)
+	post.Post("/totes/{lpn:[A-Za-z0-9._-]+}/fills", s.handleFillTote)
+	post.Post("/totes/{lpn:[A-Za-z0-9._-]+}/stowages", s.handleStowTote)
+	r.Get("/bins/{binId}/totes", s.handleListBinTotes)
 
 	// Held stock and disposition (ADR 0052): the Damaged units of an inbound
 	// receipt wait here, never usable, until a disposition settles them.

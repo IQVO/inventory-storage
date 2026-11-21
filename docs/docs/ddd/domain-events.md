@@ -2,12 +2,20 @@
 title: Domain Events
 sidebar_label: Domain Events
 sidebar_position: 5
-description: The eleven past-tense domain events this context raises, which aggregate raises each, and which reach the broker.
+description: The twenty-four past-tense domain events this context raises, who raises each, and which of them reach the broker.
 ---
 
 # Domain Events
 
-Eleven past-tense events, raised by four aggregates. Every event carries an
+Twenty-four past-tense events (`internal/domain/shared/events*.go`). Twenty-three
+are published to Kafka (`apis/asyncapi.yaml`); `LocationRecorded` stays in-process.
+The catalog below lists the twelve events of the stock, reservation, count and
+relocation paths; the transfer, container and held-stock events are in
+[Which events flow where](#which-events-flow-where) and the
+[Events page](/docs/api-reference/events). Only `StockRelocated` is built by an
+aggregate (`internal/domain/relocation/relocation.go`); every other event is
+published directly by a use case, and the *Raised by* column names the aggregate
+or use case the fact is about. Every event carries an
 `occurredAt` taken from the injected `Clock` port — never wall-clock time at
 publish — so ordering is a domain fact rather than an infrastructure artefact.
 
@@ -35,8 +43,8 @@ table, Kafka) is a composition-root decision.
 | `ReservationRevoked` | Reservation | `RevokeReservation` succeeds | `reservationId` |
 | `StockPicked` | Reservation | `ConfirmPick` consumes a reservation — from the REST route, or, in production, from `ConfirmPicksForOrder` on fulfillment-execution's `TaskCompleted`: for exactly the picked line when the event carries `line_no` ([ADR 0036](/docs/adr/0036)), on the order's last pick otherwise ([ADR 0035](/docs/adr/0035)) | `reservationId`, `sku`, `quantity` |
 | `ItemUnlocated` | StockUnit | A cycle-count shortfall cannot account for stock | `stockUnitId`, `sku`, `binId`, `quantity` |
-| `CycleCountCompleted` | Bin | Any cycle count finishes, clean or not | `binId`, `countedQty`, `systemQty`, `discrepancy` |
-| `DiscrepancyDetected` | Bin | A cycle count finds counted ≠ system | `binId`, `countedQty`, `systemQty` |
+| `CycleCountCompleted` | `RunCycleCount` *(use case; publishes directly while it changes StockUnits, no Bin is loaded)* | Any cycle count finishes, clean or not | `binId`, `countedQty`, `systemQty`, `discrepancy` |
+| `DiscrepancyDetected` | `RunCycleCount` *(use case; no Bin is loaded)* | A cycle count finds counted ≠ system | `binId`, `countedQty`, `systemQty` |
 | `StockRelocated` | Relocation | `RelocateStock` moves a quantity of one SKU between two bins of one site — from `POST /relocations` or, for a completed `RELOCATE` task, from `ApplyRelocationTask` ([ADR 0039](/docs/adr/0039)), and for a completed `REPLENISH` task (reason `REPLENISHMENT`, `sourceRef` = the replenishment request id), from `ApplyReplenishTask` ([ADR 0041](/docs/adr/0041)) | `relocationId`, `siteId`, `sku`, `fromBin`, `toBin`, `quantity`, `reason`, `sourceRef` |
 | `BinStockLevelChanged` | StockUnit ledger *(per bin and SKU)* | Any use case that moves a (bin, SKU) level, from the same transaction: stow, pick, relocate (source then destination), cycle-count shortfall, reserve, revoke / expiry ([ADR 0040](/docs/adr/0040)) | `siteId`, `binId`, `sku`, `onHand`, `reserved` (absolute levels), `version` (per bin and SKU), `reason` |
 
@@ -60,27 +68,50 @@ flowchart LR
   RLS --> E12["StockRelocated"]
   LVL["every stock-moving use case<br/>(stow, pick, relocate, count, reserve, revoke)"] --> E13["BinStockLevelChanged"]
 
-  E4 & E5 & E12 & E13 --> KAF["warehouse.inventory.events<br/>integration topic"]
+  E2 & E4 & E5 & E8 & E9 & E12 & E13 --> KAF["warehouse.inventory.events<br/>integration topic"]
   E1 & E2 & E4 & E5 & E6 & E7 & E8 & E9 & E10 --> ANA["warehouse.inventory.analytics<br/>internal analytics topic"]
   E3 --> LOG["in-process only<br/>never leaves the service<br/>no consumer, decided 2026-10-06"]
 
   classDef wired fill:#0f766e,stroke:#134e4a,color:#fff;
   classDef local fill:#94a3b8,stroke:#475569,color:#0f172a;
-  class E4,E5,E12,E13,KAF wired;
+  class E2,E4,E5,E8,E9,E12,E13,KAF wired;
   class LOG local;
 ```
 
-**`StockReserved` and `ReservationRevoked` are the integration events on the
-reservation path** (plus
-the two transfer replies, [ADR 0030](/docs/adr/0030), `StockRelocated` on
-the relocation path, [ADR 0039](/docs/adr/0039), and `BinStockLevelChanged`,
-the per-bin absolute level feed, [ADR 0040](/docs/adr/0040)). The legacy
-`ProductClassified` (ADR 0034, product-master ADR 0003) was removed at stage
-E (2026-10-17), together with its republish command. The integration
-publisher's `Encode` returns nothing for every other event — deliberate, not
-an oversight: those are the published integration contract. Nine of the
-thirteen events go to the internal analytics topic (`StockRelocated` and
-`BinStockLevelChanged` do not: they are integration-only); `LocationRecorded` goes
+**Nineteen of the twenty-four events go to the integration topic
+`warehouse.inventory.events`** (`isIntegrationEvent` in
+`internal/adapters/outbound/kafka/publisher.go`): `StockReserved` and
+`ReservationRevoked` on the reservation path; the three transfer replies
+(`TransferStockAllocated`, `TransferStockAllocationRejected`,
+`TransferStockAllocationReleased`, [ADR 0030](/docs/adr/0030),
+[ADR 0051](/docs/adr/0051)) and the receipt/stow facts `TransferReceiptStaged` and
+`TransferStockStowed` ([ADR 0033](/docs/adr/0033)); `StockRelocated`
+([ADR 0039](/docs/adr/0039)); `BinStockLevelChanged`, the per-bin absolute level
+feed ([ADR 0040](/docs/adr/0040)); the promoted exception facts `ItemStowed`,
+`ItemUnlocated` and `DiscrepancyDetected` ([ADR 0043](/docs/adr/0043)); the four
+container events `ContainerRegistered`, `ContainerStowed`, `CaseBroken` and
+`ContainerEmptied` ([ADR 0046](/docs/adr/0046)); and the held-stock facts
+`StockHeld`, `StockReleased` and `StockDispositioned`
+([ADR 0052](/docs/adr/0052)). The legacy `ProductClassified` (ADR 0034,
+product-master ADR 0003) was removed at stage E (2026-10-17), together with its
+republish command. The integration publisher's `Encode` returns nothing for the
+other five (`StockReceived`, `StockPicked`, `ReservationExpired`,
+`CycleCountCompleted`, `LocationRecorded`) — deliberate, not an oversight: those
+are not part of the published integration contract.
+
+**Twelve go to the internal analytics topic `warehouse.inventory.analytics`**
+(`analyticsEventFor` in `internal/adapters/outbound/kafka/analytics_publisher.go`
+and `heldAnalyticsEvent` in `held_events.go`): the nine types the projector folds
+(`StockReceived`, `ItemStowed`, `ItemUnlocated`, `StockReserved`, `StockPicked`,
+`ReservationExpired`, `ReservationRevoked`, `CycleCountCompleted`,
+`DiscrepancyDetected`) and the three held-stock facts, which the projector
+acknowledges without folding. Counted over the twenty-three published types:
+eight reach both topics (`StockReserved`, `ReservationRevoked`, `ItemStowed`,
+`ItemUnlocated`, `DiscrepancyDetected` and the three held-stock facts), four are
+analytics-only (`StockReceived`, `StockPicked`, `ReservationExpired`,
+`CycleCountCompleted`) and eleven are integration-only (the three transfer
+replies, `TransferReceiptStaged`, `TransferStockStowed`, `StockRelocated`,
+`BinStockLevelChanged` and the four container events). `LocationRecorded` goes
 nowhere (no outbox row, no Kafka message — it has no consumer, so it stays
 in-process by decision). `apis/asyncapi.yaml` documents both channels, so a
 downstream team cannot mistake a documented analytics event for a wired
@@ -88,9 +119,13 @@ integration one.
 
 ## Wire catalogue
 
-Every published event, from the publishers' `Encode` methods
+The published events of the stock, reservation, count, relocation and bin-level
+paths, from the publishers' `Encode` methods
 (`internal/adapters/outbound/kafka/publisher.go`,
-`analytics_publisher.go`). All messages are CloudEvents 1.0 structured mode,
+`analytics_publisher.go`). The transfer replies, the container events and the
+held-stock facts follow the same envelope and are documented per message in
+`apis/asyncapi.yaml`; the held-stock facts also appear under *Consumed events*
+below. All messages are CloudEvents 1.0 structured mode,
 `source=/warehouse/inventory-storage`, routed with the `Hash` balancer on the
 Kafka key (ADR 0021), and — always, since Postgres is the only runtime —
 enqueued in `outbox_events` by the producing use case's transaction and
@@ -106,7 +141,7 @@ relayed by `cmd/inventory`.
 | StockPicked | `com.warehouse.wms.inventory-storage.reservation.StockPicked` | `warehouse.inventory.analytics` | reservation id / reservation id | `sku`, `reservation_id`, `quantity` | `ConfirmPick` (REST, and per reservation from `ConfirmPicksForOrder`, ADR 0035) | `cmd/inventory-projector` |
 | StockReceived | `com.warehouse.wms.inventory-storage.stock.StockReceived` | `warehouse.inventory.analytics` | SKU / SKU | `sku`, `quantity` | `ReceiveStock` | `cmd/inventory-projector` |
 | ItemStowed | `com.warehouse.wms.inventory-storage.stock.ItemStowed` | `warehouse.inventory.analytics` | SKU / SKU | `sku`, `bin_id`, `quantity` | `StowStock` | `cmd/inventory-projector` |
-| ItemStowed | same `type` | `warehouse.inventory.events` | SKU / SKU | `sku`, `bin_id`, `quantity` (byte-identical to the analytics copy, [ADR 0043](/docs/adr/0043)) | `StowStock` | returns-processing (closes its restock loop) |
+| ItemStowed | same `type` | `warehouse.inventory.events` | SKU / SKU | `sku`, `bin_id`, `quantity` (byte-identical to the analytics copy, [ADR 0043](/docs/adr/0043)) | `StowStock` | none today: returns-processing does not consume it (its Kafka consumers in `internal/adapters/inbound/kafka/` are `allocated_lines`, `manifests` and `product_classes`; its ADR 0003 defers closing the restock loop) |
 | ItemUnlocated | `com.warehouse.wms.inventory-storage.stock.ItemUnlocated` | `warehouse.inventory.analytics` | SKU / stock unit id | `sku`, `bin_id`, `stock_unit_id`, `quantity` | `RunCycleCount` | `cmd/inventory-projector` |
 | ItemUnlocated | same `type` | `warehouse.inventory.events` | SKU / stock unit id | `sku`, `bin_id`, `stock_unit_id`, `quantity` (byte-identical to the analytics copy, [ADR 0043](/docs/adr/0043)) | `RunCycleCount` | exception-management (opens cases from short counts) |
 | CycleCountCompleted | `com.warehouse.wms.inventory-storage.bin.CycleCountCompleted` | `warehouse.inventory.analytics` | bin id / bin id | `bin_id`, `counted`, `system`, `discrepancy` | `RunCycleCount` | `cmd/inventory-projector` |
@@ -137,7 +172,16 @@ applies the move via `ApplyRelocationTask` → `RelocateStock`
 `warehouse.inbound-receiving.events` books a received `Good` line as staged
 stock via `BookInboundReceiptLine` → `ReceiveStock` (the same `StockReceived`
 as `POST /stock-receipts`; a `Damaged` line is booked as
-held stock, [ADR 0037](/docs/adr/0037), [ADR 0052](/docs/adr/0052)).
+held stock, [ADR 0037](/docs/adr/0037), [ADR 0052](/docs/adr/0052)); on the same
+topic `ReceiptCartonReceived` creates or links Containers via `LinkReceiptCarton`
+([ADR 0045](/docs/adr/0045), [ADR 0046](/docs/adr/0046)); `com.warehouse.wms.returns-processing.disposition.ReturnLineStaged`
+on `warehouse.returns-processing.events` books a RESTOCK handover as staged stock
+through the same `ReceiveStock` seam via `BookReturnLine`
+([ADR 0044](/docs/adr/0044)); and, on `warehouse.network-inventory-planning.events`,
+`TransferAllocationRequested` and `TransferAllocationReleaseRequested` drive
+`AllocateTransferStock` and `ReleaseTransferAllocation`
+([ADR 0030](/docs/adr/0030), [ADR 0051](/docs/adr/0051)). The table below lists
+each consumed type.
 
 `dataschema` is `urn:warehouse:inventory-storage:events:<EventName>:v1` on
 the integration topic and `urn:warehouse:inventory-storage:analytics:<EventName>:v1`
@@ -153,6 +197,12 @@ on the analytics topic.
 | LocationSlotDecommissioned | `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `warehouse.facility.events` | same | drops the slot, so it answers `Known=false` |
 | TaskCompleted | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `warehouse.fulfillment.events` | `TaskCompletedConsumer` (stable group from the mandatory `TASK_COMPLETED_CONSUMER_GROUP`, chart default `inventory-storage-confirm-pick`, FirstOffset, always on) | for `task_type=PICK` with `order_ref`: with the additive optional `line_no` ([ADR 0036](/docs/adr/0036)) confirms exactly the ACTIVE reservation of (`order_ref`, `line_no`) (`StockPicked`), skipping CONFIRMED/REVOKED/EXPIRED (expired counted) and leaving the order's other lines ACTIVE; nothing is counted. Without `line_no`, or for reservations with no `line_no`, the ADR 0035 fallback counts the pick for the order (`order_pick_progress`, one PICK task per order line) and, only on the LAST pick (count reaches the ACTIVE + CONFIRMED reservations), confirms every ACTIVE one. Claim, counter (fallback only) and confirmations in one transaction; no `order_ref` or no reservations is a no-op; a `line_no` outside 1..2147483647 is dead-lettered ([ADR 0036](/docs/adr/0036)). For `task_type=RELOCATE` ([ADR 0039](/docs/adr/0039)): `ApplyRelocationTask` reads the additive `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref`, claims the CloudEvents `id` (consumer `task-completed-relocate`) and runs `RelocateStock` in one transaction (`StockRelocated`); a completion that can never apply (missing field, unknown bin, other site, same bin, insufficient usable, destination full) is dead-lettered at once. For `task_type=REPLENISH` ([ADR 0041](/docs/adr/0041)): `ApplyReplenishTask` reads the same additive fields plus the required `request_ref` (the replenishment request id), claims the `id` under consumer `task-completed-replenish` and runs `RelocateStock` with reason `REPLENISHMENT` and `source_ref` = `request_ref` in one transaction (`StockRelocated`, two `BinStockLevelChanged`); a missing `request_ref` is dead-lettered at once |
 | ReceiptLineReceived | `com.warehouse.wms.inbound-receiving.receipt.ReceiptLineReceived` | `warehouse.inbound-receiving.events` | `InboundReceiptConsumer` (stable group from the mandatory `INBOUND_RECEIPT_CONSUMER_GROUP`, always on, FirstOffset) | for `condition=Good`: `BookInboundReceiptLine` claims the CloudEvents `id` (`processed_events`) and runs `ReceiveStock` in one transaction, so one `StockReceived` (analytics topic) per id, staged and not yet usable ([ADR 0037](/docs/adr/0037)); for `condition=Damaged`: `BookInboundReceiptLine` claims the `id` and runs `HoldStock` in one transaction, so one `StockHeld` per id, never usable ([ADR 0052](/docs/adr/0052)); an empty `sku`, a non-positive `quantity` or an unknown `condition` is logged and committed past |
+| ReceiptCartonReceived | `com.warehouse.wms.inbound-receiving.receipt.ReceiptCartonReceived` | `warehouse.inbound-receiving.events` | `InboundReceiptConsumer` (same group as `ReceiptLineReceived`) | `LinkReceiptCarton` claims the CloudEvents `id` and creates or links the Containers of the carton ([ADR 0045](/docs/adr/0045), [ADR 0046](/docs/adr/0046)); it never books a quantity |
+| ReturnLineStaged | `com.warehouse.wms.returns-processing.disposition.ReturnLineStaged` | `warehouse.returns-processing.events` | `ReturnLineConsumer` (stable group from the mandatory `RETURN_LINE_CONSUMER_GROUP`, always on) | `BookReturnLine` claims the `id` (consumer `return-line-staged`) and runs `ReceiveStock` in one transaction, so one `StockReceived` (analytics topic) per id, staged and not yet usable ([ADR 0044](/docs/adr/0044)); an empty `sku`, a non-positive `quantity`, an empty `disposition_id` or a `condition` other than `Good` is logged (WARN) and committed past |
+| TransferAllocationRequested | `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationRequested` | `warehouse.network-inventory-planning.events` | `Consumer` in `transfer_consumer.go` (stable group from the mandatory `TRANSFER_ALLOCATION_CONSUMER_GROUP`, chart default `inventory-storage-transfer-allocation`) | `AllocateTransferStock` decides the allocation and replies `TransferStockAllocated` or `TransferStockAllocationRejected` on this service's own integration topic through the outbox ([ADR 0030](/docs/adr/0030)); a payload that can never apply is logged (WARN) and committed past, there is no DLQ on this topic |
+| TransferAllocationReleaseRequested | `com.warehouse.wes.network-inventory-planning.transfer.TransferAllocationReleaseRequested` | `warehouse.network-inventory-planning.events` | same | `ReleaseTransferAllocation` resolves the origin reservation of a transfer cancelled after allocation, idempotent by `transfer_line_id`, and replies `TransferStockAllocationReleased` through the outbox ([ADR 0051](/docs/adr/0051)) |
+| SlotPlanApproved | `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved` | `warehouse.slotting-optimization.events` | `SlotPlanConsumer` (group `SLOT_PLAN_CONSUMER_GROUP`, default `inventory-storage-slot-plan`, replays from the first offset for a new group) | `ApplySlotPlan` replaces the site's forward-slot map (`forward_pick_face_plans`, `forward_pick_faces`) in one transaction with the `id` claim, only when `approved_at` is later than the held plan's; `SlotPlanGenerated` and `SlotPlanRejected` are committed past ([ADR 0050](/docs/adr/0050)) |
+| ProductClassified, ProductPackLevelDeclared, ProductPackLevelRetired | `com.warehouse.wms.product-master.product.<Event>` | `warehouse.product-master.events` | `ProductMasterConsumer` (stable group from the mandatory `PRODUCT_MASTER_CONSUMER_GROUP`, always on) | `ProductClassified`: `ApplyProductClassification` upserts the local classification copy when its `version` is greater than the stored one ([ADR 0034](/docs/adr/0034)); the two pack-level events feed the local packaging view `pack_levels` via `ApplyPackLevel` ([ADR 0046](/docs/adr/0046)); the other product-master types are committed past |
 | StockHeld, StockReleased, StockDispositioned | `com.warehouse.wms.inventory-storage.stock.<Event>` | `warehouse.inventory.events` and `warehouse.inventory.analytics` | none yet (`x-no-consumer-reason` in `apis/asyncapi.yaml`); the projector acknowledges the types it does not fold | held-stock facts (ADR 0052): key = subject = held unit id; `StockHeld` on a Damaged line, `StockReleased` + `StockDispositioned` (+ the `StockReceived` of the release) on RELEASE, `StockDispositioned` on every other decision |
 | all nine analytics types above | `com.warehouse.wms.inventory-storage.*` | `warehouse.inventory.analytics` | `cmd/inventory-projector` (group `inventory-analytics`, FirstOffset) | upserts `flow_accuracy_rollup`, dedupes on the CloudEvents `id`; a `ProductClassified` on the same topic would be acknowledged and ignored (none is published there since ADR 0034) |
 

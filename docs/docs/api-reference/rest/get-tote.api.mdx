@@ -1,0 +1,70 @@
+---
+id: get-tote
+title: "Read one tote and its contents"
+description: "The tote (ADR 0054) with this license plate: its site and bin (its logical location; absent until its first stow) and its contents, one entry per stock unit in the tote, ordered by SKU then stock unit id (empty, never null, for an empty tote). Side-effect-free."
+sidebar_label: "Read one tote and its contents"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/inventory-storage-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Read one tote and its contents"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/totes/{lpn}"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The tote (ADR 0054) with this license plate: its site and bin (its logical location; absent until its first stow) and its contents, one entry per stock unit in the tote, ordered by SKU then stock unit id (empty, never null, for an empty tote). Side-effect-free.
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-tote.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-tote.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-tote.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

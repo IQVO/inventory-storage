@@ -78,6 +78,10 @@ type allocationResponse struct {
 	// recorded and that the 0008 migration could not backfill (ADR 0025).
 	BinID    string `json:"binId,omitempty"`
 	Quantity int    `json:"quantity"`
+	// ContainerID is the license plate of the container the allocated unit
+	// is in (a tote or a sealed case); omitted for stock in no container
+	// (ADR 0054).
+	ContainerID string `json:"containerId,omitempty"`
 }
 
 type reservationResponse struct {

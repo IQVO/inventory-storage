@@ -1,0 +1,1111 @@
+asyncapi: 2.6.0
+
+info:
+  title: slotting-optimization Domain Events
+  version: "1.0.0"
+  contact:
+    name: slotting-optimization maintainers
+    url: https://github.com/IQVO/slotting-optimization
+    email: slotting-optimization@iqvo.example.com
+  license:
+    name: UNLICENSED
+  description: |
+    Event catalog for the **slotting-optimization** bounded context (WMS
+    subdomain): reviewable plans that assign SKUs to forward pick slots, and the
+    human decision taken on them (ADR 0001, ADR 0002).
+
+    **Published.** The `SlotPlan` aggregate raises three events, published to
+    `warehouse.slotting-optimization.events` through a **transactional outbox**:
+    the plan row and its already-encoded events are written in ONE database
+    transaction and a relay drains them to Kafka (at-least-once; the CloudEvents
+    `id` is stored with the outbox row, so a retry republishes the same `id`).
+    `SlotPlanApproved` carries the FULL forward assignment map and the moves, so
+    a consumer needs no lookup; `supersedes_plan_id` names the previously
+    Approved plan of the site, if any.
+
+    **Consumed (ADR 0003, ADR 0010, ADR 0012).** `SiteSkuDemandChanged` from
+    order-management; `ProductClassified`, `ProductDimensionsDeclared`,
+    `ProductMeasured` and the three `ProductPackLevel*` events from
+    product-master; `ZoneRegistered`, `LocationSlotRegistered` and
+    `LocationSlotDecommissioned` from facility-layout; `StockRelocated` from
+    inventory-storage. Each feeds a durable local copy. Five consumers always
+    run on real Kafka (env `DEMAND_MODE`, `PRODUCT_MODE`, `LAYOUT_MODE`,
+    `RELOCATION_MODE`, `PACK_LEVEL_MODE`; the only accepted value, and the
+    default, is `kafka`: `permissive` and `off` are refused at boot) and each
+    needs its consumer group (`DEMAND_CONSUMER_GROUP`, `PRODUCT_CONSUMER_GROUP`,
+    `LAYOUT_CONSUMER_GROUP`, `RELOCATION_CONSUMER_GROUP`,
+    `PACK_LEVEL_CONSUMER_GROUP`; boot fails without it). A message that is not a
+    valid CloudEvent, or whose type is not handled, is skipped. A transient
+    failure retries the same message up to 5 attempts, then the message goes to
+    `<topic>.dlq` with `x-dlq-*` headers. A handled event whose payload can
+    never be applied is skipped with a WARN, except for `StockRelocated` and the
+    `ProductPackLevel*` events, which are dead-lettered at once. The consumed
+    messages below are the producers' own contracts, decoded independently here
+    and never imported.
+
+    **Analytics (ADR 0006).** The same three events are ALSO published, in
+    the same transaction and under the same `id` per occurrence, to
+    `warehouse.slotting-optimization.analytics` with
+    `dataschema urn:warehouse:slotting-optimization:analytics:<EventName>:v1`.
+    That stream is not an integration contract: only this service's own
+    projector (`cmd/slotting-projector`, consumer group from
+    `ANALYTICS_CONSUMER_GROUP`) consumes it, folding it into the slot-plan
+    funnel read model; `cmd/slotting-reports` serves the report. Other
+    contexts keep reading `warehouse.slotting-optimization.events`.
+
+    **Envelope (mandatory).** CloudEvents 1.0, structured content mode, Kafka
+    header `content-type: application/cloudevents+json; charset=UTF-8`.
+    Optional W3C trace-context headers (`traceparent`, and `tracestate` /
+    `baggage` when present) carry the trace of the request that wrote the
+    outbox row (ADR 0009); consumers may extract them, and must not require
+    them.
+    `specversion`, `id`, `source` (`/warehouse/slotting-optimization`), `type`,
+    `subject` (the plan id), `time`, `datacontenttype` (`application/json`) and
+    `dataschema` (`urn:warehouse:slotting-optimization:<events|analytics>:<EventName>:v1`)
+    are all required. Kafka key = the plan id. Type =
+    `com.warehouse.wms.slotting-optimization.slotplan.<EventName>`. A breaking
+    payload change is a new `.v2` type, never a mutation.
+
+servers:
+  production:
+    url: "{brokers}"
+    protocol: kafka
+    description: Fleet-shared Kafka broker (host supplied by the deployment environment).
+    variables:
+      brokers:
+        default: "kafka.warehouse-systems.internal:9092"
+
+defaultContentType: application/cloudevents+json
+
+tags:
+  - name: slotting-optimization
+    description: The slotting-optimization bounded context (WMS subdomain).
+  - name: slotplan
+    description: Events raised by the SlotPlan aggregate.
+  - name: consumed
+    description: Events produced by sibling contexts that this service consumes (ADR 0003).
+  - name: analytics
+    description: This service's own analytics stream and read side (ADR 0006).
+
+channels:
+  warehouse.slotting-optimization.events:
+    description: |
+      This service's integration topic. Written by the outbox relay; key = plan
+      id; every message carries the CloudEvents content-type header (plus the
+      optional W3C `traceparent` of the writing request, ADR 0009). Dispatch on
+      the full `type`, ignore unknown types, dedupe on `id`. A row the relay
+      excluded after `OUTBOX_MAX_ATTEMPTS` failures (ADR 0008) is overtaken by
+      later events of the same plan.
+    subscribe:
+      operationId: receiveSlotPlanEvents
+      summary: Receive SlotPlan events.
+      description: |
+        Subscribe to the slotting decisions. Route on the full `type`
+        (`com.warehouse.wms.slotting-optimization.slotplan.<EventName>`). Only
+        `SlotPlanApproved` changes the published forward-slot picture.
+      tags:
+        - name: slotplan
+      message:
+        oneOf:
+          - $ref: "#/components/messages/SlotPlanGenerated"
+          - $ref: "#/components/messages/SlotPlanApproved"
+          - $ref: "#/components/messages/SlotPlanRejected"
+
+  warehouse.slotting-optimization.analytics:
+    description: |
+      This service's own analytics stream (ADR 0006), written by the SAME
+      transactional outbox as the integration topic: every published event
+      appears here too, under the SAME CloudEvents id and `type`, with only
+      the `dataschema` stream segment different
+      (urn:warehouse:slotting-optimization:analytics:<EventName>:v1). It is
+      NOT an integration contract: the only consumer is this service's
+      cmd/slotting-projector (fixed group from ANALYTICS_CONSUMER_GROUP),
+      which folds the events into the analytical database; its deterministic
+      poison goes to warehouse.slotting-optimization.analytics.dlq. Other
+      contexts keep reading warehouse.slotting-optimization.events.
+    subscribe:
+      operationId: receiveSlotPlanAnalytics
+      summary: Receive the analytics twin of every SlotPlan event.
+      description: |
+        Payloads are byte-for-byte the integration payloads (ADR 0006
+        section 2); only the dataschema names the analytics stream.
+      tags:
+        - name: analytics
+      message:
+        oneOf:
+          - $ref: "#/components/messages/SlotPlanGeneratedAnalytics"
+          - $ref: "#/components/messages/SlotPlanApprovedAnalytics"
+          - $ref: "#/components/messages/SlotPlanRejectedAnalytics"
+
+  warehouse.order-management.events:
+    description: |
+      order-management's integration topic. This service consumes ONLY
+      `SiteSkuDemandChanged` (key `<order>/line/<n>`, so one line's stream is
+      totally ordered), under a stable consumer group read from env
+      `DEMAND_CONSUMER_GROUP` when `DEMAND_MODE=kafka`. Every other type on the
+      topic is ignored.
+    publish:
+      operationId: consumeSiteSkuDemand
+      summary: Consume the per-line site/SKU demand projection.
+      description: |
+        Last writer wins per source order line; `state=REMOVED` deactivates the
+        line. The CloudEvents `id` claim and the effect commit in one
+        transaction; the offset is committed afterwards (ADR 0003).
+      tags:
+        - name: consumed
+      message:
+        $ref: "#/components/messages/SiteSkuDemandChanged"
+
+  warehouse.product-master.events:
+    description: |
+      product-master's integration topic (key and subject = the SKU). This
+      service consumes `ProductClassified`, `ProductDimensionsDeclared` and
+      `ProductMeasured` under a stable consumer group read from env
+      `PRODUCT_CONSUMER_GROUP` when `PRODUCT_MODE=kafka`, and
+      `ProductPackLevelDeclared`, `ProductPackLevelRetired` and
+      `ProductPackLevelMeasured` into its local PackLevelView (ADR 0012) under
+      `PACK_LEVEL_CONSUMER_GROUP` when `PACK_LEVEL_MODE=kafka`. A message is
+      applied only when its `version` is greater than the stored one. Every
+      other type is ignored.
+    publish:
+      operationId: consumeProductMasterEvents
+      summary: Consume product classification and physical profile events.
+      description: |
+        Full-state per concern: a classification replaces the classification, a
+        physical profile (declared or measured) replaces the physical profile,
+        acting on `effective`.
+      tags:
+        - name: consumed
+      message:
+        oneOf:
+          - $ref: "#/components/messages/ProductClassified"
+          - $ref: "#/components/messages/ProductDimensionsDeclared"
+          - $ref: "#/components/messages/ProductMeasured"
+          - $ref: "#/components/messages/ProductPackLevelDeclared"
+          - $ref: "#/components/messages/ProductPackLevelRetired"
+          - $ref: "#/components/messages/ProductPackLevelMeasured"
+
+  warehouse.facility.events:
+    description: |
+      facility-layout's integration topic. This service consumes
+      `ZoneRegistered` (key `zoneId`), `LocationSlotRegistered` and
+      `LocationSlotDecommissioned` (key `locationCode`) under a stable consumer
+      group read from env `LAYOUT_CONSUMER_GROUP` when `LAYOUT_MODE=kafka`.
+      Every other type is ignored.
+    publish:
+      operationId: consumeFacilityLayoutEvents
+      summary: Consume zones and location slots.
+      description: |
+        A slot is joined to its zone through `zoneId` at plan time. An absent
+        `role` on `LocationSlotRegistered` means Storage. Forward slots are the
+        Storage slots in zones listed in `FORWARD_ZONE_CODES` (default `FWD`).
+        Decommissioning removes the slot and is irreversible.
+      tags:
+        - name: consumed
+      message:
+        oneOf:
+          - $ref: "#/components/messages/ZoneRegistered"
+          - $ref: "#/components/messages/LocationSlotRegistered"
+          - $ref: "#/components/messages/LocationSlotDecommissioned"
+
+  warehouse.inventory.events:
+    description: |
+      inventory-storage's integration topic (its ADR 0039). This service
+      consumes `StockRelocated` only (ADR 0010), under a stable consumer group
+      read from env `RELOCATION_CONSUMER_GROUP` when `RELOCATION_MODE=kafka`,
+      to record the execution progress of its slot plans. Every other type on
+      the topic is ignored.
+    publish:
+      operationId: consumeInventoryStorageRelocations
+      summary: Consume relocations to record slot-plan execution progress.
+      description: |
+        A relocation is matched to a plan's move by `source_ref` first: the
+        move reference `<plan_id>:<move_seq>` (fulfillment-execution's
+        `relocation_ref`, carried by inventory-storage as the relocation's
+        source_ref) names the move at that 0-based position of the plan's moves.
+        Only when `source_ref` is no move reference is it matched by
+        `site_code`, `sku` and the bins on the site's Approved plan. The
+        CloudEvents `id` is claimed with the effect in one transaction; a
+        relocation is recorded once per `relocation_id`. A relocation of no
+        known move is claimed and counted, never dead-lettered. A
+        `StockRelocated` whose data cannot be decoded or misses a required
+        field is dead-lettered at once to `warehouse.inventory.events.dlq`.
+      tags:
+        - name: consumed
+      message:
+        oneOf:
+          - $ref: "#/components/messages/StockRelocated"
+
+components:
+  messages:
+    SlotPlanGenerated:
+      x-no-consumer-reason: "slotting run outcome fact; consumed on demand"
+      name: SlotPlanGenerated
+      title: Slot plan generated
+      summary: A Draft slot plan was generated.
+      description: "`type` = `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated`; subject and key = the plan id. Sizes only; the assignments are not part of this event."
+      contentType: application/cloudevents+json
+      tags:
+        - name: slotplan
+      payload:
+        $ref: "#/components/schemas/SlotPlanGeneratedEvent"
+      examples:
+        - name: generated
+          summary: A 28-day plan for SITE-1 with 2 assignments, 3 moves and 1 unassigned SKU.
+          payload:
+            specversion: "1.0"
+            id: "6f1d2c3b-4a5e-4b7c-8d9e-0a1b2c3d4e5f"
+            source: "/warehouse/slotting-optimization"
+            type: "com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated"
+            subject: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+            time: "2026-10-08T12:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:slotting-optimization:events:SlotPlanGenerated:v1"
+            data:
+              plan_id: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+              site_id: "SITE-1"
+              window_from: "2026-09-10T12:00:00Z"
+              window_to: "2026-10-08T12:00:00Z"
+              policy: "abc-velocity-v1"
+              assignment_count: 2
+              move_count: 3
+              unassigned_count: 1
+
+    SlotPlanApproved:
+      name: SlotPlanApproved
+      title: Slot plan approved
+      summary: A Draft slot plan was approved; it is now the site's forward-slot map.
+      description: |
+        `type` = `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved`;
+        subject and key = the plan id. `assignments` is the FULL map of the plan
+        (replace your picture of the site's forward slots from it); `moves` is
+        what changes against the previous map. `kind` is `Assign`, `Relocate` or
+        `Vacate`; a `Vacate` omits `to_slot` and sets `from_slot`, an `Assign`
+        omits `from_slot`. `supersedes_plan_id` is omitted when the site had no
+        Approved plan.
+      contentType: application/cloudevents+json
+      tags:
+        - name: slotplan
+      payload:
+        $ref: "#/components/schemas/SlotPlanApprovedEvent"
+      examples:
+        - name: approvedWithSupersede
+          summary: Plan approved; SKU-1 assigned, SKU-2 relocated, SKU-3 vacated.
+          payload:
+            specversion: "1.0"
+            id: "0b9a8c7d-6e5f-4a3b-9c2d-1e0f9a8b7c6d"
+            source: "/warehouse/slotting-optimization"
+            type: "com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved"
+            subject: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+            time: "2026-10-08T12:30:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:slotting-optimization:events:SlotPlanApproved:v1"
+            data:
+              plan_id: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+              site_id: "SITE-1"
+              approved_at: "2026-10-08T12:30:00Z"
+              supersedes_plan_id: "plan-8e7d6c5b-4a39-4281-b0c9-d8e7f6a5b4c3"
+              assignments:
+                - { sku: "SKU-1", slot: "WH1-FWD-A01-01-01-A" }
+                - { sku: "SKU-2", slot: "WH1-FWD-A01-01-02-A" }
+              moves:
+                - { sku: "SKU-1", to_slot: "WH1-FWD-A01-01-01-A", kind: "Assign" }
+                - { sku: "SKU-2", from_slot: "WH1-FWD-A02-03-01-A", to_slot: "WH1-FWD-A01-01-02-A", kind: "Relocate" }
+                - { sku: "SKU-3", from_slot: "WH1-FWD-A01-01-03-A", kind: "Vacate" }
+
+    SlotPlanRejected:
+      x-no-consumer-reason: "slotting run outcome fact (rejection record); consumed on demand"
+      name: SlotPlanRejected
+      title: Slot plan rejected
+      summary: A Draft slot plan was rejected.
+      description: "`type` = `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanRejected`; subject and key = the plan id. `reason` is omitted when none was given."
+      contentType: application/cloudevents+json
+      tags:
+        - name: slotplan
+      payload:
+        $ref: "#/components/schemas/SlotPlanRejectedEvent"
+      examples:
+        - name: rejected
+          summary: Plan rejected with a reason.
+          payload:
+            specversion: "1.0"
+            id: "4d3c2b1a-0f9e-4d8c-8b7a-6f5e4d3c2b1a"
+            source: "/warehouse/slotting-optimization"
+            type: "com.warehouse.wms.slotting-optimization.slotplan.SlotPlanRejected"
+            subject: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+            time: "2026-10-08T12:15:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:slotting-optimization:events:SlotPlanRejected:v1"
+            data:
+              plan_id: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+              site_id: "SITE-1"
+              rejected_at: "2026-10-08T12:15:00Z"
+              reason: "Too many relocations before peak season."
+
+    SiteSkuDemandChanged:
+      name: SiteSkuDemandChanged
+      title: SiteSkuDemandChanged (consumed, order-management)
+      summary: One source order line's demand at the configured site changed.
+      description: |
+        `type` = `com.warehouse.wes.order-management.siteskudemand.SiteSkuDemandChanged`,
+        source `/warehouse/order-management`, dataschema
+        `urn:warehouse:order-management:events:SiteSkuDemandChanged:v1`. Subject and
+        Kafka key = `<source_order_id>/line/<line_no>`. Produced by
+        order-management (its ADR 0035).
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/SiteSkuDemandChangedEvent"
+      examples:
+        - name: active
+          summary: An ACTIVE line of 12 units of SKU-1.
+          payload:
+            specversion: "1.0"
+            id: "7a6b5c4d-3e2f-4a1b-9c8d-7e6f5a4b3c2d"
+            source: "/warehouse/order-management"
+            type: "com.warehouse.wes.order-management.siteskudemand.SiteSkuDemandChanged"
+            subject: "ord-7c9e6679-7d5a-4b37-b2f1-93b0c4a1d8f2/line/1"
+            time: "2026-10-07T09:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:order-management:events:SiteSkuDemandChanged:v1"
+            data:
+              source_order_id: "ord-7c9e6679-7d5a-4b37-b2f1-93b0c4a1d8f2"
+              line_no: 1
+              site_id: "SITE-1"
+              sku: "SKU-1"
+              demanded_units: 12
+              due_at: "2026-10-09T10:00:00Z"
+              state: "ACTIVE"
+              assignment_version: "static-site-v1"
+
+    ProductClassified:
+      name: ProductClassified
+      title: ProductClassified (consumed, product-master)
+      summary: A product's handling classification was set or replaced (full state).
+      description: |
+        `type` = `com.warehouse.wms.product-master.product.ProductClassified`,
+        source `/warehouse/product-master`, dataschema
+        `urn:warehouse:product-master:events:ProductClassified:v1`. Subject and key =
+        the SKU. Applied only when `version` is greater than the stored one.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/ProductClassifiedEvent"
+      examples:
+        - name: hazmatFrozen
+          summary: SKU-9 classified Hazmat + TemperatureSensitive (Frozen).
+          payload:
+            specversion: "1.0"
+            id: "0f6d8a2b-3c4e-4d5f-8a9b-7c6d5e4f3a2b"
+            source: "/warehouse/product-master"
+            type: "com.warehouse.wms.product-master.product.ProductClassified"
+            subject: "SKU-9"
+            time: "2026-10-06T21:02:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:product-master:events:ProductClassified:v1"
+            data:
+              sku: "SKU-9"
+              handling_tags: ["Hazmat", "TemperatureSensitive"]
+              temperature_class: "Frozen"
+              dot_hazard_class: 3
+              classification_source: "native"
+              version: 3
+
+    ProductDimensionsDeclared:
+      name: ProductDimensionsDeclared
+      title: ProductDimensionsDeclared (consumed, product-master)
+      summary: Declared unit dimensions and weight were set or replaced (full physical profile).
+      description: |
+        `type` = `com.warehouse.wms.product-master.product.ProductDimensionsDeclared`,
+        dataschema `urn:warehouse:product-master:events:ProductDimensionsDeclared:v1`.
+        Act on `effective` and `version`.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/PhysicalProfileEvent"
+      examples:
+        - name: declared
+          summary: SKU-1 declared at 200x120x80 mm, 1500 g.
+          payload:
+            specversion: "1.0"
+            id: "5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d"
+            source: "/warehouse/product-master"
+            type: "com.warehouse.wms.product-master.product.ProductDimensionsDeclared"
+            subject: "SKU-1"
+            time: "2026-10-06T21:03:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:product-master:events:ProductDimensionsDeclared:v1"
+            data:
+              sku: "SKU-1"
+              declared: { length_mm: 200, width_mm: 120, height_mm: 80, weight_g: 1500, volume_mm3: 1920000 }
+              effective: { length_mm: 200, width_mm: 120, height_mm: 80, weight_g: 1500, volume_mm3: 1920000 }
+              effective_source: "declared"
+              discrepancy: false
+              version: 4
+
+    ProductMeasured:
+      name: ProductMeasured
+      title: ProductMeasured (consumed, product-master)
+      summary: A measurement of one unit was recorded and is now effective (full physical profile).
+      description: |
+        `type` = `com.warehouse.wms.product-master.product.ProductMeasured`,
+        dataschema `urn:warehouse:product-master:events:ProductMeasured:v1`. Act on
+        `effective` and `version`.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/PhysicalProfileEvent"
+      examples:
+        - name: measured
+          summary: SKU-1 measured heavier than declared.
+          payload:
+            specversion: "1.0"
+            id: "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b"
+            source: "/warehouse/product-master"
+            type: "com.warehouse.wms.product-master.product.ProductMeasured"
+            subject: "SKU-1"
+            time: "2026-10-06T21:04:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:product-master:events:ProductMeasured:v1"
+            data:
+              sku: "SKU-1"
+              declared: { length_mm: 200, width_mm: 120, height_mm: 80, weight_g: 1500, volume_mm3: 1920000 }
+              measured: { length_mm: 205, width_mm: 121, height_mm: 82, weight_g: 1720, volume_mm3: 2034010, measured_at: "2026-10-06T14:05:00Z", device_id: "CUBISCAN-03" }
+              effective: { length_mm: 205, width_mm: 121, height_mm: 82, weight_g: 1720, volume_mm3: 2034010 }
+              effective_source: "measured"
+              discrepancy: true
+              version: 5
+
+    ZoneRegistered:
+      name: ZoneRegistered
+      title: ZoneRegistered (consumed, facility-layout)
+      summary: A behavioural zone was added inside a site's area.
+      description: |
+        `type` = `com.warehouse.wms.facility-layout.zone.ZoneRegistered`, source
+        `/warehouse/facility-layout`, dataschema
+        `urn:warehouse:facility-layout:events:ZoneRegistered:v1`. Subject and Kafka
+        key = `zoneId`. `data` also carries `eventName`, `eventType` and
+        `occurredAt`, which are ignored.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/ZoneRegisteredEvent"
+      examples:
+        - name: forwardZone
+          summary: An ambient, non-hazmat forward zone.
+          payload:
+            specversion: "1.0"
+            id: "2b1a0f9e-8d7c-4b6a-a594-837261504f3e"
+            source: "/warehouse/facility-layout"
+            type: "com.warehouse.wms.facility-layout.zone.ZoneRegistered"
+            subject: "WH1-FWD-AMB"
+            time: "2026-09-01T08:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:facility-layout:events:ZoneRegistered:v1"
+            data:
+              eventName: "ZoneRegistered"
+              eventType: "com.warehouse.wms.facility-layout.zone.ZoneRegistered"
+              occurredAt: "2026-09-01T08:00:00Z"
+              zoneId: "WH1-FWD-AMB"
+              siteCode: "WH1"
+              areaCode: "FWD"
+              zoneCode: "FWD"
+              temperatureClass: "Ambient"
+              hazmat: false
+
+    LocationSlotRegistered:
+      name: LocationSlotRegistered
+      title: LocationSlotRegistered (consumed, facility-layout)
+      summary: A coded leaf slot now exists on the warehouse map.
+      description: |
+        `type` = `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`,
+        dataschema `urn:warehouse:facility-layout:events:LocationSlotRegistered:v1`.
+        Subject and Kafka key = `locationCode`. An absent `role` means Storage.
+        `data` also carries `eventName`, `eventType` and `occurredAt`, which are
+        ignored.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/LocationSlotRegisteredEvent"
+      examples:
+        - name: storageSlot
+          summary: A forward storage slot of 0.5 m3 and 40 kg.
+          payload:
+            specversion: "1.0"
+            id: "3c2b1a0f-9e8d-4c7b-a695-8372615a4f3d"
+            source: "/warehouse/facility-layout"
+            type: "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered"
+            subject: "WH1-FWD-A01-01-01-A"
+            time: "2026-09-01T08:05:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:facility-layout:events:LocationSlotRegistered:v1"
+            data:
+              eventName: "LocationSlotRegistered"
+              eventType: "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered"
+              occurredAt: "2026-09-01T08:05:00Z"
+              locationCode: "WH1-FWD-A01-01-01-A"
+              aisleId: "WH1-FWD-AMB-A01"
+              zoneId: "WH1-FWD-AMB"
+              locationType: "ShelfBin"
+              role: "Storage"
+              maxWeightKg: 40
+              maxVolumeM3: 0.5
+
+    LocationSlotDecommissioned:
+      name: LocationSlotDecommissioned
+      title: LocationSlotDecommissioned (consumed, facility-layout)
+      summary: A coded slot was permanently retired.
+      description: |
+        `type` = `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned`,
+        dataschema `urn:warehouse:facility-layout:events:LocationSlotDecommissioned:v1`.
+        Subject and Kafka key = `locationCode`. Irreversible: the slot is removed
+        from the local copy.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/LocationSlotDecommissionedEvent"
+      examples:
+        - name: decommissioned
+          summary: A forward slot retired.
+          payload:
+            specversion: "1.0"
+            id: "1a0f9e8d-7c6b-4a5f-b493-726150493e2d"
+            source: "/warehouse/facility-layout"
+            type: "com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned"
+            subject: "WH1-FWD-A01-01-03-A"
+            time: "2026-10-01T08:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:facility-layout:events:LocationSlotDecommissioned:v1"
+            data:
+              eventName: "LocationSlotDecommissioned"
+              eventType: "com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned"
+              occurredAt: "2026-10-01T08:00:00Z"
+              locationCode: "WH1-FWD-A01-01-03-A"
+
+    StockRelocated:
+      name: StockRelocated
+      title: StockRelocated (consumed, inventory-storage)
+      summary: A quantity of one SKU moved from one bin to another bin of the same site.
+      description: |
+        `type` = `com.warehouse.wms.inventory-storage.stock.StockRelocated`,
+        dataschema `urn:warehouse:inventory-storage:events:StockRelocated:v1`.
+        Subject and Kafka key = `relocation_id`. Restated from
+        inventory-storage's contract (its ADR 0039), never imported.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/StockRelocatedEvent"
+      examples:
+        - name: slottingMoveFromATask
+          summary: Seven units of SKU-R1 moved between two WH1 bins by a completed RELOCATE task of plan-9's move 0.
+          payload:
+            specversion: "1.0"
+            id: "3c9e1a52-7b4d-4e18-a6f2-5d0b8c7e9f21"
+            source: "/warehouse/inventory-storage"
+            type: "com.warehouse.wms.inventory-storage.stock.StockRelocated"
+            subject: "rel-42"
+            time: "2026-10-13T12:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:inventory-storage:events:StockRelocated:v1"
+            data:
+              relocation_id: "rel-42"
+              site_code: "WH1"
+              sku: "SKU-R1"
+              from_bin: "WH1-STOR-AMB-A01-01-01-A"
+              to_bin: "WH1-STOR-AMB-A02-01-01-A"
+              quantity: 7
+              reason: "SLOTTING"
+              source_ref: "plan-9:0"
+              occurred_at: "2026-10-13T12:00:00Z"
+
+    SlotPlanGeneratedAnalytics:
+      name: SlotPlanGenerated
+      title: Slot plan generated (analytics twin)
+      summary: The analytics-stream twin of SlotPlanGenerated (ADR 0006).
+      description: "Same `type`, `id`, `subject`, key and payload as the integration message; `dataschema` = `urn:warehouse:slotting-optimization:analytics:SlotPlanGenerated:v1`. Consumed only by cmd/slotting-projector."
+      contentType: application/cloudevents+json
+      tags:
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/SlotPlanGeneratedEvent"
+      examples:
+        - name: generated
+          summary: The analytics twin of the generated example above.
+          payload:
+            specversion: "1.0"
+            id: "6f1d2c3b-4a5e-4b7c-8d9e-0a1b2c3d4e5f"
+            source: "/warehouse/slotting-optimization"
+            type: "com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated"
+            subject: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+            time: "2026-10-08T12:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:slotting-optimization:analytics:SlotPlanGenerated:v1"
+            data:
+              plan_id: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+              site_id: "SITE-1"
+              window_from: "2026-09-10T12:00:00Z"
+              window_to: "2026-10-08T12:00:00Z"
+              policy: "abc-velocity-v1"
+              assignment_count: 2
+              move_count: 3
+              unassigned_count: 1
+
+    SlotPlanApprovedAnalytics:
+      name: SlotPlanApproved
+      title: Slot plan approved (analytics twin)
+      summary: The analytics-stream twin of SlotPlanApproved (ADR 0006).
+      description: "Same `type`, `id`, `subject`, key and payload as the integration message; `dataschema` = `urn:warehouse:slotting-optimization:analytics:SlotPlanApproved:v1`. The `supersedes_plan_id`, when present, stamps the SUPERSEDED plan's supersession day in the read model."
+      contentType: application/cloudevents+json
+      tags:
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/SlotPlanApprovedEvent"
+      examples:
+        - name: approvedWithSupersede
+          summary: The analytics twin of the approved example above.
+          payload:
+            specversion: "1.0"
+            id: "0b9a8c7d-6e5f-4a3b-9c2d-1e0f9a8b7c6d"
+            source: "/warehouse/slotting-optimization"
+            type: "com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved"
+            subject: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+            time: "2026-10-08T12:30:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:slotting-optimization:analytics:SlotPlanApproved:v1"
+            data:
+              plan_id: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+              site_id: "SITE-1"
+              approved_at: "2026-10-08T12:30:00Z"
+              supersedes_plan_id: "plan-8e7d6c5b-4a39-4281-b0c9-d8e7f6a5b4c3"
+              assignments:
+                - { sku: "SKU-1", slot: "WH1-FWD-A01-01-01-A" }
+                - { sku: "SKU-2", slot: "WH1-FWD-A01-01-02-A" }
+              moves:
+                - { sku: "SKU-1", to_slot: "WH1-FWD-A01-01-01-A", kind: "Assign" }
+
+    SlotPlanRejectedAnalytics:
+      name: SlotPlanRejected
+      title: Slot plan rejected (analytics twin)
+      summary: The analytics-stream twin of SlotPlanRejected (ADR 0006).
+      description: "Same `type`, `id`, `subject`, key and payload as the integration message; `dataschema` = `urn:warehouse:slotting-optimization:analytics:SlotPlanRejected:v1`."
+      contentType: application/cloudevents+json
+      tags:
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/SlotPlanRejectedEvent"
+      examples:
+        - name: rejected
+          summary: The analytics twin of the rejected example above.
+          payload:
+            specversion: "1.0"
+            id: "4d3c2b1a-0f9e-4d8c-8b7a-6f5e4d3c2b1a"
+            source: "/warehouse/slotting-optimization"
+            type: "com.warehouse.wms.slotting-optimization.slotplan.SlotPlanRejected"
+            subject: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+            time: "2026-10-08T12:15:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:slotting-optimization:analytics:SlotPlanRejected:v1"
+            data:
+              plan_id: "plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+              site_id: "SITE-1"
+              rejected_at: "2026-10-08T12:15:00Z"
+              reason: "Too many relocations before peak season."
+
+    ProductPackLevelDeclared:
+      name: ProductPackLevelDeclared
+      title: ProductPackLevelDeclared (consumed, product-master)
+      summary: A pack level of a SKU was declared or revised.
+      description: |
+        `type` = `com.warehouse.wms.product-master.product.ProductPackLevelDeclared`,
+        source `/warehouse/product-master`, dataschema
+        `urn:warehouse:product-master:events:ProductPackLevelDeclared:v1`. Subject and key =
+        the SKU. Applied to the local PackLevelView (ADR 0012,
+        `PACK_LEVEL_MODE=kafka`, group `PACK_LEVEL_CONSUMER_GROUP`) only when
+        `version` is greater than the stored one. Payload pinned by
+        product-master's `apis/asyncapi.yaml` on `develop`.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/ProductPackLevelDeclaredEvent"
+    ProductPackLevelRetired:
+      name: ProductPackLevelRetired
+      title: ProductPackLevelRetired (consumed, product-master)
+      summary: A pack level of a SKU was retired.
+      description: |
+        `type` = `com.warehouse.wms.product-master.product.ProductPackLevelRetired`,
+        source `/warehouse/product-master`, dataschema
+        `urn:warehouse:product-master:events:ProductPackLevelRetired:v1`. Subject and key =
+        the SKU. Applied to the local PackLevelView (ADR 0012,
+        `PACK_LEVEL_MODE=kafka`, group `PACK_LEVEL_CONSUMER_GROUP`) only when
+        `version` is greater than the stored one. Payload pinned by
+        product-master's `apis/asyncapi.yaml` on `develop`.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/ProductPackLevelRetiredEvent"
+    ProductPackLevelMeasured:
+      name: ProductPackLevelMeasured
+      title: ProductPackLevelMeasured (consumed, product-master)
+      summary: A pack level of a SKU was physically measured.
+      description: |
+        `type` = `com.warehouse.wms.product-master.product.ProductPackLevelMeasured`,
+        source `/warehouse/product-master`, dataschema
+        `urn:warehouse:product-master:events:ProductPackLevelMeasured:v1`. Subject and key =
+        the SKU. Applied to the local PackLevelView (ADR 0012,
+        `PACK_LEVEL_MODE=kafka`, group `PACK_LEVEL_CONSUMER_GROUP`) only when
+        `version` is greater than the stored one. Payload pinned by
+        product-master's `apis/asyncapi.yaml` on `develop`.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/ProductPackLevelMeasuredEvent"
+  schemas:
+    CloudEventEnvelope:
+      type: object
+      required: [specversion, id, source, type, subject, time, datacontenttype, dataschema, data]
+      properties:
+        specversion: { type: string, const: "1.0" }
+        id: { type: string, format: uuid }
+        source: { type: string }
+        type: { type: string }
+        subject: { type: string, description: The aggregate instance id (the plan id for published events). }
+        time: { type: string, format: date-time }
+        datacontenttype: { type: string, const: application/json }
+        dataschema: { type: string }
+
+    SlotAssignment:
+      type: object
+      required: [sku, slot]
+      properties:
+        sku: { type: string }
+        slot: { type: string, description: The facility-layout location code of the forward slot. }
+        pick_unit: { type: string, enum: [CASE], description: "Additive (ADR 0012). Present only for a CASE-pick face; absent means EACH." }
+        cases_capacity: { type: integer, format: int64, minimum: 1, description: "Additive (ADR 0012). Whole cases the CASE-pick face holds; present only with pick_unit CASE." }
+
+    SlotMove:
+      type: object
+      required: [sku, kind]
+      properties:
+        sku: { type: string }
+        from_slot: { type: string, description: Omitted for an Assign. }
+        to_slot: { type: string, description: Omitted for a Vacate. }
+        kind: { type: string, enum: [Assign, Relocate, Vacate] }
+
+    SlotPlanGeneratedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [plan_id, site_id, window_from, window_to, policy, assignment_count, move_count, unassigned_count]
+              properties:
+                plan_id: { type: string }
+                site_id: { type: string }
+                window_from: { type: string, format: date-time }
+                window_to: { type: string, format: date-time, description: Exclusive. }
+                policy: { type: string, example: abc-velocity-v1 }
+                assignment_count: { type: integer, minimum: 0 }
+                move_count: { type: integer, minimum: 0 }
+                unassigned_count: { type: integer, minimum: 0 }
+
+    SlotPlanApprovedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [plan_id, site_id, approved_at, assignments, moves]
+              properties:
+                plan_id: { type: string }
+                site_id: { type: string }
+                approved_at: { type: string, format: date-time }
+                supersedes_plan_id: { type: string, description: Omitted when the site had no Approved plan. }
+                assignments:
+                  type: array
+                  description: The FULL assignment map of the plan.
+                  items: { $ref: "#/components/schemas/SlotAssignment" }
+                moves:
+                  type: array
+                  items: { $ref: "#/components/schemas/SlotMove" }
+
+    SlotPlanRejectedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [plan_id, site_id, rejected_at]
+              properties:
+                plan_id: { type: string }
+                site_id: { type: string }
+                rejected_at: { type: string, format: date-time }
+                reason: { type: string, maxLength: 500, description: Omitted when none was given. }
+
+    SiteSkuDemandChangedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [source_order_id, line_no, site_id, sku, demanded_units, due_at, state, assignment_version]
+              properties:
+                source_order_id: { type: string }
+                line_no: { type: integer, minimum: 1 }
+                site_id: { type: string }
+                sku: { type: string }
+                demanded_units: { type: integer, minimum: 1 }
+                due_at: { type: string, format: date-time }
+                state: { type: string, enum: [ACTIVE, REMOVED] }
+                assignment_version: { type: string, enum: [static-site-v1] }
+
+    HandlingTag:
+      type: string
+      enum: [Hazmat, Fragile, TemperatureSensitive, Oversized, HighValue]
+
+    ProductClassifiedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [sku, handling_tags, classification_source, version]
+              properties:
+                sku: { type: string }
+                handling_tags:
+                  type: array
+                  items: { $ref: "#/components/schemas/HandlingTag" }
+                temperature_class: { type: string, enum: [Ambient, Chilled, Frozen] }
+                dot_hazard_class: { type: integer, minimum: 1, maximum: 9 }
+                classification_source: { type: string, enum: [native, legacy-import] }
+                version: { type: integer, minimum: 1 }
+
+    Dimensions:
+      type: object
+      required: [length_mm, width_mm, height_mm, weight_g, volume_mm3]
+      properties:
+        length_mm: { type: integer, minimum: 1 }
+        width_mm: { type: integer, minimum: 1 }
+        height_mm: { type: integer, minimum: 1 }
+        weight_g: { type: integer, minimum: 1 }
+        volume_mm3: { type: integer, minimum: 1 }
+
+    PhysicalProfileEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [sku, effective_source, version]
+              properties:
+                sku: { type: string }
+                declared: { $ref: "#/components/schemas/Dimensions" }
+                measured: { type: object, description: Measured dimensions plus measured_at and an optional device_id (ignored here). }
+                effective: { $ref: "#/components/schemas/Dimensions" }
+                effective_source: { type: string, enum: [measured, declared, none] }
+                discrepancy: { type: boolean }
+                version: { type: integer, minimum: 1 }
+
+    ZoneRegisteredEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [zoneId, siteCode, areaCode, zoneCode, temperatureClass, hazmat]
+              properties:
+                zoneId: { type: string }
+                siteCode: { type: string }
+                areaCode: { type: string }
+                zoneCode: { type: string }
+                temperatureClass: { type: string, enum: [Ambient, Chilled, Frozen] }
+                hazmat: { type: boolean }
+
+    LocationSlotRegisteredEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [locationCode, aisleId, zoneId, locationType, maxWeightKg, maxVolumeM3]
+              properties:
+                locationCode: { type: string }
+                aisleId: { type: string }
+                zoneId: { type: string }
+                locationType: { type: string }
+                role: { type: string, description: Absent means Storage. }
+                dockFlow: { type: string }
+                activities: { type: array, items: { type: string } }
+                maxWeightKg: { type: number }
+                maxVolumeM3: { type: number }
+
+    LocationSlotDecommissionedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [locationCode]
+              properties:
+                locationCode: { type: string }
+
+    StockRelocatedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [relocation_id, site_code, sku, from_bin, to_bin, quantity, reason, source_ref, occurred_at]
+              properties:
+                relocation_id: { type: string, description: "The relocation id; recorded once per id." }
+                site_code: { type: string, description: The site both bins belong to (this service's site id). }
+                sku: { type: string }
+                from_bin: { type: string }
+                to_bin: { type: string }
+                quantity: { type: integer, minimum: 1 }
+                reason: { type: string, enum: [SLOTTING, CONSOLIDATION, MANUAL, REPLENISHMENT], description: "Only SLOTTING can execute a slot-plan move; every other reason (including REPLENISHMENT, added by pick-face-replenishment's REPLENISH tasks) is recorded as unmatched with reason=reason-not-slotting." }
+                source_ref:
+                  type: string
+                  maxLength: 200
+                  description: "`<plan_id>:<move_seq>` on slot-plan moves (matched first); a task id, a ticket or \"\" otherwise."
+                occurred_at: { type: string, format: date-time }
+    ProductPackLevelDeclaredEvent:
+      type: object
+      description: CloudEvents 1.0 envelope of product-master's ProductPackLevelDeclared, as consumed here.
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wms.product-master.product.ProductPackLevelDeclared"
+            dataschema:
+              const: "urn:warehouse:product-master:events:ProductPackLevelDeclared:v1"
+            data:
+              type: object
+              required: [sku, level, gtin, units_per_pack, is_orderable, is_despatch_unit, effective_from, version]
+              properties:
+                sku:
+                  type: string
+                level:
+                  type: string
+                gtin:
+                  type: string
+                child_gtin:
+                  type: string
+                qty_of_child:
+                  type: integer
+                  minimum: 2
+                  description: Absent for EACH.
+                units_per_pack:
+                  type: integer
+                  minimum: 1
+                  description: Direct factor to eaches; 1 for EACH.
+                is_orderable:
+                  type: boolean
+                is_despatch_unit:
+                  type: boolean
+                effective_from:
+                  type: string
+                  format: date-time
+                version:
+                  type: integer
+                  minimum: 1
+    ProductPackLevelRetiredEvent:
+      type: object
+      description: CloudEvents 1.0 envelope of product-master's ProductPackLevelRetired, as consumed here.
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wms.product-master.product.ProductPackLevelRetired"
+            dataschema:
+              const: "urn:warehouse:product-master:events:ProductPackLevelRetired:v1"
+            data:
+              type: object
+              required: [sku, level, gtin, effective_to, reason, version]
+              properties:
+                sku:
+                  type: string
+                level:
+                  type: string
+                gtin:
+                  type: string
+                effective_to:
+                  type: string
+                  format: date-time
+                reason:
+                  type: string
+                version:
+                  type: integer
+                  minimum: 1
+    ProductPackLevelMeasuredEvent:
+      type: object
+      description: CloudEvents 1.0 envelope of product-master's ProductPackLevelMeasured, as consumed here.
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wms.product-master.product.ProductPackLevelMeasured"
+            dataschema:
+              const: "urn:warehouse:product-master:events:ProductPackLevelMeasured:v1"
+            data:
+              type: object
+              required: [sku, level, gtin, dims, measured_at, version]
+              properties:
+                sku:
+                  type: string
+                level:
+                  type: string
+                gtin:
+                  type: string
+                dims:
+                  type: object
+                  required: [length_mm, width_mm, height_mm, weight_g]
+                  properties:
+                    length_mm:
+                      type: integer
+                      minimum: 1
+                      maximum: 20000
+                    width_mm:
+                      type: integer
+                      minimum: 1
+                      maximum: 20000
+                    height_mm:
+                      type: integer
+                      minimum: 1
+                      maximum: 20000
+                    weight_g:
+                      type: integer
+                      minimum: 1
+                      maximum: 2000000
+                measured_at:
+                  type: string
+                  format: date-time
+                device_id:
+                  type: string
+                  description: Omitted for a manual measurement.
+                version:
+                  type: integer
+                  minimum: 1

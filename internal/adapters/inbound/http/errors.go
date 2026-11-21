@@ -22,6 +22,7 @@ func statusFor(err error) int {
 		errors.Is(err, usecases.ErrReservationNotFound),
 		errors.Is(err, usecases.ErrRelocationNotFound),
 		errors.Is(err, usecases.ErrContainerNotFound),
+		errors.Is(err, usecases.ErrToteNotFound),
 		errors.Is(err, usecases.ErrHeldUnitNotFound),
 		errors.Is(err, usecases.ErrProductClassificationNotFound):
 		return http.StatusNotFound
@@ -31,6 +32,7 @@ func statusFor(err error) int {
 		errors.Is(err, shared.ErrEmptyBinID),
 		errors.Is(err, shared.ErrInvalidOwnerRef),
 		errors.Is(err, reservation.ErrInvalidLineNo),
+		errors.Is(err, container.ErrInvalidLPN),
 		errors.Is(err, stock.ErrStowRequiresItemAndLocation),
 		errors.Is(err, product.ErrUnknownHandlingTag),
 		errors.Is(err, product.ErrUnknownTemperatureClass),
@@ -81,7 +83,11 @@ func statusFor(err error) int {
 		errors.Is(err, container.ErrContainerReserved),
 		errors.Is(err, container.ErrBreakNotConserving),
 		errors.Is(err, container.ErrContainerQuantityMismatch),
-		errors.Is(err, container.ErrBinHandlingUnitMismatch):
+		errors.Is(err, container.ErrBinHandlingUnitMismatch),
+		errors.Is(err, usecases.ErrLicensePlateTaken),
+		errors.Is(err, container.ErrToteNotPlaced),
+		errors.Is(err, container.ErrToteReserved),
+		errors.Is(err, usecases.ErrAutomatedStorageRequiresContainer):
 		return http.StatusConflict
 
 	default:
@@ -101,6 +107,10 @@ const problemBaseURI = "https://errors.inventory-storage.warehouse-systems.dev/"
 type problemInfo struct {
 	slug  string
 	title string
+	// class is the replay class of the problem type (replay_class.go): what the Idempotency-Key
+	// middleware does with this answer when the request is retried. Every catalogue entry
+	// declares one; TestEveryProblemTypeDeclaresAReplayClass fails on one that does not.
+	class replayClass
 }
 
 // problemCatalog pins each typed domain/application error to its RFC 7807
@@ -115,68 +125,74 @@ func problemCatalog() []struct {
 		err  error
 		info problemInfo
 	}{
-		{usecases.ErrStockUnitNotFound, problemInfo{"stock-unit-not-found", "Stock unit not found"}},
-		{usecases.ErrBinNotFound, problemInfo{"bin-not-found", "Bin not found"}},
-		{usecases.ErrReservationNotFound, problemInfo{"reservation-not-found", "Reservation not found"}},
-		{usecases.ErrRelocationNotFound, problemInfo{"relocation-not-found", "Relocation not found"}},
-		{usecases.ErrProductClassificationNotFound, problemInfo{"product-classification-not-found", "Product classification not found"}},
-		{usecases.ErrContainerNotFound, problemInfo{"container-not-found", "Container not found"}},
-		{usecases.ErrHeldUnitNotFound, problemInfo{"held-unit-not-found", "Held unit not found"}},
+		{usecases.ErrStockUnitNotFound, problemInfo{"stock-unit-not-found", "Stock unit not found", classRetryable}},
+		{usecases.ErrBinNotFound, problemInfo{"bin-not-found", "Bin not found", classRetryable}},
+		{usecases.ErrReservationNotFound, problemInfo{"reservation-not-found", "Reservation not found", classFinal}},
+		{usecases.ErrRelocationNotFound, problemInfo{"relocation-not-found", "Relocation not found", classFinal}},
+		{usecases.ErrProductClassificationNotFound, problemInfo{"product-classification-not-found", "Product classification not found", classRetryable}},
+		{usecases.ErrContainerNotFound, problemInfo{"container-not-found", "Container not found", classRetryable}},
+		{usecases.ErrHeldUnitNotFound, problemInfo{"held-unit-not-found", "Held unit not found", classFinal}},
 
-		{shared.ErrEmptySKU, problemInfo{"empty-sku", "SKU must not be empty"}},
-		{shared.ErrEmptySiteID, problemInfo{"empty-site-id", "Site ID must not be empty"}},
-		{shared.ErrEmptyBinID, problemInfo{"empty-bin-id", "Bin ID must not be empty"}},
-		{shared.ErrInvalidOwnerRef, problemInfo{"invalid-owner-ref", "ownerRef must be at most 64 characters of [A-Za-z0-9._-]"}},
-		{reservation.ErrInvalidLineNo, problemInfo{"invalid-line-no", "lineNo must be between 1 and 2147483647"}},
-		{stock.ErrStowRequiresItemAndLocation, problemInfo{"stow-requires-item-and-location", "Stow requires both an item scan and a location scan"}},
-		{product.ErrUnknownHandlingTag, problemInfo{"unknown-handling-tag", "Unknown handling tag"}},
-		{product.ErrUnknownTemperatureClass, problemInfo{"unknown-temperature-class", "Unknown temperature class"}},
-		{product.ErrNoHandlingTags, problemInfo{"no-handling-tags", "Classification requires at least one handling tag"}},
-		{product.ErrTemperatureClassRequired, problemInfo{"temperature-class-required", "Temperature-sensitive classification requires a temperature class"}},
-		{product.ErrTemperatureClassNotApplicable, problemInfo{"temperature-class-not-applicable", "Temperature class is only meaningful when the temperature-sensitive tag is present"}},
-		{product.ErrDuplicateHandlingTag, problemInfo{"duplicate-handling-tag", "Duplicate handling tag"}},
-		{product.ErrInvalidDOTHazardClass, problemInfo{"invalid-dot-hazard-class", "DOT hazard class must be between 1 and 9"}},
-		{product.ErrDOTHazardClassNotApplicable, problemInfo{"dot-hazard-class-not-applicable", "DOT hazard class is only meaningful when the hazmat tag is present"}},
+		{shared.ErrEmptySKU, problemInfo{"empty-sku", "SKU must not be empty", classFinal}},
+		{shared.ErrEmptySiteID, problemInfo{"empty-site-id", "Site ID must not be empty", classFinal}},
+		{shared.ErrEmptyBinID, problemInfo{"empty-bin-id", "Bin ID must not be empty", classFinal}},
+		{shared.ErrInvalidOwnerRef, problemInfo{"invalid-owner-ref", "ownerRef must be at most 64 characters of [A-Za-z0-9._-]", classFinal}},
+		{reservation.ErrInvalidLineNo, problemInfo{"invalid-line-no", "lineNo must be between 1 and 2147483647", classFinal}},
+		{container.ErrInvalidLPN, problemInfo{"invalid-lpn", "lpn must be 1 to 64 characters of [A-Za-z0-9._-]", classFinal}},
+		{stock.ErrStowRequiresItemAndLocation, problemInfo{"stow-requires-item-and-location", "Stow requires both an item scan and a location scan", classFinal}},
+		{product.ErrUnknownHandlingTag, problemInfo{"unknown-handling-tag", "Unknown handling tag", classFinal}},
+		{product.ErrUnknownTemperatureClass, problemInfo{"unknown-temperature-class", "Unknown temperature class", classFinal}},
+		{product.ErrNoHandlingTags, problemInfo{"no-handling-tags", "Classification requires at least one handling tag", classFinal}},
+		{product.ErrTemperatureClassRequired, problemInfo{"temperature-class-required", "Temperature-sensitive classification requires a temperature class", classFinal}},
+		{product.ErrTemperatureClassNotApplicable, problemInfo{"temperature-class-not-applicable", "Temperature class is only meaningful when the temperature-sensitive tag is present", classFinal}},
+		{product.ErrDuplicateHandlingTag, problemInfo{"duplicate-handling-tag", "Duplicate handling tag", classFinal}},
+		{product.ErrInvalidDOTHazardClass, problemInfo{"invalid-dot-hazard-class", "DOT hazard class must be between 1 and 9", classFinal}},
+		{product.ErrDOTHazardClassNotApplicable, problemInfo{"dot-hazard-class-not-applicable", "DOT hazard class is only meaningful when the hazmat tag is present", classFinal}},
 
-		{shared.ErrNegativeQuantity, problemInfo{"negative-quantity", "Quantity must not be negative"}},
-		{shared.ErrZeroQuantity, problemInfo{"zero-quantity", "Quantity must be greater than zero"}},
-		{location.ErrInvalidCapacity, problemInfo{"invalid-bin-capacity", "Bin capacity must be greater than zero"}},
-		{relocation.ErrSameBin, problemInfo{"same-bin", "Relocation source and destination bin must differ"}},
-		{relocation.ErrUnknownReason, problemInfo{"invalid-relocation-reason", "Relocation reason must be SLOTTING, CONSOLIDATION or MANUAL"}},
-		{relocation.ErrSourceRefTooLong, problemInfo{"source-ref-too-long", "Relocation source reference must be at most 200 characters"}},
-		{stock.ErrInvalidDisposition, problemInfo{"invalid-disposition", "Disposition must be RELEASE, RETURN_TO_VENDOR, SCRAP or REWORK"}},
-		{stock.ErrInvalidHoldReason, problemInfo{"invalid-hold-reason", "Hold reason must be DAMAGED, QC_PENDING, SUSPECT or OTHER"}},
+		{shared.ErrNegativeQuantity, problemInfo{"negative-quantity", "Quantity must not be negative", classFinal}},
+		{shared.ErrZeroQuantity, problemInfo{"zero-quantity", "Quantity must be greater than zero", classFinal}},
+		{location.ErrInvalidCapacity, problemInfo{"invalid-bin-capacity", "Bin capacity must be greater than zero", classFinal}},
+		{relocation.ErrSameBin, problemInfo{"same-bin", "Relocation source and destination bin must differ", classFinal}},
+		{relocation.ErrUnknownReason, problemInfo{"invalid-relocation-reason", "Relocation reason must be SLOTTING, CONSOLIDATION or MANUAL", classFinal}},
+		{relocation.ErrSourceRefTooLong, problemInfo{"source-ref-too-long", "Relocation source reference must be at most 200 characters", classFinal}},
+		{stock.ErrInvalidDisposition, problemInfo{"invalid-disposition", "Disposition must be RELEASE, RETURN_TO_VENDOR, SCRAP or REWORK", classFinal}},
+		{stock.ErrInvalidHoldReason, problemInfo{"invalid-hold-reason", "Hold reason must be DAMAGED, QC_PENDING, SUSPECT or OTHER", classFinal}},
 
-		{location.ErrBinFull, problemInfo{"bin-full", "Bin is full: capacity exceeded"}},
-		{location.ErrCapacityBelowOccupancy, problemInfo{"capacity-below-occupancy", "Bin capacity cannot be set below current occupancy"}},
-		{location.ErrReleaseExceedsOccupancy, problemInfo{"release-exceeds-occupancy", "Release exceeds bin occupancy"}},
-		{usecases.ErrInsufficientUsable, problemInfo{"insufficient-usable", "Requested quantity exceeds usable inventory"}},
-		{stock.ErrInsufficientUsable, problemInfo{"insufficient-usable", "Requested quantity exceeds usable inventory"}},
-		{stock.ErrInsufficientReserved, problemInfo{"insufficient-reserved", "Pick quantity exceeds reserved quantity"}},
-		{stock.ErrUnitUnlocated, problemInfo{"unit-unlocated", "Stock unit is unlocated"}},
-		{stock.ErrUnitHeld, problemInfo{"unit-held", "Stock unit is held and cannot be used until a disposition releases it"}},
-		{stock.ErrHeldUnitClosed, problemInfo{"held-unit-closed", "Held unit already has a final disposition"}},
-		{reservation.ErrAlreadyResolved, problemInfo{"reservation-already-resolved", "Reservation is already resolved"}},
-		{reservation.ErrExpired, problemInfo{"reservation-expired", "Reservation has expired"}},
-		{reservation.ErrNoAllocations, problemInfo{"reservation-no-allocations", "Reservation requires at least one allocation"}},
-		{usecases.ErrHazmatZoneRequired, problemInfo{"hazmat-zone-required", "Hazmat SKU requires a hazmat-rated zone"}},
-		{usecases.ErrTemperatureClassMismatch, problemInfo{"temperature-class-mismatch", "Bin temperature class does not match the SKU's required temperature class"}},
-		{usecases.ErrLocationClassificationUnavailable, problemInfo{"location-classification-unavailable", "Location classification lookup unavailable"}},
-		{usecases.ErrHazmatClassIncompatible, problemInfo{"hazmat-class-incompatible", "DOT hazard class incompatible with another SKU already stowed in this bin"}},
-		{usecases.ErrConcurrentModification, problemInfo{"concurrent-modification", "The resource was modified by another request; re-fetch the latest version and retry"}},
-		{usecases.ErrTransferReceiptConflict, problemInfo{"transfer-receipt-conflict", "This transfer line already has a receipt for a different scan"}},
-		{usecases.ErrReceiptNotStaged, problemInfo{"receipt-not-staged", "Transfer receipt is not in STAGED state; stage the receipt before stowing"}},
-		{usecases.ErrBinWrongSite, problemInfo{"bin-wrong-site", "Bin does not belong to the transfer's destination site"}},
-		{relocation.ErrBinNotAtSite, problemInfo{"bin-not-at-site", "Bin is not in the relocation's site"}},
-		{usecases.ErrStowQuantityMismatch, problemInfo{"stow-quantity-mismatch", "Stow quantities must sum exactly to the receipt's received quantity"}},
-		{shared.ErrOwnerMismatch, problemInfo{"owner-mismatch", "Stock owner does not match the reservation owner"}},
-		{container.ErrContainerNotSealed, problemInfo{"container-not-sealed", "Container is not sealed"}},
-		{container.ErrContainerNotStowed, problemInfo{"container-not-stowed", "Container is not stowed in a bin"}},
-		{container.ErrContainerNotAtSite, problemInfo{"container-not-at-site", "Container and bin are not at the same site"}},
-		{container.ErrContainerReserved, problemInfo{"container-reserved", "Container is reserved"}},
-		{container.ErrBreakNotConserving, problemInfo{"break-not-conserving", "A case break must produce exactly the container quantity"}},
-		{container.ErrContainerQuantityMismatch, problemInfo{"container-quantity-mismatch", "A sealed container must hold exactly one case"}},
-		{container.ErrBinHandlingUnitMismatch, problemInfo{"bin-handling-unit-mismatch", "Bin does not accept this kind of handling unit"}},
+		{location.ErrBinFull, problemInfo{"bin-full", "Bin is full: capacity exceeded", classRetryable}},
+		{location.ErrCapacityBelowOccupancy, problemInfo{"capacity-below-occupancy", "Bin capacity cannot be set below current occupancy", classRetryable}},
+		{location.ErrReleaseExceedsOccupancy, problemInfo{"release-exceeds-occupancy", "Release exceeds bin occupancy", classRetryable}},
+		{usecases.ErrInsufficientUsable, problemInfo{"insufficient-usable", "Requested quantity exceeds usable inventory", classRetryable}},
+		{stock.ErrInsufficientUsable, problemInfo{"insufficient-usable", "Requested quantity exceeds usable inventory", classRetryable}},
+		{stock.ErrInsufficientReserved, problemInfo{"insufficient-reserved", "Pick quantity exceeds reserved quantity", classRetryable}},
+		{stock.ErrUnitUnlocated, problemInfo{"unit-unlocated", "Stock unit is unlocated", classRetryable}},
+		{stock.ErrUnitHeld, problemInfo{"unit-held", "Stock unit is held and cannot be used until a disposition releases it", classRetryable}},
+		{stock.ErrHeldUnitClosed, problemInfo{"held-unit-closed", "Held unit already has a final disposition", classRetryable}},
+		{reservation.ErrAlreadyResolved, problemInfo{"reservation-already-resolved", "Reservation is already resolved", classOutcome}},
+		{reservation.ErrExpired, problemInfo{"reservation-expired", "Reservation has expired", classRetryable}},
+		{reservation.ErrNoAllocations, problemInfo{"reservation-no-allocations", "Reservation requires at least one allocation", classRetryable}},
+		{usecases.ErrHazmatZoneRequired, problemInfo{"hazmat-zone-required", "Hazmat SKU requires a hazmat-rated zone", classRetryable}},
+		{usecases.ErrTemperatureClassMismatch, problemInfo{"temperature-class-mismatch", "Bin temperature class does not match the SKU's required temperature class", classRetryable}},
+		{usecases.ErrLocationClassificationUnavailable, problemInfo{"location-classification-unavailable", "Location classification lookup unavailable", classRetryable}},
+		{usecases.ErrHazmatClassIncompatible, problemInfo{"hazmat-class-incompatible", "DOT hazard class incompatible with another SKU already stowed in this bin", classRetryable}},
+		{usecases.ErrConcurrentModification, problemInfo{"concurrent-modification", "The resource was modified by another request; re-fetch the latest version and retry", classRetryable}},
+		{usecases.ErrTransferReceiptConflict, problemInfo{"transfer-receipt-conflict", "This transfer line already has a receipt for a different scan", classRetryable}},
+		{usecases.ErrReceiptNotStaged, problemInfo{"receipt-not-staged", "Transfer receipt is not in STAGED state; stage the receipt before stowing", classRetryable}},
+		{usecases.ErrBinWrongSite, problemInfo{"bin-wrong-site", "Bin does not belong to the transfer's destination site", classRetryable}},
+		{relocation.ErrBinNotAtSite, problemInfo{"bin-not-at-site", "Bin is not in the relocation's site", classRetryable}},
+		{usecases.ErrStowQuantityMismatch, problemInfo{"stow-quantity-mismatch", "Stow quantities must sum exactly to the receipt's received quantity", classRetryable}},
+		{shared.ErrOwnerMismatch, problemInfo{"owner-mismatch", "Stock owner does not match the reservation owner", classRetryable}},
+		{container.ErrContainerNotSealed, problemInfo{"container-not-sealed", "Container is not sealed", classRetryable}},
+		{container.ErrContainerNotStowed, problemInfo{"container-not-stowed", "Container is not stowed in a bin", classRetryable}},
+		{container.ErrContainerNotAtSite, problemInfo{"container-not-at-site", "Container and bin are not at the same site", classRetryable}},
+		{container.ErrContainerReserved, problemInfo{"container-reserved", "Container is reserved", classRetryable}},
+		{container.ErrBreakNotConserving, problemInfo{"break-not-conserving", "A case break must produce exactly the container quantity", classRetryable}},
+		{container.ErrContainerQuantityMismatch, problemInfo{"container-quantity-mismatch", "A sealed container must hold exactly one case", classRetryable}},
+		{container.ErrBinHandlingUnitMismatch, problemInfo{"bin-handling-unit-mismatch", "Bin does not accept this kind of handling unit", classRetryable}},
+		{usecases.ErrToteNotFound, problemInfo{"tote-not-found", "Tote not found", classRetryable}},
+		{usecases.ErrLicensePlateTaken, problemInfo{"license-plate-taken", "The license plate already names another container", classFinal}},
+		{container.ErrToteNotPlaced, problemInfo{"tote-not-placed", "Tote is not in a bin; stow it before filling it", classRetryable}},
+		{container.ErrToteReserved, problemInfo{"tote-reserved", "Tote holds reserved stock and cannot be stowed elsewhere", classRetryable}},
+		{usecases.ErrAutomatedStorageRequiresContainer, problemInfo{"automated-storage-requires-container", "An automated storage location holds container stock only", classRetryable}},
 	}
 }
 
@@ -190,5 +206,5 @@ func problemFor(err error) problemInfo {
 			return entry.info
 		}
 	}
-	return problemInfo{"internal-error", "An unexpected internal error occurred"}
+	return problemInternalError
 }

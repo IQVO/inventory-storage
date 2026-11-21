@@ -118,7 +118,7 @@ func (s *Server) handleRunCycleCount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.CountedQuantity == nil {
-		writeProblem(w, http.StatusBadRequest, problemInfo{"counted-quantity-required", "countedQuantity is required"}, "countedQuantity must be present; an explicit 0 is a valid empty-bin count, omitting it is not", r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemCountedQuantityRequired, "countedQuantity must be present; an explicit 0 is a valid empty-bin count, omitting it is not", r.URL.Path)
 		return
 	}
 	countedQty, err := shared.NewQuantity(int(*req.CountedQuantity))

@@ -41,8 +41,8 @@ func NewStockRepo(pool *pgxpool.Pool) *StockRepo {
 // second Save in the same flow (ADR 0019 §"Save and the in-memory version").
 func (r *StockRepo) Save(ctx context.Context, unit *stock.StockUnit) error {
 	tag, err := querierFrom(ctx, r.pool).Exec(ctx, `
-		INSERT INTO stock_units (id, sku, bin_id, quantity, reserved, state, site_id, version, owner_ref, pack_state)
-		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, NULLIF($10, ''), NULLIF($11, ''))
+		INSERT INTO stock_units (id, sku, bin_id, quantity, reserved, state, site_id, version, owner_ref, pack_state, container_lpn)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''))
 		ON CONFLICT (id) DO UPDATE SET
 			sku = EXCLUDED.sku, bin_id = EXCLUDED.bin_id,
 			quantity = EXCLUDED.quantity, reserved = EXCLUDED.reserved, state = EXCLUDED.state,
@@ -50,7 +50,7 @@ func (r *StockRepo) Save(ctx context.Context, unit *stock.StockUnit) error {
 			version = stock_units.version + 1
 		WHERE stock_units.version = $9
 	`, unit.ID(), unit.SKU().String(), unit.BinID().String(), unit.Quantity().Int(), unit.Reserved().Int(), string(unit.State()), unit.SiteID().String(), unit.Version(), unit.Version(),
-		unit.OwnerRef().String(), packStateColumn(unit))
+		unit.OwnerRef().String(), packStateColumn(unit), unit.ContainerLPN())
 	if err != nil {
 		return err
 	}
@@ -109,7 +109,7 @@ func (r *StockRepo) NextID(_ context.Context) (string, error) {
 }
 
 // stockUnitColumns is the SELECT list scanStockUnit reads.
-const stockUnitColumns = `id, sku, bin_id, quantity, reserved, state, site_id, version, owner_ref, pack_state`
+const stockUnitColumns = `id, sku, bin_id, quantity, reserved, state, site_id, version, owner_ref, pack_state, container_lpn`
 
 // packStateColumn stores LOOSE as NULL (the pre-container meaning) and a
 // sealed case as SEALED_CASE.
@@ -127,8 +127,8 @@ type rowScanner interface {
 func scanStockUnit(row rowScanner) (*stock.StockUnit, error) {
 	var id, skuStr, binStr, state string
 	var quantity, reserved, version int
-	var siteID, owner, pack *string
-	if err := row.Scan(&id, &skuStr, &binStr, &quantity, &reserved, &state, &siteID, &version, &owner, &pack); err != nil {
+	var siteID, owner, pack, container *string
+	if err := row.Scan(&id, &skuStr, &binStr, &quantity, &reserved, &state, &siteID, &version, &owner, &pack, &container); err != nil {
 		return nil, err
 	}
 	sku, err := rehydrateSKU(skuStr)
@@ -153,10 +153,10 @@ func scanStockUnit(row rowScanner) (*stock.StockUnit, error) {
 		if err != nil {
 			return nil, fmt.Errorf("stock unit %q: %w", id, err)
 		}
-		return withOwnership(stock.RehydrateStockUnitAtSite(id, sku, binID, qty, res, stock.State(state), site, version), owner, pack), nil
+		return withContainer(withOwnership(stock.RehydrateStockUnitAtSite(id, sku, binID, qty, res, stock.State(state), site, version), owner, pack), container), nil
 	}
 	// Legacy site-less row: no custody fact, never transfer-allocatable.
-	return withOwnership(stock.RehydrateStockUnit(id, sku, binID, qty, res, stock.State(state), version), owner, pack), nil
+	return withContainer(withOwnership(stock.RehydrateStockUnit(id, sku, binID, qty, res, stock.State(state), version), owner, pack), container), nil
 }
 
 // withOwnership applies the nullable owner_ref / pack_state columns: NULL is
@@ -171,6 +171,23 @@ func withOwnership(unit *stock.StockUnit, owner, pack *string) *stock.StockUnit 
 		p = stock.ParsePackState(*pack)
 	}
 	return unit.WithOwnership(o, p)
+}
+
+func withContainer(unit *stock.StockUnit, lpn *string) *stock.StockUnit {
+	if lpn == nil {
+		return unit
+	}
+	return unit.WithContainer(*lpn)
+}
+
+// FindByContainer implements ports.ContainerStock (ADR 0054).
+func (r *StockRepo) FindByContainer(ctx context.Context, lpn string) ([]*stock.StockUnit, error) {
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `SELECT `+stockUnitColumns+` FROM stock_units WHERE container_lpn = $1 ORDER BY id`, lpn)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanStockUnits(rows)
 }
 
 func scanStockUnits(rows pgx.Rows) ([]*stock.StockUnit, error) {

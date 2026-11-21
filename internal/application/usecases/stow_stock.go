@@ -46,6 +46,9 @@ type StowStock struct {
 	// Levels raises BinStockLevelChanged (STOW) for the bin in the same
 	// transaction (ADR 0040). Optional: nil means "not emitted".
 	Levels *BinLevelEmitter
+	// LocationTypes keeps loose stock out of an AutomatedStorage bin (ADR
+	// 0054). Optional: nil applies no such rule.
+	LocationTypes ports.BinLocationTypeLookup
 }
 
 func (uc *StowStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Quantity, binID shared.BinId) (*stock.StockUnit, error) {
@@ -55,6 +58,9 @@ func (uc *StowStock) Execute(ctx context.Context, sku shared.SKU, qty shared.Qua
 	}
 	if bin == nil {
 		return nil, ErrBinNotFound
+	}
+	if err := refuseLooseInto(ctx, uc.LocationTypes, binID); err != nil {
+		return nil, err
 	}
 
 	if err := uc.checkPlacement(ctx, sku, binID); err != nil {

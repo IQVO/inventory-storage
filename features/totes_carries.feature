@@ -1,0 +1,71 @@
+# Review carries of WCS plan 05a pinned at the acceptance level (ADR 0054):
+#   - carry (Task 6 review): a fill raises BinStockLevelChanged STOW for the
+#     tote's bin, a stow RELOCATE for both bins (D12); a fill and a stow apply
+#     the placement rules of a plain stow (hazmat refused, Placement wired).
+#   - carry (Task 7 review): a transfer stow into an AutomatedStorage bin is
+#     refused (D9).
+#   - carry (Task 11 review): ToteFilled and ToteStowed carry their fields.
+
+Feature: Tote fills and stows, as a stow and a move (ADR 0054)
+  A fill is a stow into the tote at its bin; a stow moves the tote and every
+  unit of it. Both raise the bin level events a stow and a move raise.
+
+  Background:
+    Given bin "WH1-RCV-DEC-D01-01-01-A" of site "WH1" with capacity 100
+    And bin "WH1-AUTO-ASRS-ASRS1-00-00-S" of site "WH1" with capacity 100000 of location type "AutomatedStorage"
+    And tote "TOTE-1" is registered
+
+  # carry (Task 6 review)
+  Scenario: A fill raises a STOW level event and a stow a RELOCATE level event for both bins
+    Given tote "TOTE-1" is stowed into "WH1-RCV-DEC-D01-01-01-A"
+    When 6 of "SKU-1" are filled into tote "TOTE-1"
+    And tote "TOTE-1" is stowed into "WH1-AUTO-ASRS-ASRS1-00-00-S"
+    Then the BinStockLevelChanged events published are:
+      | bin                         | onHand | reserved | reason   |
+      | WH1-RCV-DEC-D01-01-01-A     | 6      | 0        | STOW     |
+      | WH1-RCV-DEC-D01-01-01-A     | 0      | 0        | RELOCATE |
+      | WH1-AUTO-ASRS-ASRS1-00-00-S | 6      | 0        | RELOCATE |
+
+  # carry (Task 6 review)
+  Scenario: A Hazmat SKU is refused a tote at a decant bin outside a hazmat-rated zone
+    Given Bin "WH1-RCV-DEC-D01-01-01-A" sits in a non-hazmat "Ambient" zone
+    And SKU "SKU-H" is classified by product-master as Hazmat with DOT hazard class 3
+    And tote "TOTE-1" is stowed into "WH1-RCV-DEC-D01-01-01-A"
+    When 2 of "SKU-H" are filled into tote "TOTE-1"
+    Then the fill is refused with "hazmat-zone-required"
+    And tote "TOTE-1" is in "WH1-RCV-DEC-D01-01-01-A" holding nothing
+    And bin "WH1-RCV-DEC-D01-01-01-A" holds 0 eaches and bin "WH1-AUTO-ASRS-ASRS1-00-00-S" holds 0
+
+  # carry (Task 7 review)
+  Scenario: A transfer stow into the AS/RS location is refused and nothing is stowed
+    Given site "SITE-ORIG" holds 10 units of SKU "SKU-S1" in Bin "BIN-O1"
+    And an allocation of 5 units of SKU "SKU-S1" from Site "SITE-ORIG" is requested for transfer "tr-1" line "tl-1"
+    And the destination Site "WH1" scans 5 units of SKU "SKU-S1" for transfer "tr-1" line "tl-1"
+    When the receipt for line "tl-1" is stowed into "WH1-AUTO-ASRS-ASRS1-00-00-S=5"
+    Then the stow is refused with "automated-storage-requires-container"
+    And bin "WH1-AUTO-ASRS-ASRS1-00-00-S" holds 0 eaches and bin "WH1-RCV-DEC-D01-01-01-A" holds 0
+
+  # carry (Task 6 review): a stow applies the destination's placement rules
+  Scenario: A tote holding a Hazmat SKU is refused a stow into a bin outside a hazmat-rated zone
+    Given Bin "WH1-RCV-DEC-D01-01-01-A" sits in a hazmat-rated zone
+    And Bin "WH1-AUTO-ASRS-ASRS1-00-00-S" sits in a non-hazmat "Ambient" zone
+    And SKU "SKU-H" is classified by product-master as Hazmat with DOT hazard class 3
+    And tote "TOTE-1" is stowed into "WH1-RCV-DEC-D01-01-01-A"
+    And 2 of "SKU-H" are filled into tote "TOTE-1"
+    When tote "TOTE-1" is stowed into "WH1-AUTO-ASRS-ASRS1-00-00-S"
+    Then the stow is refused with "hazmat-zone-required"
+    And tote "TOTE-1" is in "WH1-RCV-DEC-D01-01-01-A" holding 2 of "SKU-H"
+    And bin "WH1-RCV-DEC-D01-01-01-A" holds 2 eaches and bin "WH1-AUTO-ASRS-ASRS1-00-00-S" holds 0
+
+  # carry (Task 11 review): the putaway's tote events carry their fields
+  # (ADR 0054 item 9); totes.feature stays the brief's byte-identical spec
+  Scenario: Putaway - the fill and stow events carry the site, the bins and the contents
+    Given tote "TOTE-1" is stowed into "WH1-RCV-DEC-D01-01-01-A"
+    When 6 of "SKU-1" and 4 of "SKU-2" are filled into tote "TOTE-1"
+    And tote "TOTE-1" is stowed into "WH1-AUTO-ASRS-ASRS1-00-00-S"
+    Then the fill and stow events of tote "TOTE-1" carry:
+      | event      | site | fromBin                 | bin                         | contents        |
+      | ToteStowed | WH1  |                         | WH1-RCV-DEC-D01-01-01-A     |                 |
+      | ToteFilled | WH1  |                         | WH1-RCV-DEC-D01-01-01-A     | SKU-1=6         |
+      | ToteFilled | WH1  |                         | WH1-RCV-DEC-D01-01-01-A     | SKU-2=4         |
+      | ToteStowed | WH1  | WH1-RCV-DEC-D01-01-01-A | WH1-AUTO-ASRS-ASRS1-00-00-S | SKU-1=6,SKU-2=4 |

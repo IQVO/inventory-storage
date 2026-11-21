@@ -40,7 +40,7 @@ Page index (source paths under `docs/docs/`):
 | Ecosystem | [Context map](docs/docs/ecosystem/context-map.md), [Integration](docs/docs/ecosystem/integration.md) |
 | DDD | [Use cases](docs/docs/ddd/use-cases.md), [Subdomain classification](docs/docs/ddd/subdomain-classification.md), and the artifact pack under [`docs/docs/ddd/`](docs/docs/ddd/) |
 | APIs | [REST reference](docs/docs/api-reference/overview.md), [Integration events](docs/docs/api-reference/events.md), [MCP tools](docs/docs/mcp/tools.md), [MCP governance charter](docs/docs/mcp/governance-charter.md), [A2A inbound adapter (ADR-0048)](docs/docs/adr/0048-a2a-inbound-adapter.md), [Flow & Accuracy report](docs/docs/analytics/inventory-flow-accuracy-report.md) |
-| Decisions | [ADR index](docs/docs/adr/about.md) (42 ADRs; [ADR-0042](docs/docs/adr/0042-postgres-and-kafka-are-the-only-runtime.md): Postgres and Kafka are the only runtime) |
+| Decisions | [ADR index](docs/docs/adr/about.md) (52 ADRs; [ADR-0052](docs/docs/adr/0052-held-stock-and-disposition.md): held stock and disposition; [ADR-0042](docs/docs/adr/0042-postgres-and-kafka-are-the-only-runtime.md): Postgres and Kafka are the only runtime) |
 
 ## Layering (hexagonal / ports & adapters)
 
@@ -209,6 +209,11 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | GET    | `/bins/{binId}` | GetBin — capacity, occupied, available |
 | POST   | `/bins/{binId}/cycle-counts` | RunCycleCount — requires `Idempotency-Key` |
 | GET    | `/bins/{binId}/containers` | ListBinContainers — keyset-paged `{items,nextCursor}` in LPN order (`limit`, `cursor`) |
+| PUT    | `/totes/{lpn}` | RegisterTote — register a tote by its label (ADR-0054): 201 created / 200 already registered / 409 `license-plate-taken` |
+| GET    | `/totes/{lpn}` | GetTote — read a tote and its contents |
+| POST   | `/totes/{lpn}/fills` | FillTote — decant into a tote at its current bin; same placement checks as `/stowages`; requires `Idempotency-Key` |
+| POST   | `/totes/{lpn}/stowages` | StowTote — stow a tote with its contents into a bin; requires `Idempotency-Key` |
+| GET    | `/bins/{binId}/totes` | ListBinTotes — list the totes in a bin, keyset-paged `{items,nextCursor}` in LPN order (`limit`, `cursor`) |
 | POST   | `/transfers/{transferLineId}/receipt` | StageTransferReceipt — requires `Idempotency-Key`; 201 staged / 200 replay / 422 quarantined / 409 conflicting scan (ADR-0033) |
 | POST   | `/transfers/{transferLineId}/stowages` | StowTransferStock — requires `Idempotency-Key`; 200 stowed with allocations / 409 not staged, wrong-site bin, or quantity mismatch (ADR-0033) |
 | GET    | `/healthz` | liveness |
@@ -221,11 +226,18 @@ missing header is a 400 `idempotency-key-required`, a key reused with a
 different method, path or body is a 409 `idempotency-key-reused`, and a
 retried identical request returns the exact same stored response plus
 `Idempotency-Replayed: true` without re-executing the handler — a client-side
-retry after a dropped response can never apply a write twice. The middleware
+retry after a dropped response can never apply a write twice. Only an answer
+that is final for the request is stored (a 2xx, a validation refusal, a refusal
+that committed state); a refusal that depends on state that can change
+(`concurrent-modification`, `bin-not-found`, `insufficient-usable`,
+`receipt-not-staged`, ...) and every 5xx is NOT stored: retry with the same
+key and the request executes again. The class of every problem type is in
+[ADR-0053](docs/docs/adr/0053-idempotency-replay-classes.md). The middleware
 is backed by Postgres (`idempotency_keys`) in every deployment: there is no
 mode in which a `POST` is unprotected.
 
-Every collection `GET` (`/reservations`, `/bins/{binId}/containers`) is
+Every collection `GET` (`/reservations`, `/bins/{binId}/containers`,
+`/bins/{binId}/totes`) is
 keyset-paginated: `limit` (1-500, default 100) and the opaque `cursor`, answer
 `{"items": [...], "nextCursor": "..."}` with `nextCursor` absent on the last
 page; a bad `limit` is 400 `invalid-limit`, a bad `cursor` 400
@@ -270,7 +282,8 @@ curl -s -i -X POST localhost:8080/reservations \
 #    optional (1..2147483647; omitted from the response when unknown) — ADR-0036.
 # A retry with the SAME Idempotency-Key + body returns this exact response
 # again (plus `Idempotency-Replayed: true`) without creating a second
-# reservation (ADR-0018); omitting the header entirely on any POST is a 400,
+# reservation (ADR-0018); a refusal that depends on stock, such as 409
+# insufficient-usable, is not stored, so the same key executes again (ADR-0053); omitting the header entirely on any POST is a 400,
 # and reusing the key for a different request is a 409 idempotency-key-reused.
 
 curl -s 'localhost:8080/reservations?demandRef=order-42&limit=100'
@@ -413,6 +426,7 @@ of the site-scoped transfer allocation exchange (ADR-0030),
   ```
   `outcome` is the closed set `RELEASED | ALREADY_RESOLVED` — both settle
   the saga as success.
+  Totes (ADR 0054): `ToteRegistered`, `ToteFilled`, `ToteStowed` on `warehouse.inventory.events`.
   The legacy `com.warehouse.wms.inventory-storage.product.ProductClassified`
   is **no longer published**: ADR-0034 stage E (2026-10-17) removed the type,
   the `republish-product-classifications` backfill and both

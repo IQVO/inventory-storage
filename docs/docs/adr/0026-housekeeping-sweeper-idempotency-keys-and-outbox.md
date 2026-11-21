@@ -15,6 +15,10 @@ Accepted. Closes the "grows unboundedly" follow-up recorded in
 [ADR 0017](./0017-transactional-outbox.md) (`outbox_events`) and
 [ADR 0018](./0018-idempotency-key-middleware.md) (`idempotency_keys`).
 
+> **Update 2026-11-19 ([ADR 0053](./0053-idempotency-replay-classes.md)).** The 24 h TTL applies to the rows that are
+> stored (2xx, FINAL and OUTCOME answers); a RETRYABLE refusal leaves no row. A replay does not check the row's age:
+> a row older than the TTL still replays until the next sweep (open point recorded in ADR 0053).
+
 ## Context
 
 Two tables only ever grow:

@@ -94,5 +94,6 @@ receipt custody ADR-0033, product-master owns classification ADR-0034,
 confirm picks on the LAST pick from TaskCompleted ADR-0035 (the fallback),
 reservations store the order line and picks are confirmed per line ADR-0036,
 stock receipts from inbound-receiving (Good `ReceiptLineReceived` lines booked
-as staged stock) ADR-0037. The full
+as staged stock) ADR-0037, replay class of every problem type (a retryable
+refusal is not stored) ADR-0053. The full
 index with every Status is `docs/docs/adr/about.md`.

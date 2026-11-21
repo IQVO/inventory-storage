@@ -178,6 +178,7 @@ var relocationRejections = []error{
 	relocation.ErrUnknownReason,
 	stock.ErrInsufficientUsable,
 	location.ErrBinFull,
+	ErrAutomatedStorageRequiresContainer,
 	location.ErrReleaseExceedsOccupancy,
 	shared.ErrZeroQuantity,
 }

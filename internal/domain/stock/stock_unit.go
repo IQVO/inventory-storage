@@ -44,6 +44,10 @@ type StockUnit struct {
 	ownerRef shared.OwnerRef
 	// packState is LOOSE or SEALED_CASE; the zero value reads as LOOSE.
 	packState PackState
+	// containerLPN is the license plate of the container holding this unit:
+	// a tote (ADR 0054) or the sealed case of a SEALED_CASE unit. Empty =
+	// stock in no container, which is every unit that predates totes.
+	containerLPN string
 	// version is optimistic-concurrency infrastructure metadata (ADR
 	// 0019): inert, unexported, carried by the aggregate but never read
 	// or reasoned about by business logic. It exists solely so the repo

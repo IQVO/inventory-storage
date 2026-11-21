@@ -513,9 +513,9 @@ func TestIdempotency_Reserve_Concurrent_ExactlyOneReservationCreated(t *testing.
 	}
 }
 
-// (f) a business validation error (reserve quantity exceeding usable
-// inventory) is cached and replayed on retry, not re-decided.
-func TestIdempotency_Reserve_BusinessErrorResponse_IsCachedAndReplayed(t *testing.T) {
+// (f) a refusal that depends on state that can change (reserve quantity exceeding usable inventory:
+// RETRYABLE, ADR 0053) is NOT stored: the key is released and the retry executes again.
+func TestIdempotency_Reserve_InsufficientUsableIsNotStoredAndTheRetryExecutes(t *testing.T) {
 	pool := idempotencyDB(t)
 	fx := newIdempotencyFixture(t, pool)
 	seedStock(t, pool, "SKU-RESERVE-F", 5) // only 5 usable
@@ -526,18 +526,17 @@ func TestIdempotency_Reserve_BusinessErrorResponse_IsCachedAndReplayed(t *testin
 	if first.Code != http.StatusConflict {
 		t.Fatalf("first call status = %d, want 409 (body: %s)", first.Code, first.Body.String())
 	}
-
-	_, statusCode, _ := idempotencyRowOutcome(t, pool, "res-business-error-1")
-	if statusCode == nil || *statusCode != http.StatusConflict {
-		t.Fatalf("stored status_code = %v, want 409 — the business error response must be cached", statusCode)
+	var rows int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM idempotency_keys WHERE key = $1`, "res-business-error-1").Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("key rows after a RETRYABLE refusal = %d (%v), want 0", rows, err)
 	}
 
 	second := doReserve(fx.router, "res-business-error-1", overReserveBody)
-	if second.Code != first.Code {
-		t.Fatalf("replay status = %d, want %d (cached error response)", second.Code, first.Code)
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second call status = %d, want the same 409 re-decided", second.Code)
 	}
-	if second.Body.String() != first.Body.String() {
-		t.Fatalf("replay body differs from the cached error response")
+	if got := second.Header().Get(inboundhttp.IdempotencyReplayedHeader); got != "" {
+		t.Fatalf("a RETRYABLE refusal was replayed (%s: %q): the retry must execute", inboundhttp.IdempotencyReplayedHeader, got)
 	}
 	if got := countReservationRows(t, pool); got != 0 {
 		t.Fatalf("reservations rows = %d, want 0 (the over-reserve was never persisted, either time)", got)

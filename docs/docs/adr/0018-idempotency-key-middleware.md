@@ -17,6 +17,10 @@ key reuse answers `409` (it was `422`), a replay carries
 `Idempotency-Replayed: true`, and the fingerprint is method + path + body hash.
 The text below is the original decision.
 
+> **Update 2026-11-19 ([ADR 0053](./0053-idempotency-replay-classes.md)).** "Every normal response is cached, including a
+> business-logic 4xx" no longer holds: each problem type declares a replay class, and only 2xx, FINAL and OUTCOME
+> answers are stored; a RETRYABLE refusal rolls the request back, key row included, so the retry executes.
+
 ## Context
 
 `POST /stock-receipts` (`ReceiveStock`) and `POST /reservations`

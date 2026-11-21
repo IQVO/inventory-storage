@@ -1,0 +1,1 @@
+{"title":"Body","body":{"required":true,"content":{"application/json":{"schema":{"type":"object","required":["bin"],"properties":{"bin":{"type":"string","minLength":1,"description":"The bin to stow the tote into.","example":"WH1-AUTO-ASRS-ASRS1-00-00-S"}}},"example":{"bin":"WH1-AUTO-ASRS-ASRS1-00-00-S"}}}}}

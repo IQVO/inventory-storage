@@ -345,7 +345,8 @@ func drawFromUnits(units []*stock.StockUnit, qty shared.Quantity) ([]reservation
 			// as insufficient rather than double-drawing.
 			return nil, nil, RejectionInsufficientUsable
 		}
-		allocations = append(allocations, reservation.Allocation{StockUnitID: unit.ID(), BinID: unit.BinID(), Quantity: take})
+		// carry (Task 7 review): name the tote or sealed case drawn from (D7).
+		allocations = append(allocations, reservation.Allocation{StockUnitID: unit.ID(), BinID: unit.BinID(), Quantity: take, ContainerLPN: unit.ContainerLPN()})
 		touched = append(touched, unit)
 		remaining, _ = remaining.Sub(take)
 	}

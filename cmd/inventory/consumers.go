@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/claudioed/inventory-storage/internal/adapters/outbound/telemetry"
+	"github.com/claudioed/inventory-storage/internal/application/ports"
 )
 
 // buildEventDrivenConsumers builds the event-driven inbound consumers that
@@ -22,6 +23,7 @@ func buildEventDrivenConsumers(
 	cfg config,
 	set adapterSet,
 	started transferConsumerHandle,
+	locationTypes ports.BinLocationTypeLookup,
 ) (transferConsumerHandle, error) {
 	// Default "off"; see buildTaskCompletedConsumer.
 	pickMetrics, err := telemetry.NewPickConfirmationMetrics()
@@ -29,7 +31,7 @@ func buildEventDrivenConsumers(
 		stopTransferConsumer(logger, started)
 		return noopTransferConsumer(), err
 	}
-	confirmPicks, err := buildTaskCompletedConsumer(ctx, logger, cfg, set, pickMetrics)
+	confirmPicks, err := buildTaskCompletedConsumer(ctx, logger, cfg, set, pickMetrics, locationTypes)
 	if err != nil {
 		stopTransferConsumer(logger, started)
 		return noopTransferConsumer(), err
