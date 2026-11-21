@@ -51,3 +51,22 @@ func TestBuildServer_WiresTheLocationTypesIntoEveryLooseStow(t *testing.T) {
 		t.Fatal("StowStock, BreakCase, StowTransferStock and RelocateStock must share the location-type lookup")
 	}
 }
+
+// carry (Task 11 review): a fill and a stow apply the placement rules of a
+// plain stow and raise BinStockLevelChanged (ADR 0054, D12). A nil Placement
+// or Levels is the documented pass-through, so a field dropped from the
+// composition root would switch both off silently in production.
+func TestBuildServer_WiresThePlacementAndLevelsIntoTheToteFillAndStow(t *testing.T) {
+	set := memoryAdapters(quietLogger())
+	set.binLevels = memory.NewBinLevelLedger(memory.NewStockRepo())
+	containers := memory.NewContainerRepo()
+	set.containers, set.totes, set.containerStock = containers, memory.NewToteRepo(containers), memory.NewStockRepo()
+	s := buildServer(set, memory.SystemClock{}, nil, noHandlingUnits{}, noLocationTypes{}, nil, nil)
+
+	if s.FillTote.Placement == nil || s.StowTote.Placement != s.FillTote.Placement {
+		t.Fatal("FillTote and StowTote must share the plain stow's placement rules")
+	}
+	if s.FillTote.Levels == nil || s.StowTote.Levels == nil {
+		t.Fatal("FillTote and StowTote must raise BinStockLevelChanged through the level emitter")
+	}
+}
