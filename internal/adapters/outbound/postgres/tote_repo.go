@@ -27,11 +27,17 @@ const toteColumns = `lpn, COALESCE(site_id, ''), COALESCE(bin_id, ''), version`
 // Add claims the license plate as a TOTE and inserts the tote. It reports
 // false, writing nothing, when the LPN names a sealed case or a tote already.
 func (r *ToteRepo) Add(ctx context.Context, t *container.Tote) (bool, error) {
-	q := querierFrom(ctx, r.pool)
-	claimed, err := claimLicensePlate(ctx, q, t.LPN(), container.KindTote)
-	if err != nil || !claimed {
-		return false, err
-	}
+	// carry (Task 6 review, D1): claim and insert commit together even outside a UnitOfWork.
+	return claimAndInsert(ctx, r.pool, func(q querier) (bool, error) {
+		claimed, err := claimLicensePlate(ctx, q, t.LPN(), container.KindTote)
+		if err != nil || !claimed {
+			return false, err
+		}
+		return insertTote(ctx, q, t)
+	})
+}
+
+func insertTote(ctx context.Context, q querier, t *container.Tote) (bool, error) {
 	tag, err := q.Exec(ctx, `
 		INSERT INTO totes (lpn, site_id, bin_id, version) VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4)
 		ON CONFLICT (lpn) DO NOTHING
@@ -92,6 +98,23 @@ func scanTote(row rowScanner) (*container.Tote, error) {
 		return nil, err
 	}
 	return container.RehydrateTote(container.ToteSnapshot{LPN: lpn, SiteID: shared.SiteID(site), BinID: shared.BinId(bin), Version: version}), nil
+}
+
+// claimAndInsert runs fn, a license-plate claim and the insert it guards, in
+// the caller's UnitOfWork transaction, or in a transaction of its own when ctx
+// carries none, so a failed insert never leaves its plate claimed (D1).
+// carry (Task 6 review).
+func claimAndInsert(ctx context.Context, pool *pgxpool.Pool, fn func(q querier) (bool, error)) (bool, error) {
+	tx, commit, rollback, err := beginOrJoin(ctx, pool)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rollback(ctx) }()
+	created, err := fn(tx)
+	if err != nil {
+		return false, err
+	}
+	return created, commit(ctx)
 }
 
 // claimLicensePlate inserts (lpn, kind) into license_plates inside the

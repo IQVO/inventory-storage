@@ -29,11 +29,17 @@ const containerColumns = `lpn, receipt_id, line_no, sku, gtin, units_per_pack, q
 // Add inserts c; an LPN already registered is left untouched and reported as
 // not created (registration is create-only).
 func (r *ContainerRepo) Add(ctx context.Context, c *container.Container) (bool, error) {
-	q := querierFrom(ctx, r.pool)
-	claimed, err := claimLicensePlate(ctx, q, c.LPN(), container.KindCase)
-	if err != nil || !claimed {
-		return false, err
-	}
+	// carry (Task 6 review, D1): claim and insert commit together even outside a UnitOfWork.
+	return claimAndInsert(ctx, r.pool, func(q querier) (bool, error) {
+		claimed, err := claimLicensePlate(ctx, q, c.LPN(), container.KindCase)
+		if err != nil || !claimed {
+			return false, err
+		}
+		return insertContainer(ctx, q, c)
+	})
+}
+
+func insertContainer(ctx context.Context, q querier, c *container.Container) (bool, error) {
 	tag, err := q.Exec(ctx, `
 		INSERT INTO containers (lpn, receipt_id, line_no, sku, gtin, units_per_pack, qty_eaches, owner_ref, site_id, bin_id,
 			state, lot, expiry, stock_unit_id, version)
