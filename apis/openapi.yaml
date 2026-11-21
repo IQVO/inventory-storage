@@ -2581,8 +2581,10 @@ paths:
             The tote is in no bin (tote-not-placed), the bin has no room
             (bin-full), the SKU fails the bin's placement rules
             (hazmat-zone-required, temperature-class-mismatch,
-            hazmat-class-incompatible), or a concurrent writer changed the
-            bin or the tote (concurrent-modification).
+            hazmat-class-incompatible), the facility-layout lookup is
+            unavailable for a Hazmat or TemperatureSensitive SKU
+            (location-classification-unavailable), or a concurrent writer
+            changed the bin or the tote (concurrent-modification).
             The same Idempotency-Key reused with a different method, path or body is also a 409 (idempotency-key-reused).
           content:
             application/problem+json:
@@ -2620,6 +2622,14 @@ paths:
                     title: Bin temperature class does not match the SKU's required temperature class
                     status: 409
                     detail: bin temperature class does not match the sku's required temperature class
+                    instance: /totes/TOTE-000123/fills
+                locationClassificationUnavailable:
+                  summary: facility-layout lookup unavailable for a classified SKU
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/location-classification-unavailable
+                    title: Location classification lookup unavailable
+                    status: 409
+                    detail: location classification lookup unavailable
                     instance: /totes/TOTE-000123/fills
                 hazmatClassIncompatible:
                   summary: DOT hazard class incompatible with another SKU already in the bin
@@ -2776,9 +2786,13 @@ paths:
           description: >-
             The bin is in another site than the tote (container-not-at-site),
             the tote holds reserved stock (tote-reserved), the bin has no room
-            (bin-full), a unit in the tote is held or unlocated (unit-held,
-            unit-unlocated), or a concurrent writer changed a bin, a unit or
-            the tote (concurrent-modification).
+            (bin-full), a SKU in the tote fails the destination bin's
+            placement rules (hazmat-zone-required, temperature-class-mismatch,
+            hazmat-class-incompatible), the facility-layout lookup is
+            unavailable for a Hazmat or TemperatureSensitive SKU
+            (location-classification-unavailable), a unit in the tote is held
+            or unlocated (unit-held, unit-unlocated), or a concurrent writer
+            changed a bin, a unit or the tote (concurrent-modification).
             The same Idempotency-Key reused with a different method, path or body is also a 409 (idempotency-key-reused).
           content:
             application/problem+json:
@@ -2808,6 +2822,38 @@ paths:
                     title: "Bin is full: capacity exceeded"
                     status: 409
                     detail: "bin is full: capacity exceeded"
+                    instance: /totes/TOTE-000123/stowages
+                hazmatZoneRequired:
+                  summary: Hazmat SKU in the tote into a non-hazmat-rated zone
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/hazmat-zone-required
+                    title: Hazmat SKU requires a hazmat-rated zone
+                    status: 409
+                    detail: hazmat sku requires a hazmat-rated zone
+                    instance: /totes/TOTE-000123/stowages
+                temperatureClassMismatch:
+                  summary: TemperatureSensitive SKU in the tote into a mismatched zone
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/temperature-class-mismatch
+                    title: Bin temperature class does not match the SKU's required temperature class
+                    status: 409
+                    detail: bin temperature class does not match the sku's required temperature class
+                    instance: /totes/TOTE-000123/stowages
+                hazmatClassIncompatible:
+                  summary: DOT hazard class incompatible with another SKU already in the bin
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/hazmat-class-incompatible
+                    title: DOT hazard class incompatible with another SKU already stowed in this bin
+                    status: 409
+                    detail: dot hazard class incompatible with another sku already stowed in this bin
+                    instance: /totes/TOTE-000123/stowages
+                locationClassificationUnavailable:
+                  summary: facility-layout lookup unavailable for a classified SKU
+                  value:
+                    type: https://errors.inventory-storage.warehouse-systems.dev/location-classification-unavailable
+                    title: Location classification lookup unavailable
+                    status: 409
+                    detail: location classification lookup unavailable
                     instance: /totes/TOTE-000123/stowages
                 unitHeld:
                   summary: A unit in the tote is held
