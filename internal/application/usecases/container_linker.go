@@ -54,6 +54,9 @@ type ContainerLinker struct {
 	Packaging  ports.PackagingViewRepo
 	Events     ports.EventPublisher
 	Clock      ports.Clock
+	// Totes, when wired, makes a carton whose LPN is a tote's a REJECTED
+	// duplicate (ADR 0054). Optional.
+	Totes ports.ToteRepo
 }
 
 // Settle re-evaluates the pending links of one receipt line.
@@ -117,6 +120,12 @@ func (l *ContainerLinker) settleOne(ctx context.Context, link container.PendingL
 	}
 	if existing != nil {
 		return l.alreadyRegistered(ctx, link, existing)
+	}
+	if held, err := l.toteHolds(ctx, link); err != nil || held {
+		if err != nil {
+			return SettleResult{}, err
+		}
+		return l.reject(ctx, link, rejectLPNTaken)
 	}
 	gtin, unitsPerPack, verdict, err := l.resolvePack(ctx, link)
 	if err != nil {

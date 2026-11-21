@@ -15,6 +15,7 @@ func buildServer(
 	clock ports.Clock,
 	locationLookup ports.LocationClassificationLookup,
 	handlingUnits ports.BinHandlingUnitLookup,
+	locationTypes ports.BinLocationTypeLookup,
 	reservationMetrics ports.ReservationMetrics,
 	readiness *inboundhttp.Readiness,
 ) *inboundhttp.Server {
@@ -30,6 +31,7 @@ func buildServer(
 		StowStock: &usecases.StowStock{
 			Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
 			Classifications: classificationRepo, LocationLookup: locationLookup, UnitOfWork: uow, Levels: levels,
+			LocationTypes: locationTypes,
 		},
 		ReserveStock:               reserve,
 		RevokeReservation:          &usecases.RevokeReservation{Stock: stockRepo, Reservations: reservationRepo, Events: publisher, Clock: clock, Metrics: reservationMetrics, UnitOfWork: uow, Levels: levels},
@@ -44,12 +46,20 @@ func buildServer(
 		BreakCase: &usecases.BreakCase{
 			Containers: a.containers, Stock: stockRepo, Locations: locationRepo, HandlingUnits: handlingUnits,
 			Events: publisher, Clock: clock, Placement: placement, UnitOfWork: uow, Levels: levels,
+			LocationTypes: locationTypes,
 		},
 		GetContainer:      &usecases.GetContainer{Containers: a.containers},
 		ListBinContainers: &usecases.ListBinContainers{Containers: a.containers, Locations: locationRepo},
 		ReserveFullCases:  &usecases.ReserveFullCases{Reserve: reserve, Containers: a.containers},
-		RegisterBin:       &usecases.RegisterBin{Locations: locationRepo, UnitOfWork: uow},
-		GetBin:            &usecases.GetBin{Locations: locationRepo},
+		RegisterTote:      &usecases.RegisterTote{Totes: a.totes, Containers: a.containers, Events: publisher, Clock: clock, UnitOfWork: uow},
+		GetTote:           &usecases.GetTote{Totes: a.totes, Stock: a.containerStock},
+		FillTote: &usecases.FillTote{Totes: a.totes, Stock: stockRepo, Locations: locationRepo, Events: publisher, Clock: clock,
+			Placement: placement, UnitOfWork: uow, Levels: levels},
+		StowTote: &usecases.StowTote{Totes: a.totes, Contents: a.containerStock, Stock: stockRepo, Locations: locationRepo, Events: publisher,
+			Clock: clock, Placement: placement, UnitOfWork: uow, Levels: levels},
+		ListBinTotes: &usecases.ListBinTotes{Totes: a.totes, Locations: locationRepo},
+		RegisterBin:  &usecases.RegisterBin{Locations: locationRepo, UnitOfWork: uow},
+		GetBin:       &usecases.GetBin{Locations: locationRepo},
 		StageTransferReceipt: &usecases.StageTransferReceipt{
 			Transfers:  a.transfers,
 			Receipts:   a.transferReceipts,
@@ -66,8 +76,10 @@ func buildServer(
 			Clock:      clock,
 			UnitOfWork: uow,
 			Levels:     levels,
+			// LocationTypes keeps loose stock out of an AutomatedStorage bin.
+			LocationTypes: locationTypes,
 		},
-		RelocateStock: newRelocateStock(a, clock),
+		RelocateStock: newRelocateStock(a, clock, locationTypes),
 		GetRelocation: &usecases.GetRelocation{Relocations: a.relocations},
 		// Held stock (ADR 0052): the list read and the disposition decision.
 		ListHeldStock:         &usecases.ListHeldStock{Held: a.held, Clock: clock},
@@ -87,9 +99,12 @@ func buildServer(
 
 // newRelocateStock wires the intra-site relocation use case (ADR 0039),
 // shared by POST /relocations and the TaskCompleted RELOCATE branch.
-func newRelocateStock(a adapterSet, clock ports.Clock) *usecases.RelocateStock {
+// locationTypes refuses a move of loose stock into an AutomatedStorage bin
+// (ADR 0054); from a TaskCompleted RELOCATE it dead-letters.
+func newRelocateStock(a adapterSet, clock ports.Clock, locationTypes ports.BinLocationTypeLookup) *usecases.RelocateStock {
 	return &usecases.RelocateStock{
 		Stock: a.stock, Locations: a.locations, Relocations: a.relocations,
 		Events: a.publisher, Clock: clock, UnitOfWork: a.uow, Levels: a.levelEmitter(clock),
+		LocationTypes: locationTypes,
 	}
 }

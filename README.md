@@ -209,6 +209,11 @@ helm upgrade --install inventory-storage charts/inventory-storage \
 | GET    | `/bins/{binId}` | GetBin — capacity, occupied, available |
 | POST   | `/bins/{binId}/cycle-counts` | RunCycleCount — requires `Idempotency-Key` |
 | GET    | `/bins/{binId}/containers` | ListBinContainers — keyset-paged `{items,nextCursor}` in LPN order (`limit`, `cursor`) |
+| PUT    | `/totes/{lpn}` | RegisterTote — register a tote by its label (ADR-0054): 201 created / 200 already registered / 409 `license-plate-taken` |
+| GET    | `/totes/{lpn}` | GetTote — read a tote and its contents |
+| POST   | `/totes/{lpn}/fills` | FillTote — decant into a tote at its current bin; same placement checks as `/stowages`; requires `Idempotency-Key` |
+| POST   | `/totes/{lpn}/stowages` | StowTote — stow a tote with its contents into a bin; requires `Idempotency-Key` |
+| GET    | `/bins/{binId}/totes` | ListBinTotes — list the totes in a bin, keyset-paged `{items,nextCursor}` in LPN order (`limit`, `cursor`) |
 | POST   | `/transfers/{transferLineId}/receipt` | StageTransferReceipt — requires `Idempotency-Key`; 201 staged / 200 replay / 422 quarantined / 409 conflicting scan (ADR-0033) |
 | POST   | `/transfers/{transferLineId}/stowages` | StowTransferStock — requires `Idempotency-Key`; 200 stowed with allocations / 409 not staged, wrong-site bin, or quantity mismatch (ADR-0033) |
 | GET    | `/healthz` | liveness |
@@ -231,7 +236,8 @@ key and the request executes again. The class of every problem type is in
 is backed by Postgres (`idempotency_keys`) in every deployment: there is no
 mode in which a `POST` is unprotected.
 
-Every collection `GET` (`/reservations`, `/bins/{binId}/containers`) is
+Every collection `GET` (`/reservations`, `/bins/{binId}/containers`,
+`/bins/{binId}/totes`) is
 keyset-paginated: `limit` (1-500, default 100) and the opaque `cursor`, answer
 `{"items": [...], "nextCursor": "..."}` with `nextCursor` absent on the last
 page; a bad `limit` is 400 `invalid-limit`, a bad `cursor` 400
@@ -420,6 +426,7 @@ of the site-scoped transfer allocation exchange (ADR-0030),
   ```
   `outcome` is the closed set `RELEASED | ALREADY_RESOLVED` — both settle
   the saga as success.
+  Totes (ADR 0054): `ToteRegistered`, `ToteFilled`, `ToteStowed` on `warehouse.inventory.events`.
   The legacy `com.warehouse.wms.inventory-storage.product.ProductClassified`
   is **no longer published**: ADR-0034 stage E (2026-10-17) removed the type,
   the `republish-product-classifications` backfill and both

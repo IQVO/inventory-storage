@@ -132,13 +132,13 @@ func run(ctx context.Context) error {
 	// TaskCompleted confirm-pick (ADR 0035) and inbound-receiving receipt
 	// (ADR 0037) consumers, on the same lookupCtx; see
 	// buildEventDrivenConsumers. It stops the consumers built above on error.
-	consumers, err := buildEventDrivenConsumers(lookupCtx, logger, cfg, adapters, combineConsumerHandles(transfer, productMaster, slotPlan))
+	consumers, err := buildEventDrivenConsumers(lookupCtx, logger, cfg, adapters, combineConsumerHandles(transfer, productMaster, slotPlan), lookup.locationTypes)
 	if err != nil {
 		stopLookup()
 		lookup.close()
 		return err
 	}
-	server := buildServer(adapters, system.Clock{}, lookup.lookup, lookup.handlingUnits, reservationMetrics, readiness)
+	server := buildServer(adapters, system.Clock{}, lookup.lookup, lookup.handlingUnits, lookup.locationTypes, reservationMetrics, readiness)
 	httpServer := &http.Server{
 		Addr:              cfg.httpAddr,
 		Handler:           inboundhttp.NewRouter(server, logger, cfg.serviceName),

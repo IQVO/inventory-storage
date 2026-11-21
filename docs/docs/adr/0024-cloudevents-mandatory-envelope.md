@@ -103,6 +103,9 @@ Entity segments are the ones already catalogued in `apis/asyncapi.yaml`:
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.ContainerStowed` (ADR 0046) | LPN |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.CaseBroken` (ADR 0046) | LPN |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.container.ContainerEmptied` (ADR 0046) | LPN |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.tote.ToteRegistered` (ADR 0054) | LPN |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.tote.ToteFilled` (ADR 0054) | LPN |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.tote.ToteStowed` (ADR 0054) | LPN |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.StockHeld` (ADR 0052) | held unit id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.StockReleased` (ADR 0052) | held unit id |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.StockDispositioned` (ADR 0052) | held unit id |

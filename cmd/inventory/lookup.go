@@ -30,6 +30,9 @@ type locationLookupHandle struct {
 	// kafka mode has the event-fed copy; the http mode answers HandlingUnknown
 	// for every bin, so a sealed case cannot be stowed (fail closed).
 	handlingUnits ports.BinHandlingUnitLookup
+	// locationTypes answers each bin's facility-layout LocationType (ADR
+	// 0054): the kafka mode's event-fed copy, noLocationTypes otherwise.
+	locationTypes ports.BinLocationTypeLookup
 	runDone       chan struct{}
 	close         func()
 }
@@ -41,6 +44,13 @@ type noHandlingUnits struct{}
 func (noHandlingUnits) HandlingUnit(context.Context, shared.BinId) (container.HandlingUnit, error) {
 	return container.HandlingUnknown, nil
 }
+
+// noLocationTypes is the BinLocationTypeLookup of a configuration without the
+// facility cache: every bin's type is unknown, so no AutomatedStorage rule
+// applies (ADR 0054, fail open as ADR 0013).
+type noLocationTypes struct{}
+
+func (noLocationTypes) LocationType(context.Context, shared.BinId) (string, error) { return "", nil }
 
 // buildLocationLookup selects the outbound LocationClassificationLookup
 // adapter via LOCATION_LOOKUP_MODE (kafka|http). loadConfig already refused
@@ -72,7 +82,7 @@ func buildLocationLookup(ctx context.Context, mode, facilityLayoutBaseURL string
 		}
 		logger.Info("location classification lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL, "circuit_breaker", "enabled", "retry", "enabled")
 		client := facilitylayout.NewBreakerClient(facilitylayout.NewClient(facilityLayoutBaseURL, nil), recorder)
-		return locationLookupHandle{lookup: client, handlingUnits: noHandlingUnits{}, close: func() {}}, nil
+		return locationLookupHandle{lookup: client, handlingUnits: noHandlingUnits{}, locationTypes: noLocationTypes{}, close: func() {}}, nil
 
 	default:
 		return locationLookupHandle{}, fmt.Errorf("LOCATION_LOOKUP_MODE=%q is not supported (kafka or http)", mode)
@@ -97,7 +107,7 @@ func kafkaLocationLookup(ctx context.Context, brokers []string, logger *slog.Log
 		_ = consumer.Close()
 		return locationLookupHandle{runDone: runDone}, err
 	}
-	return locationLookupHandle{lookup: consumer, handlingUnits: consumer, runDone: runDone, close: func() { _ = consumer.Close() }}, nil
+	return locationLookupHandle{lookup: consumer, handlingUnits: consumer, locationTypes: consumer, runDone: runDone, close: func() { _ = consumer.Close() }}, nil
 }
 
 // dialFacilityCache is retried for the same reason the Postgres dials are:

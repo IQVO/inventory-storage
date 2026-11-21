@@ -98,7 +98,7 @@ func (uc *ReserveFullCases) pickCases(ctx context.Context, cmd ReserveFullCasesC
 		if err := unit.ReserveWhole(cmd.OwnerRef); err != nil {
 			return nil, nil, err
 		}
-		allocations = append(allocations, reservation.Allocation{StockUnitID: unit.ID(), BinID: unit.BinID(), Quantity: unit.Reserved()})
+		allocations = append(allocations, reservation.Allocation{StockUnitID: unit.ID(), BinID: unit.BinID(), Quantity: unit.Reserved(), ContainerLPN: unit.ContainerLPN()})
 	}
 	return allocations, touched, nil
 }

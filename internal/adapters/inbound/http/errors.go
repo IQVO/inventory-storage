@@ -22,6 +22,7 @@ func statusFor(err error) int {
 		errors.Is(err, usecases.ErrReservationNotFound),
 		errors.Is(err, usecases.ErrRelocationNotFound),
 		errors.Is(err, usecases.ErrContainerNotFound),
+		errors.Is(err, usecases.ErrToteNotFound),
 		errors.Is(err, usecases.ErrHeldUnitNotFound),
 		errors.Is(err, usecases.ErrProductClassificationNotFound):
 		return http.StatusNotFound
@@ -31,6 +32,7 @@ func statusFor(err error) int {
 		errors.Is(err, shared.ErrEmptyBinID),
 		errors.Is(err, shared.ErrInvalidOwnerRef),
 		errors.Is(err, reservation.ErrInvalidLineNo),
+		errors.Is(err, container.ErrInvalidLPN),
 		errors.Is(err, stock.ErrStowRequiresItemAndLocation),
 		errors.Is(err, product.ErrUnknownHandlingTag),
 		errors.Is(err, product.ErrUnknownTemperatureClass),
@@ -81,7 +83,11 @@ func statusFor(err error) int {
 		errors.Is(err, container.ErrContainerReserved),
 		errors.Is(err, container.ErrBreakNotConserving),
 		errors.Is(err, container.ErrContainerQuantityMismatch),
-		errors.Is(err, container.ErrBinHandlingUnitMismatch):
+		errors.Is(err, container.ErrBinHandlingUnitMismatch),
+		errors.Is(err, usecases.ErrLicensePlateTaken),
+		errors.Is(err, container.ErrToteNotPlaced),
+		errors.Is(err, container.ErrToteReserved),
+		errors.Is(err, usecases.ErrAutomatedStorageRequiresContainer):
 		return http.StatusConflict
 
 	default:
@@ -132,6 +138,7 @@ func problemCatalog() []struct {
 		{shared.ErrEmptyBinID, problemInfo{"empty-bin-id", "Bin ID must not be empty", classFinal}},
 		{shared.ErrInvalidOwnerRef, problemInfo{"invalid-owner-ref", "ownerRef must be at most 64 characters of [A-Za-z0-9._-]", classFinal}},
 		{reservation.ErrInvalidLineNo, problemInfo{"invalid-line-no", "lineNo must be between 1 and 2147483647", classFinal}},
+		{container.ErrInvalidLPN, problemInfo{"invalid-lpn", "lpn must be 1 to 64 characters of [A-Za-z0-9._-]", classFinal}},
 		{stock.ErrStowRequiresItemAndLocation, problemInfo{"stow-requires-item-and-location", "Stow requires both an item scan and a location scan", classFinal}},
 		{product.ErrUnknownHandlingTag, problemInfo{"unknown-handling-tag", "Unknown handling tag", classFinal}},
 		{product.ErrUnknownTemperatureClass, problemInfo{"unknown-temperature-class", "Unknown temperature class", classFinal}},
@@ -181,6 +188,11 @@ func problemCatalog() []struct {
 		{container.ErrBreakNotConserving, problemInfo{"break-not-conserving", "A case break must produce exactly the container quantity", classRetryable}},
 		{container.ErrContainerQuantityMismatch, problemInfo{"container-quantity-mismatch", "A sealed container must hold exactly one case", classRetryable}},
 		{container.ErrBinHandlingUnitMismatch, problemInfo{"bin-handling-unit-mismatch", "Bin does not accept this kind of handling unit", classRetryable}},
+		{usecases.ErrToteNotFound, problemInfo{"tote-not-found", "Tote not found", classRetryable}},
+		{usecases.ErrLicensePlateTaken, problemInfo{"license-plate-taken", "The license plate already names another container", classFinal}},
+		{container.ErrToteNotPlaced, problemInfo{"tote-not-placed", "Tote is not in a bin; stow it before filling it", classRetryable}},
+		{container.ErrToteReserved, problemInfo{"tote-reserved", "Tote holds reserved stock and cannot be stowed elsewhere", classRetryable}},
+		{usecases.ErrAutomatedStorageRequiresContainer, problemInfo{"automated-storage-requires-container", "An automated storage location holds container stock only", classRetryable}},
 	}
 }
 

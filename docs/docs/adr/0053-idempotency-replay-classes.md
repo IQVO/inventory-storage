@@ -87,6 +87,7 @@ question so that no problem type is unclassified. One problem type has one class
 
 | Problem type | Status | Class | Why |
 |---|---|---|---|
+| `automated-storage-requires-container` | 409 | RETRYABLE | Loose stock into a bin whose facility-layout LocationType is `AutomatedStorage` (`automated_storage_guard.go`, ADR 0054): the type comes from facility-layout events and can change. |
 | `bin-full` | 409 | RETRYABLE | `bin.Occupy` against the bin's current occupancy (`stow_stock.go`, `stow_container.go:99`): state that changes as stock leaves. |
 | `bin-handling-unit-mismatch` | 409 | RETRYABLE | The bin's declared handling unit (`BinHandlingUnitDeclared` event) can change. |
 | `bin-not-at-site` | 409 | RETRYABLE | `relocation.ErrBinNotAtSite`: the bin's site (facility-layout; may be unset until the event arrives). |
@@ -128,10 +129,12 @@ question so that no problem type is unclassified. One problem type has one class
 | `invalid-hold-reason` | 422 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
 | `invalid-limit` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
 | `invalid-line-no` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
+| `invalid-lpn` | 400 | FINAL | `PUT /totes/{lpn}` with a license plate longer than 64 characters (`container.NewTote`, ADR 0054): the path alone. |
 | `invalid-older-than-hours` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
 | `invalid-owner-ref` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
 | `invalid-relocation-reason` | 422 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
 | `invalid-report-query` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
+| `license-plate-taken` | 409 | FINAL | `PUT /totes/{lpn}` on a plate that names a sealed case (`register_tote.go`, `license_plates`, ADR 0054): a plate never changes kind and is never released. |
 | `location-classification-unavailable` | 409 | RETRYABLE | A dependency outage: the facility-layout lookup failed (`stow_stock.go:136`). Nothing committed; the retry can succeed. Answered 409 today and SHOULD be 503 (open point; the status is not changed here). |
 | `malformed-request-body` | 400 | FINAL | The body bytes alone (unreadable, NUL, invalid JSON). |
 | `missing-demand-ref` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
@@ -159,6 +162,9 @@ question so that no problem type is unclassified. One problem type has one class
 | `temperature-class-mismatch` | 409 | RETRYABLE | Same inputs as `hazmat-zone-required` (`stow_stock.go:147`). |
 | `temperature-class-not-applicable` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
 | `temperature-class-required` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
+| `tote-not-found` | 404 | RETRYABLE | A tote is registered by `PUT /totes/{lpn}` (ADR 0054): a registration can follow, as `container-not-found`. |
+| `tote-not-placed` | 409 | RETRYABLE | `fill_tote.go`: a fill before the tote's first stow; the aggregate state not reached yet. |
+| `tote-reserved` | 409 | RETRYABLE | `stow_tote.go` `movable`: a reservation holds stock in the tote; released by revoke, confirm or expiry. |
 | `transfer-id-required` | 400 | FINAL | Validation of the request's own fields or parameters: a function of the request alone. |
 | `transfer-receipt-conflict` | 409 | RETRYABLE | `replayOrRefuseReceipt` (`stage_transfer_receipt.go`): the line already has a receipt for a different scan; depends on the stored receipt, not the request alone. |
 | `transfer-scan-quarantined` | 422 | OUTCOME | `stage_transfer_receipt.go:146-180`: `quarantine` (:252-264) saves the inventory exception inside `atomically`, which succeeds; the problem is returned AFTER the commit as `decided.Problem`, and `transfer_receipt_handler.go:63-68` answers 422. The exception row is the record of the physical scan. Proven by `TestReplayClass_QuarantinedScanCommitsTheExceptionAndReplays`. Was not a `problemCatalog` entry (written by `writeQuarantineProblem`). |

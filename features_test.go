@@ -90,6 +90,9 @@ type world struct {
 	// rules holds the relocation wiring and the raw-input consumer steps of
 	// the documentation-derived scenarios (features_rules_test.go).
 	rules rulesState
+
+	// totes holds the tote wiring (features_totes_test.go, ADR 0054).
+	totes toteWorld
 }
 
 // start builds the composition root the way cmd/inventory does, but with the
@@ -126,6 +129,7 @@ func (w *world) start() {
 	w.wireWave2(s, reservationRepo)
 	w.wireContainers(s, reservationRepo)
 	w.wireRules(s)
+	w.wireTotes(s)
 	w.status = 0
 	w.body = nil
 	w.headers = nil
@@ -743,4 +747,6 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	w.registerHeldSteps(sc)
 	w.registerTransferSagaSteps(sc)
 	w.registerRuleSteps(sc)
+	w.registerToteSteps(sc)
+	w.registerToteFieldSteps(sc)
 }

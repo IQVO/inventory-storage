@@ -46,6 +46,9 @@ type RelocateStock struct {
 	// destination bin, in the move's transaction (ADR 0040). Optional: nil
 	// means "not emitted".
 	Levels *BinLevelEmitter
+	// LocationTypes keeps loose stock out of an AutomatedStorage bin (ADR
+	// 0054). Optional: nil applies no such rule.
+	LocationTypes ports.BinLocationTypeLookup
 }
 
 // Execute performs one relocation and returns the applied record.
@@ -75,6 +78,9 @@ func (uc *RelocateStock) relocate(ctx context.Context, cmd RelocateStockCommand)
 	}
 	to, err := uc.bin(ctx, cmd.ToBin)
 	if err != nil {
+		return nil, err
+	}
+	if err := refuseLooseInto(ctx, uc.LocationTypes, cmd.ToBin); err != nil {
 		return nil, err
 	}
 	id, err := uc.Relocations.NextID(ctx)
