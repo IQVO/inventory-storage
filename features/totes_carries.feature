@@ -4,6 +4,7 @@
 #     the placement rules of a plain stow (hazmat refused, Placement wired).
 #   - carry (Task 7 review): a transfer stow into an AutomatedStorage bin is
 #     refused (D9).
+#   - carry (Task 11 review): ToteFilled and ToteStowed carry their fields.
 
 Feature: Tote fills and stows, as a stow and a move (ADR 0054)
   A fill is a stow into the tote at its bin; a stow moves the tote and every
@@ -55,3 +56,16 @@ Feature: Tote fills and stows, as a stow and a move (ADR 0054)
     Then the stow is refused with "hazmat-zone-required"
     And tote "TOTE-1" is in "WH1-RCV-DEC-D01-01-01-A" holding 2 of "SKU-H"
     And bin "WH1-RCV-DEC-D01-01-01-A" holds 2 eaches and bin "WH1-AUTO-ASRS-ASRS1-00-00-S" holds 0
+
+  # carry (Task 11 review): the putaway's tote events carry their fields
+  # (ADR 0054 item 9); totes.feature stays the brief's byte-identical spec
+  Scenario: Putaway - the fill and stow events carry the site, the bins and the contents
+    Given tote "TOTE-1" is stowed into "WH1-RCV-DEC-D01-01-01-A"
+    When 6 of "SKU-1" and 4 of "SKU-2" are filled into tote "TOTE-1"
+    And tote "TOTE-1" is stowed into "WH1-AUTO-ASRS-ASRS1-00-00-S"
+    Then the fill and stow events of tote "TOTE-1" carry:
+      | event      | site | fromBin                 | bin                         | contents        |
+      | ToteStowed | WH1  |                         | WH1-RCV-DEC-D01-01-01-A     |                 |
+      | ToteFilled | WH1  |                         | WH1-RCV-DEC-D01-01-01-A     | SKU-1=6         |
+      | ToteFilled | WH1  |                         | WH1-RCV-DEC-D01-01-01-A     | SKU-2=4         |
+      | ToteStowed | WH1  | WH1-RCV-DEC-D01-01-01-A | WH1-AUTO-ASRS-ASRS1-00-00-S | SKU-1=6,SKU-2=4 |

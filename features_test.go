@@ -748,4 +748,5 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	w.registerTransferSagaSteps(sc)
 	w.registerRuleSteps(sc)
 	w.registerToteSteps(sc)
+	w.registerToteFieldSteps(sc)
 }
