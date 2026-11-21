@@ -49,9 +49,15 @@ func (w *world) wireTotes(s *inboundhttp.Server) {
 
 	s.RegisterTote = &usecases.RegisterTote{Totes: totes, Containers: cases, Events: w.publisher, Clock: w.clock}
 	s.GetTote = &usecases.GetTote{Totes: totes, Stock: w.stock}
-	s.FillTote = &usecases.FillTote{Totes: totes, Stock: w.stock, Locations: w.locations, Events: w.publisher, Clock: w.clock, Placement: placement}
+	// carry (Task 6 review): the bin-level emitter, so a fill raises its STOW
+	// and a stow its two RELOCATE BinStockLevelChanged (D12).
+	levels := &usecases.BinLevelEmitter{Ledger: memory.NewBinLevelLedger(w.stock), Locations: w.locations, Events: w.publisher, Clock: w.clock}
+	s.FillTote = &usecases.FillTote{
+		Totes: totes, Stock: w.stock, Locations: w.locations, Events: w.publisher, Clock: w.clock, Placement: placement, Levels: levels,
+	}
 	s.StowTote = &usecases.StowTote{
 		Totes: totes, Contents: w.stock, Stock: w.stock, Locations: w.locations, Events: w.publisher, Clock: w.clock, Placement: placement,
+		Levels: levels,
 	}
 	s.ListBinTotes = &usecases.ListBinTotes{Totes: totes, Locations: w.locations}
 	s.StowStock.LocationTypes = types
@@ -161,6 +167,12 @@ func (w *world) twoSKUsAreFilledIntoTote(ctx context.Context, qtyA int, skuA str
 
 func (w *world) fillTote(ctx context.Context, qty int, sku, lpn string) error {
 	return w.mustCall(ctx, http.MethodPost, "/totes/"+url.PathEscape(lpn)+"/fills", map[string]any{"sku": sku, "quantity": qty}, http.StatusCreated)
+}
+
+// carry (Task 6 review): one fill whose answer the next Then asserts (a
+// placement refusal included).
+func (w *world) unitsAreFilledIntoTote(ctx context.Context, qty int, sku, lpn string) error {
+	return w.recordNoServerError(ctx, http.MethodPost, "/totes/"+url.PathEscape(lpn)+"/fills", map[string]any{"sku": sku, "quantity": qty})
 }
 
 func (w *world) unitsAreReservedFor(ctx context.Context, qty int, sku, demand string) error {
@@ -295,6 +307,7 @@ func (w *world) registerToteSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^tote "([^"]*)" is registered$`, w.toteIsRegistered)
 	sc.Step(`^tote "([^"]*)" is stowed into "([^"]*)"$`, w.toteIsStowedInto)
 	sc.Step(`^(\d+) of "([^"]*)" and (\d+) of "([^"]*)" are filled into tote "([^"]*)"$`, w.twoSKUsAreFilledIntoTote)
+	sc.Step(`^(\d+) of "([^"]*)" are filled into tote "([^"]*)"$`, w.unitsAreFilledIntoTote)
 	sc.Step(`^(\d+) of "([^"]*)" are reserved for "([^"]*)"$`, w.unitsAreReservedFor)
 	sc.Step(`^(\d+) of "([^"]*)" are stowed loose into "([^"]*)"$`, w.unitsAreStowedLooseInto)
 	sc.Step(`^tote "([^"]*)" is in "([^"]*)" holding (.+)$`, w.toteIsInHolding)
