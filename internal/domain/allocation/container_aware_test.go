@@ -108,3 +108,11 @@ func TestOrderForAllForwardFacesShortIsOrder(t *testing.T) {
 	faces := allocation.NewForwardFaces(fwdBin)
 	assertOrder(t, allocation.OrderFor(units, faces, 9), "su-f2", "su-f3")
 }
+
+// carry (Task 4 review): two equal containers covering the request tie-break
+// by ADR 0050's order (same usable, same bin -> stock unit id ascending), so
+// su-t1 is drawn before su-t2 although TOTE-2 is listed first.
+func TestOrderForEqualContainersTieBreakByADR0050Order(t *testing.T) {
+	units := []*stock.StockUnit{inTote(t, "su-t2", "TOTE-2", 5), inTote(t, "su-t1", "TOTE-1", 5), loose(t, "su-a", asrsBin, 1)}
+	assertOrder(t, allocation.OrderFor(units, allocation.ForwardFaces{}, 4), "su-t1", "su-a", "su-t2")
+}
