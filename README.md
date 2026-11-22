@@ -942,7 +942,7 @@ They also run as the `bdd` job in CI.
 ## Helm chart
 
 `charts/inventory-storage` deploys the OLTP service with optional components behind
-values flags: the analytics projector and reports reader (`analytics.enabled`), the read-only MCP server (`mcp.enabled`, ClusterIP on `:8090`) and the operator micro-frontend (`frontend.enabled`). Mandatory values are the Postgres secret and the Kafka
+values flags: the analytics projector and reports reader (`analytics.enabled`), the read-only MCP server (`mcp.enabled`, ClusterIP on `:8090`), `agents.colocate` (default off; capacity step 3, warehouse-infra ADR 0012: with `mcp.enabled` and `a2a.enabled` both binaries run as the containers `mcp` :8090 and `a2a` :8093 of ONE `inventory-storage-agents` Deployment; the Services keep their names and ports, readiness becomes pod-wide; `tests/test_agents_colocation.py`) and the operator micro-frontend (`frontend.enabled`). Mandatory values are the Postgres secret and the Kafka
 broker list; the deployed consumer-group ids and mode flags come from
 `warehouse-infra`'s helm-values.
 
