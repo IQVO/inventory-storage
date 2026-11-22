@@ -112,7 +112,7 @@ func (c *AnalyticsConsumer) Run(ctx context.Context) error {
 			return err
 		}
 		if err := c.Handle(ctx, msg); err != nil {
-			c.Logger.ErrorContext(ctx, "analytics message handling failed", "error", err)
+			c.Logger.ErrorContext(ctx, "analytics message handling failed", "error", sanitizeErr(err))
 		}
 	}
 }
@@ -147,7 +147,7 @@ func (c *AnalyticsConsumer) Handle(ctx context.Context, msg kafkago.Message) err
 			// is logged at WARN and skipped — the group offset still
 			// advances, the partition is never blocked (ADR-0024 §5).
 			c.Logger.WarnContext(ctx, "skipping analytics message that is not a valid CloudEvent",
-				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
+				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 			return nil
 		}
 		span.RecordError(err)

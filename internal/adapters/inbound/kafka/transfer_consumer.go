@@ -193,12 +193,12 @@ func (c *Consumer) settle(ctx context.Context, msg kafkago.Message) bool {
 			// it, and blocking the partition would wedge every
 			// later transfer.
 			c.Logger.ErrorContext(ctx, "transfer allocation command permanently unhandleable; committing past it",
-				"error", err, "partition", msg.Partition, "offset", msg.Offset)
+				"error", sanitizeErr(err), "partition", msg.Partition, "offset", msg.Offset)
 			return true
 		}
 		// Transient (DB/tx failure): retry the SAME message.
 		c.Logger.WarnContext(ctx, "transfer allocation command handling failed; retrying same message",
-			"error", err, "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
+			"error", sanitizeErr(err), "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
 		select {
 		case <-ctx.Done():
 			return false
@@ -215,7 +215,7 @@ func (c *Consumer) Handle(ctx context.Context, msg kafkago.Message) error {
 	e, err := cloudevents.Decode(msg.Value)
 	if err != nil {
 		c.Logger.WarnContext(ctx, "skipping transfer message that is not a valid CloudEvent",
-			"partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 
@@ -237,26 +237,26 @@ func (c *Consumer) handleAllocate(ctx context.Context, e ce.Event, msg kafkago.M
 	var data commandData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping TransferAllocationRequested with undecodable payload",
-			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"id", sanitizeLog(e.ID()), "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 
 	site, err := shared.NewSiteID(data.OriginSiteID)
 	if err != nil {
 		c.Logger.WarnContext(ctx, "skipping TransferAllocationRequested with invalid origin_site_id",
-			"id", e.ID(), "origin_site_id", data.OriginSiteID, "error", err)
+			"id", sanitizeLog(e.ID()), "origin_site_id", sanitizeLog(data.OriginSiteID), "error", sanitizeErr(err))
 		return nil
 	}
 	sku, err := shared.NewSKU(data.SKU)
 	if err != nil {
 		c.Logger.WarnContext(ctx, "skipping TransferAllocationRequested with invalid sku",
-			"id", e.ID(), "sku", data.SKU, "error", err)
+			"id", sanitizeLog(e.ID()), "sku", sanitizeLog(data.SKU), "error", sanitizeErr(err))
 		return nil
 	}
 	qty, err := shared.NewPositiveQuantity(data.Quantity)
 	if err != nil {
 		c.Logger.WarnContext(ctx, "skipping TransferAllocationRequested with non-positive quantity",
-			"id", e.ID(), "quantity", data.Quantity, "error", err)
+			"id", sanitizeLog(e.ID()), "quantity", data.Quantity, "error", sanitizeErr(err))
 		return nil
 	}
 
@@ -271,7 +271,7 @@ func (c *Consumer) handleAllocate(ctx context.Context, e ce.Event, msg kafkago.M
 		if isDeterministic(err) {
 			// Command-level validation failure: deterministic poison.
 			c.Logger.WarnContext(ctx, "transfer allocation command rejected as malformed; committing past it",
-				"id", e.ID(), "transfer_line_id", data.TransferLineID, "error", err)
+				"id", sanitizeLog(e.ID()), "transfer_line_id", sanitizeLog(data.TransferLineID), "error", sanitizeErr(err))
 			return nil
 		}
 		return err
@@ -284,13 +284,13 @@ func (c *Consumer) handleAllocate(ctx context.Context, e ce.Event, msg kafkago.M
 	}
 	if result.Replay {
 		c.Logger.InfoContext(ctx, "transfer allocation command replayed; original outcome returned",
-			"ce_id", e.ID(), "transfer_line_id", data.TransferLineID,
-			"outcome", outcome)
+			"ce_id", sanitizeLog(e.ID()), "transfer_line_id", sanitizeLog(data.TransferLineID),
+			"outcome", sanitizeLog(outcome))
 	} else {
 		c.Logger.InfoContext(ctx, "transfer allocation decided",
-			"ce_id", e.ID(), "transfer_line_id", data.TransferLineID,
-			"outcome", outcome,
-			"reservation_id", reservationID)
+			"ce_id", sanitizeLog(e.ID()), "transfer_line_id", sanitizeLog(data.TransferLineID),
+			"outcome", sanitizeLog(outcome),
+			"reservation_id", sanitizeLog(reservationID))
 	}
 	return nil
 }
@@ -306,33 +306,33 @@ func (c *Consumer) handleRelease(ctx context.Context, e ce.Event, msg kafkago.Me
 		// A wiring bug, not a retryable failure: the composition root
 		// always wires the release handler.
 		c.Logger.ErrorContext(ctx, "transfer allocation release command arrived but no release handler is wired; committing past it",
-			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset)
+			"id", sanitizeLog(e.ID()), "partition", msg.Partition, "offset", msg.Offset)
 		return nil
 	}
 
 	var data releaseCommandData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping TransferAllocationReleaseRequested with undecodable payload",
-			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"id", sanitizeLog(e.ID()), "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 
 	site, err := shared.NewSiteID(data.OriginSiteID)
 	if err != nil {
 		c.Logger.WarnContext(ctx, "skipping TransferAllocationReleaseRequested with invalid origin_site_id",
-			"id", e.ID(), "origin_site_id", data.OriginSiteID, "error", err)
+			"id", sanitizeLog(e.ID()), "origin_site_id", sanitizeLog(data.OriginSiteID), "error", sanitizeErr(err))
 		return nil
 	}
 	sku, err := shared.NewSKU(data.SKU)
 	if err != nil {
 		c.Logger.WarnContext(ctx, "skipping TransferAllocationReleaseRequested with invalid sku",
-			"id", e.ID(), "sku", data.SKU, "error", err)
+			"id", sanitizeLog(e.ID()), "sku", sanitizeLog(data.SKU), "error", sanitizeErr(err))
 		return nil
 	}
 	qty, err := shared.NewPositiveQuantity(data.Quantity)
 	if err != nil {
 		c.Logger.WarnContext(ctx, "skipping TransferAllocationReleaseRequested with non-positive quantity",
-			"id", e.ID(), "quantity", data.Quantity, "error", err)
+			"id", sanitizeLog(e.ID()), "quantity", data.Quantity, "error", sanitizeErr(err))
 		return nil
 	}
 
@@ -350,7 +350,7 @@ func (c *Consumer) handleRelease(ctx context.Context, e ce.Event, msg kafkago.Me
 			// Deterministic refusal (malformed command, unknown line,
 			// ledger mismatch): log, commit past, never retry.
 			c.Logger.WarnContext(ctx, "transfer allocation release command refused; committing past it",
-				"id", e.ID(), "transfer_line_id", data.TransferLineID, "error", err)
+				"id", sanitizeLog(e.ID()), "transfer_line_id", sanitizeLog(data.TransferLineID), "error", sanitizeErr(err))
 			return nil
 		}
 		return err
@@ -362,13 +362,13 @@ func (c *Consumer) handleRelease(ctx context.Context, e ce.Event, msg kafkago.Me
 	}
 	if result.Replay {
 		c.Logger.InfoContext(ctx, "transfer allocation release command replayed; original outcome returned",
-			"ce_id", e.ID(), "transfer_line_id", data.TransferLineID,
-			"outcome", outcome)
+			"ce_id", sanitizeLog(e.ID()), "transfer_line_id", sanitizeLog(data.TransferLineID),
+			"outcome", sanitizeLog(outcome))
 	} else {
 		c.Logger.InfoContext(ctx, "transfer allocation release decided",
-			"ce_id", e.ID(), "transfer_line_id", data.TransferLineID,
-			"outcome", outcome,
-			"reservation_id", data.ReservationID)
+			"ce_id", sanitizeLog(e.ID()), "transfer_line_id", sanitizeLog(data.TransferLineID),
+			"outcome", sanitizeLog(outcome),
+			"reservation_id", sanitizeLog(data.ReservationID))
 	}
 	return nil
 }

@@ -29,7 +29,7 @@ func (c *TaskCompletedConsumer) settle(ctx context.Context, msg kafkago.Message)
 		}
 		if errors.Is(err, errPoison) {
 			c.Logger.ErrorContext(ctx, "task-completed message is malformed; dead-lettering",
-				"error", err, "partition", msg.Partition, "offset", msg.Offset)
+				"error", sanitizeErr(err), "partition", msg.Partition, "offset", msg.Offset)
 			return c.deadLetter(ctx, msg, err)
 		}
 		if ctx.Err() != nil {
@@ -37,11 +37,11 @@ func (c *TaskCompletedConsumer) settle(ctx context.Context, msg kafkago.Message)
 		}
 		if attempt >= maxAttempts {
 			c.Logger.ErrorContext(ctx, "task-completed handling kept failing; dead-lettering after bounded retries",
-				"error", err, "attempts", attempt, "partition", msg.Partition, "offset", msg.Offset)
+				"error", sanitizeErr(err), "attempts", attempt, "partition", msg.Partition, "offset", msg.Offset)
 			return c.deadLetter(ctx, msg, fmt.Errorf("gave up after %d attempts: %w", attempt, err))
 		}
 		c.Logger.WarnContext(ctx, "task-completed handling failed; retrying same message",
-			"error", err, "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
+			"error", sanitizeErr(err), "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -71,7 +71,7 @@ func (c *TaskCompletedConsumer) deadLetter(ctx context.Context, msg kafkago.Mess
 			return nil
 		}
 		c.Logger.ErrorContext(ctx, "task-completed dead-letter write failed; retrying",
-			"error", err, "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
+			"error", sanitizeErr(err), "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

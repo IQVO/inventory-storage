@@ -46,7 +46,7 @@ func runConsumer(
 			}
 			attempt++
 			logger.WarnContext(ctx, label+" handling failed; retrying same message",
-				"error", err, "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
+				"error", sanitizeErr(err), "attempt", attempt, "partition", msg.Partition, "offset", msg.Offset)
 			select {
 			case <-ctx.Done():
 				// Shutdown landed mid-handle: a clean stop. The offset was not

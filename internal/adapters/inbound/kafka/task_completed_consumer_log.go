@@ -13,7 +13,7 @@ import (
 func (c *TaskCompletedConsumer) logReplenish(ctx context.Context, id string, data taskCompletedData, result usecases.ReplenishTaskResult) {
 	if result.Outcome == usecases.ReplenishDuplicate {
 		c.Logger.InfoContext(ctx, "task-completed REPLENISH already applied; redelivery ignored",
-			"id", id, "task_id", data.TaskID, "request_ref", data.RequestRef)
+			"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "request_ref", sanitizeLog(data.RequestRef))
 		return
 	}
 	relocationID := ""
@@ -21,15 +21,15 @@ func (c *TaskCompletedConsumer) logReplenish(ctx context.Context, id string, dat
 		relocationID = result.Relocation.ID()
 	}
 	c.Logger.InfoContext(ctx, "task-completed REPLENISH applied to the ledger",
-		"id", id, "task_id", data.TaskID, "relocation_id", relocationID, "sku", data.SKU,
-		"from_bin", data.FromBin, "to_bin", data.ToBin, "request_ref", data.RequestRef)
+		"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "relocation_id", sanitizeLog(relocationID), "sku", sanitizeLog(data.SKU),
+		"from_bin", sanitizeLog(data.FromBin), "to_bin", sanitizeLog(data.ToBin), "request_ref", sanitizeLog(data.RequestRef))
 }
 
 // logRelocation logs what ApplyRelocationTask did with one settled message.
 func (c *TaskCompletedConsumer) logRelocation(ctx context.Context, id string, data taskCompletedData, result usecases.RelocationTaskResult) {
 	if result.Outcome == usecases.RelocationDuplicate {
 		c.Logger.InfoContext(ctx, "task-completed RELOCATE already applied; redelivery ignored",
-			"id", id, "task_id", data.TaskID, "relocation_ref", data.RelocationRef)
+			"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "relocation_ref", sanitizeLog(data.RelocationRef))
 		return
 	}
 	relocationID := ""
@@ -37,8 +37,8 @@ func (c *TaskCompletedConsumer) logRelocation(ctx context.Context, id string, da
 		relocationID = result.Relocation.ID()
 	}
 	c.Logger.InfoContext(ctx, "task-completed RELOCATE applied to the ledger",
-		"id", id, "task_id", data.TaskID, "relocation_id", relocationID, "sku", data.SKU,
-		"from_bin", data.FromBin, "to_bin", data.ToBin, "relocation_ref", data.RelocationRef)
+		"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "relocation_id", sanitizeLog(relocationID), "sku", sanitizeLog(data.SKU),
+		"from_bin", sanitizeLog(data.FromBin), "to_bin", sanitizeLog(data.ToBin), "relocation_ref", sanitizeLog(data.RelocationRef))
 }
 
 // logOutcome logs what the use case did with one settled message.
@@ -46,24 +46,24 @@ func (c *TaskCompletedConsumer) logOutcome(ctx context.Context, id string, data 
 	switch result.Outcome {
 	case usecases.PicksIgnored:
 		c.Logger.DebugContext(ctx, "task-completed ignored (not a PICK task or no order_ref)",
-			"id", id, "task_id", data.TaskID, "task_type", data.TaskType)
+			"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "task_type", sanitizeLog(data.TaskType))
 	case usecases.PicksDuplicate:
 		c.Logger.InfoContext(ctx, "task-completed already handled; redelivery ignored",
-			"id", id, "task_id", data.TaskID, "order_ref", data.OrderRef)
+			"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "order_ref", sanitizeLog(data.OrderRef))
 	case usecases.PicksNoReservations:
 		c.Logger.InfoContext(ctx, "task-completed for an order with no reservations; nothing to confirm",
-			"id", id, "task_id", data.TaskID, "order_ref", data.OrderRef)
+			"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "order_ref", sanitizeLog(data.OrderRef))
 	case usecases.PicksAwaiting:
 		c.Logger.InfoContext(ctx, "task-completed counted; waiting for the order's last pick before confirming",
-			"id", id, "task_id", data.TaskID, "order_ref", data.OrderRef,
+			"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "order_ref", sanitizeLog(data.OrderRef),
 			"picks_seen", result.PicksSeen, "picks_needed", result.PicksNeeded)
 	case usecases.PicksNothingToConfirm:
 		c.Logger.InfoContext(ctx, "task-completed for an order with no ACTIVE reservation left; nothing to confirm",
-			"id", id, "task_id", data.TaskID, "order_ref", data.OrderRef,
+			"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "order_ref", sanitizeLog(data.OrderRef),
 			"picks_seen", result.PicksSeen, "picks_needed", result.PicksNeeded)
 	case usecases.PicksLineNotFound:
 		c.Logger.InfoContext(ctx, "task-completed names a line no reservation of the order carries; nothing to confirm",
-			"id", id, "task_id", data.TaskID, "order_ref", data.OrderRef, "line_no", data.lineNoOrZero())
+			"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "order_ref", sanitizeLog(data.OrderRef), "line_no", data.lineNoOrZero())
 	case usecases.PicksLineSettled:
 		c.logLineSettled(ctx, id, data, result)
 	default:
@@ -91,7 +91,7 @@ func (c *TaskCompletedConsumer) logLineSettled(ctx context.Context, id string, d
 		msg = "task-completed skipped an expired reservation of the picked line (stock was already returned to usable)"
 	}
 	c.Logger.Log(ctx, level, msg,
-		"id", id, "task_id", data.TaskID, "order_ref", data.OrderRef, "line_no", data.lineNoOrZero(),
+		"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "order_ref", sanitizeLog(data.OrderRef), "line_no", data.lineNoOrZero(),
 		"confirmed", r.Confirmed, "already_picked", r.AlreadyPicked, "revoked", r.Revoked, "expired", r.Expired)
 }
 
@@ -106,7 +106,7 @@ func (c *TaskCompletedConsumer) logSettled(ctx context.Context, id string, data 
 		msg = "task-completed skipped expired reservations (stock was already returned to usable)"
 	}
 	c.Logger.Log(ctx, level, msg,
-		"id", id, "task_id", data.TaskID, "order_ref", data.OrderRef,
+		"id", sanitizeLog(id), "task_id", sanitizeLog(data.TaskID), "order_ref", sanitizeLog(data.OrderRef),
 		"confirmed", r.Confirmed, "already_picked", r.AlreadyPicked, "revoked", r.Revoked, "expired", r.Expired)
 }
 
@@ -116,5 +116,5 @@ func (c *TaskCompletedConsumer) logNotCloudEvent(ctx context.Context, msg kafkag
 		return
 	}
 	c.Logger.WarnContext(ctx, "skipping fulfillment message that is not a valid CloudEvent (sampled: first few, then every 1000th)",
-		"skipped_so_far", n, "partition", msg.Partition, "offset", msg.Offset, "error", err)
+		"skipped_so_far", n, "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 }

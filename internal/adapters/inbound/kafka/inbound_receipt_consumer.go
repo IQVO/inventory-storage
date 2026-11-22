@@ -142,7 +142,7 @@ func (c *InboundReceiptConsumer) Handle(ctx context.Context, msg kafkago.Message
 	e, err := cloudevents.Decode(msg.Value)
 	if err != nil {
 		c.Logger.WarnContext(ctx, "skipping inbound-receiving message that is not a valid CloudEvent",
-			"partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 	switch e.Type() {
@@ -158,7 +158,7 @@ func (c *InboundReceiptConsumer) handleLine(ctx context.Context, msg kafkago.Mes
 	var data receiptLineReceivedData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping inbound-receiving ReceiptLineReceived with undecodable payload",
-			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"id", sanitizeLog(e.ID()), "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 
@@ -178,8 +178,8 @@ func (c *InboundReceiptConsumer) handleLine(ctx context.Context, msg kafkago.Mes
 	if err != nil {
 		if errors.Is(err, usecases.ErrMalformedInboundReceiptLine) {
 			c.Logger.WarnContext(ctx, "skipping invalid inbound-receiving receipt line",
-				"id", e.ID(), "receipt_id", data.ReceiptID, "sku", data.SKU, "quantity", data.Quantity,
-				"condition", data.Condition, "error", err)
+				"id", sanitizeLog(e.ID()), "receipt_id", sanitizeLog(data.ReceiptID), "sku", sanitizeLog(data.SKU), "quantity", data.Quantity,
+				"condition", sanitizeLog(data.Condition), "error", sanitizeErr(err))
 			return nil
 		}
 		return err
@@ -196,20 +196,20 @@ func (c *InboundReceiptConsumer) handleCarton(ctx context.Context, msg kafkago.M
 	var data receiptCartonReceivedData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping inbound-receiving ReceiptCartonReceived with undecodable payload",
-			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"id", sanitizeLog(e.ID()), "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 	outcome, settled, err := c.Carton.Execute(ctx, data.carton(e.ID()))
 	if err != nil {
 		if errors.Is(err, usecases.ErrMalformedReceiptCarton) {
 			c.Logger.WarnContext(ctx, "skipping invalid inbound-receiving receipt carton",
-				"id", e.ID(), "receipt_id", data.ReceiptID, "sscc", data.SSCC, "error", err)
+				"id", sanitizeLog(e.ID()), "receipt_id", sanitizeLog(data.ReceiptID), "sscc", sanitizeLog(data.SSCC), "error", sanitizeErr(err))
 			return nil
 		}
 		return err
 	}
 	c.Logger.InfoContext(ctx, "inbound-receiving receipt carton handled",
-		"id", e.ID(), "receipt_id", data.ReceiptID, "lpn", data.LPN, "outcome", string(outcome),
+		"id", sanitizeLog(e.ID()), "receipt_id", sanitizeLog(data.ReceiptID), "lpn", sanitizeLog(data.LPN), "outcome", sanitizeLog(string(outcome)),
 		"registered", settled.Registered, "pending", settled.Pending, "rejected", settled.Rejected)
 	return nil
 }
@@ -238,11 +238,11 @@ func (c *InboundReceiptConsumer) logOutcome(ctx context.Context, id string, data
 	}
 	switch outcome {
 	case usecases.LineHeld:
-		c.Logger.InfoContext(ctx, "inbound-receiving receipt line is Damaged; booked as held stock, not usable", attrs...)
+		c.Logger.InfoContext(ctx, "inbound-receiving receipt line is Damaged; booked as held stock, not usable", sanitizeArgs(attrs)...)
 	case usecases.LineDuplicate:
-		c.Logger.InfoContext(ctx, "inbound-receiving receipt line already handled; redelivery ignored", attrs...)
+		c.Logger.InfoContext(ctx, "inbound-receiving receipt line already handled; redelivery ignored", sanitizeArgs(attrs)...)
 	case usecases.LineBooked:
-		c.Logger.InfoContext(ctx, "inbound-receiving receipt line booked as staged stock", attrs...)
+		c.Logger.InfoContext(ctx, "inbound-receiving receipt line booked as staged stock", sanitizeArgs(attrs)...)
 	}
 }
 
