@@ -109,6 +109,15 @@ Fully qualified name of the A2A agent Deployment/Service (<release>-a2a, ADR-004
 {{- include "inventory-storage.fullname" . }}-a2a
 {{- end }}
 
+{{/* agents.colocate (warehouse-infra ADR 0012): "true" iff colocate, mcp and a2a are all on; else empty. */}}
+{{- define "inventory-storage.agentsColocated" -}}
+{{- if and (.Values.agents | default dict).colocate .Values.mcp.enabled .Values.a2a.enabled }}true{{ end -}}
+{{- end }}
+
+{{- define "inventory-storage.agentsFullname" -}}
+{{- printf "%s-agents" (include "inventory-storage.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
 {{/*
 Fully qualified name of the frontend Module Federation remote deployment/service.
 
