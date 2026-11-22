@@ -136,7 +136,7 @@ func (c *ProductMasterConsumer) Handle(ctx context.Context, msg kafkago.Message)
 	e, err := cloudevents.Decode(msg.Value)
 	if err != nil {
 		c.Logger.WarnContext(ctx, "skipping product-master message that is not a valid CloudEvent",
-			"partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 	switch e.Type() {
@@ -154,7 +154,7 @@ func (c *ProductMasterConsumer) handleClassified(ctx context.Context, msg kafkag
 	var data productMasterClassifiedData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping product-master ProductClassified with undecodable payload",
-			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"id", sanitizeLog(e.ID()), "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 
@@ -170,13 +170,13 @@ func (c *ProductMasterConsumer) handleClassified(ctx context.Context, msg kafkag
 	if err != nil {
 		if errors.Is(err, usecases.ErrMalformedProductClassification) {
 			c.Logger.WarnContext(ctx, "skipping invalid product-master classification",
-				"id", e.ID(), "sku", data.SKU, "version", data.Version, "error", err)
+				"id", sanitizeLog(e.ID()), "sku", sanitizeLog(data.SKU), "version", data.Version, "error", sanitizeErr(err))
 			return nil
 		}
 		return err
 	}
 	c.Logger.InfoContext(ctx, "product-master classification handled",
-		"id", e.ID(), "sku", data.SKU, "version", data.Version, "outcome", string(outcome))
+		"id", sanitizeLog(e.ID()), "sku", sanitizeLog(data.SKU), "version", data.Version, "outcome", sanitizeLog(string(outcome)))
 	return nil
 }
 
@@ -187,7 +187,7 @@ func (c *ProductMasterConsumer) handlePackDeclared(ctx context.Context, msg kafk
 	var data productPackLevelDeclaredData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping product-master ProductPackLevelDeclared with undecodable payload",
-			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"id", sanitizeLog(e.ID()), "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 	outcome, err := c.Packaging.Declared(ctx, usecases.PackLevelDeclared{
@@ -204,7 +204,7 @@ func (c *ProductMasterConsumer) handlePackRetired(ctx context.Context, msg kafka
 	var data productPackLevelRetiredData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping product-master ProductPackLevelRetired with undecodable payload",
-			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"id", sanitizeLog(e.ID()), "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 	outcome, err := c.Packaging.Retired(ctx, usecases.PackLevelRetired{
@@ -219,13 +219,13 @@ func (c *ProductMasterConsumer) packLevelDone(ctx context.Context, id, sku, gtin
 	if err != nil {
 		if errors.Is(err, usecases.ErrMalformedPackLevel) {
 			c.Logger.WarnContext(ctx, "skipping invalid product-master pack level",
-				"id", id, "sku", sku, "gtin", gtin, "version", version, "error", err)
+				"id", sanitizeLog(id), "sku", sanitizeLog(sku), "gtin", sanitizeLog(gtin), "version", version, "error", sanitizeErr(err))
 			return nil
 		}
 		return err
 	}
 	c.Logger.InfoContext(ctx, "product-master pack level handled",
-		"id", id, "sku", sku, "gtin", gtin, "version", version, "outcome", string(outcome))
+		"id", sanitizeLog(id), "sku", sanitizeLog(sku), "gtin", sanitizeLog(gtin), "version", version, "outcome", sanitizeLog(string(outcome)))
 	return nil
 }
 

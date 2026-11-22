@@ -85,7 +85,7 @@ func (c *SlotPlanConsumer) Handle(ctx context.Context, msg kafkago.Message) erro
 	e, err := cloudevents.Decode(msg.Value)
 	if err != nil {
 		c.Logger.WarnContext(ctx, "skipping slotting-optimization message that is not a valid CloudEvent",
-			"partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 	if e.Type() != typeSlotPlanApproved {
@@ -94,7 +94,7 @@ func (c *SlotPlanConsumer) Handle(ctx context.Context, msg kafkago.Message) erro
 	var data slotPlanApprovedData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping slotting-optimization SlotPlanApproved with undecodable payload",
-			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"id", sanitizeLog(e.ID()), "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 	raw := make([]allocation.RawAssignment, 0, len(data.Assignments))
@@ -107,13 +107,13 @@ func (c *SlotPlanConsumer) Handle(ctx context.Context, msg kafkago.Message) erro
 	if err != nil {
 		if errors.Is(err, usecases.ErrMalformedSlotPlan) {
 			c.Logger.WarnContext(ctx, "skipping invalid slotting-optimization slot plan",
-				"id", e.ID(), "plan_id", data.PlanID, "site_id", data.SiteID, "error", err)
+				"id", sanitizeLog(e.ID()), "plan_id", sanitizeLog(data.PlanID), "site_id", sanitizeLog(data.SiteID), "error", sanitizeErr(err))
 			return nil
 		}
 		return err
 	}
 	c.Logger.InfoContext(ctx, "slotting-optimization slot plan handled",
-		"id", e.ID(), "plan_id", data.PlanID, "site_id", data.SiteID, "assignments", len(raw), "outcome", string(outcome))
+		"id", sanitizeLog(e.ID()), "plan_id", sanitizeLog(data.PlanID), "site_id", sanitizeLog(data.SiteID), "assignments", len(raw), "outcome", sanitizeLog(string(outcome)))
 	return nil
 }
 

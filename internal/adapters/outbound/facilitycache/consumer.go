@@ -425,10 +425,10 @@ func (c *Consumer) Run(ctx context.Context) error {
 			// tracking everything else — log and continue, exactly as a
 			// tolerant reader should.
 			c.Logger.ErrorContext(ctx, "facility event handling failed",
-				"error", err, "partition", msg.Partition, "offset", msg.Offset)
+				"error", sanitizeErr(err), "partition", msg.Partition, "offset", msg.Offset)
 			if dlqErr := c.dlqPublish(ctx, msg, err); dlqErr != nil {
 				c.Logger.ErrorContext(ctx, "facility event dead-letter publish failed",
-					"error", dlqErr, "partition", msg.Partition, "offset", msg.Offset)
+					"error", sanitizeErr(dlqErr), "partition", msg.Partition, "offset", msg.Offset)
 			}
 		}
 		c.observe(msg.Partition, msg.Offset)

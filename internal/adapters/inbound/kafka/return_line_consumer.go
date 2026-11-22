@@ -107,7 +107,7 @@ func (c *ReturnLineConsumer) Handle(ctx context.Context, msg kafkago.Message) er
 	e, err := cloudevents.Decode(msg.Value)
 	if err != nil {
 		c.Logger.WarnContext(ctx, "skipping returns-processing message that is not a valid CloudEvent",
-			"partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 	if e.Type() != typeReturnLineStaged {
@@ -117,7 +117,7 @@ func (c *ReturnLineConsumer) Handle(ctx context.Context, msg kafkago.Message) er
 	var data returnLineStagedData
 	if err := e.DataAs(&data); err != nil {
 		c.Logger.WarnContext(ctx, "skipping returns-processing ReturnLineStaged with undecodable payload",
-			"id", e.ID(), "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"id", sanitizeLog(e.ID()), "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	}
 
@@ -136,8 +136,8 @@ func (c *ReturnLineConsumer) Handle(ctx context.Context, msg kafkago.Message) er
 	if err != nil {
 		if errors.Is(err, usecases.ErrMalformedReturnLine) {
 			c.Logger.WarnContext(ctx, "skipping invalid returns-processing return line",
-				"id", e.ID(), "disposition_id", data.DispositionID, "receipt_id", data.ReceiptID, "sku", data.SKU,
-				"quantity", data.Quantity, "condition", data.Condition, "error", err)
+				"id", sanitizeLog(e.ID()), "disposition_id", sanitizeLog(data.DispositionID), "receipt_id", sanitizeLog(data.ReceiptID), "sku", sanitizeLog(data.SKU),
+				"quantity", data.Quantity, "condition", sanitizeLog(data.Condition), "error", sanitizeErr(err))
 			return nil
 		}
 		return err
@@ -158,9 +158,9 @@ func (c *ReturnLineConsumer) logOutcome(ctx context.Context, id string, data ret
 	}
 	switch outcome {
 	case usecases.ReturnLineDuplicate:
-		c.Logger.InfoContext(ctx, "returns-processing return line already handled; redelivery ignored", attrs...)
+		c.Logger.InfoContext(ctx, "returns-processing return line already handled; redelivery ignored", sanitizeArgs(attrs)...)
 	case usecases.ReturnLineBooked:
-		c.Logger.InfoContext(ctx, "returns-processing return line booked as staged stock", attrs...)
+		c.Logger.InfoContext(ctx, "returns-processing return line booked as staged stock", sanitizeArgs(attrs)...)
 	}
 }
 
